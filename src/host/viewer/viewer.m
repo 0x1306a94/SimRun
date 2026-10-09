@@ -76,10 +76,31 @@ extern char **environ;
   self.surfaceLayer.actions = @{ @"contents": NSNull.null, @"contentsScale": NSNull.null, @"bounds": NSNull.null, @"position": NSNull.null };
   self.surfaces = [NSMutableDictionary dictionary];
   [self.view.layer addSublayer:self.surfaceLayer];
+  [self placeNextToOtherViewers];
   [self.window makeKeyAndOrderFront:nil];
   [self.window makeFirstResponder:self.view];
   [NSApp activateIgnoringOtherApps:YES];
   [self spawn];
+}
+// Several apps can run at once (one viewer per app): put this window to the right of the other viewers' windows
+// instead of on top of them, wrapping to a cascade when the screen is full.
+- (void)placeNextToOtherViewers {
+  NSString *me = NSProcessInfo.processInfo.processName;
+  pid_t mypid = getpid();
+  NSArray *infos = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+  CGFloat maxX = 0, top = 0; int n = 0;
+  for (NSDictionary *w in infos) {
+    if (![w[(id)kCGWindowOwnerName] isEqual:me] || [w[(id)kCGWindowOwnerPID] intValue] == mypid || [w[(id)kCGWindowLayer] intValue] != 0) continue;
+    CGRect b; if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)w[(id)kCGWindowBounds], &b) || b.size.height < 100) continue;
+    if (CGRectGetMaxX(b) > maxX) { maxX = CGRectGetMaxX(b); top = b.origin.y; }
+    n++;
+  }
+  if (!n) return;
+  NSRect screen = NSScreen.mainScreen.visibleFrame, full = NSScreen.mainScreen.frame;
+  NSPoint topLeft = NSMakePoint(maxX + 16, NSMaxY(full) - top);   // CG window bounds are top-left based
+  if (topLeft.x + self.window.frame.size.width > NSMaxX(screen))  // no room: cascade from the left edge
+    topLeft = NSMakePoint(NSMinX(screen) + 24 * n, NSMaxY(screen) - 24 * n);
+  [self.window setFrameTopLeftPoint:topLeft];
 }
 - (void)spawn {
   mach_port_t rp; mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &rp);
@@ -123,7 +144,9 @@ extern char **environ;
         if (!NSEqualSizes(content, self.contentSize)) {
           self.contentSize = content;
           NSLog(@"display %ux%u @%gx", m.p.w, m.p.h_px, sc);
+          NSPoint tl = NSMakePoint(NSMinX(self.window.frame), NSMaxY(self.window.frame));
           [self.window setContentSize:content];
+          [self.window setFrameTopLeftPoint:tl];   // keep the window's top-left where it was placed
           self.surfaceLayer.contentsScale = sc;
         }
         break;
