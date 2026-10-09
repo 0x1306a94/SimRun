@@ -7,6 +7,8 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include "protocol.h"
+#import "mirrorwindow.h"
+#import "environment.h"
 
 extern int posix_spawnattr_setspecialport_np(posix_spawnattr_t *, mach_port_t, int);
 extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, const char *);
@@ -53,7 +55,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 
 // ---------------------------------------------------------------- session
 @implementation SRSession {
-  NSWindow *_window; SRView *_view; CALayer *_surfaceLayer;
+  SRMirrorWindow *_window; SRView *_view; CALayer *_surfaceLayer;
   mach_port_t _port; dispatch_source_t _portSource, _procSource;
   IOSurfaceRef _surface; NSMutableDictionary<NSNumber *, id> *_surfaces; NSSize _contentSize;
   BOOL _exited, _sawFrame;
@@ -66,12 +68,12 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   if (!(self = [super init])) return nil;
   _title = [title copy];
   _surfaces = [NSMutableDictionary dictionary];
-  _window = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 402, 874)
-      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
-  _window.title = title; _window.delegate = self; _window.releasedWhenClosed = NO;
-  _view = [[SRView alloc] initWithFrame:_window.contentView.bounds];
+  // iPhone Mirroring–style window: just the device screen until the pointer nears its top edge
+  _view = [[SRView alloc] initWithFrame:NSMakeRect(0, 0, 402, 874)];
   _view.wantsLayer = YES; _view.layer.backgroundColor = NSColor.blackColor.CGColor;
-  _window.contentView = _view;
+  CGFloat radius = SRDeviceCornerRadius([SREnvironment simulatorVariables][@"SIMULATOR_CAPABILITIES"]);
+  _window = [[SRMirrorWindow alloc] initWithScreenView:_view size:NSMakeSize(402, 874) cornerRadius:radius];
+  _window.title = title; _window.delegate = self;
   _surfaceLayer = [CALayer layer];
   _surfaceLayer.frame = _view.bounds; _surfaceLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
   _surfaceLayer.contentsGravity = kCAGravityResize;
@@ -107,7 +109,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   NSPoint topLeft = NSMakePoint(maxX + 16, NSMaxY(full) - top);   // CG window bounds are top-left based
   if (topLeft.x + _window.frame.size.width > NSMaxX(screen))
     topLeft = NSMakePoint(NSMinX(screen) + 24 * n, NSMaxY(screen) - 24 * n);
-  [_window setFrameTopLeftPoint:topLeft];
+  [_window setScreenTopLeft:topLeft];
 }
 
 - (BOOL)spawnArgv:(NSArray<NSString *> *)argv env:(NSArray<NSString *> *)env cwd:(NSString *)cwd
@@ -251,9 +253,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
         NSSize content = NSMakeSize(m.p.w / sc, m.p.h_px / sc);
         if (!NSEqualSizes(content, _contentSize)) {
           _contentSize = content;
-          NSPoint tl = NSMakePoint(NSMinX(_window.frame), NSMaxY(_window.frame));
-          [_window setContentSize:content];
-          [_window setFrameTopLeftPoint:tl];   // keep the window's top-left where it was placed
+          _window.screenSize = content;   // keeps the screen's top-left
           _surfaceLayer.contentsScale = sc;
         }
         break;
