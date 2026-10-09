@@ -1,0 +1,8 @@
+# build output
+/build/
+# local artifacts
+*.png
+*.ips
+out/
+.DS_Store
+*.dSYM/
