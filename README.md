@@ -6,10 +6,17 @@ provide are reimplemented (mostly in-process), and the app appears in an ordinar
 
 ```bash
 make
-scripts/simapp.sh build/apps/SUI.app          # or any arm64 iOS-Simulator .app / binary
+open build/SimRun.app                          # launcher: drop iOS Simulator .app bundles on it
+scripts/simapp.sh build/apps/SUI.app           # or launch from the terminal (output + exit status in the terminal)
 ```
 
-Apps run inside a shared server, `simrund`, which `simapp.sh` starts on first use and which exits after 10 idle minutes.
+**SimRun.app** is a regular Mac app: drop iOS Simulator `.app` bundles on its window or Dock icon (or use
+File ▸ Add App…, Add Xcode Builds, or Finder's Open With ▸ SimRun). The library is remembered; double-click or Launch
+to run an app — the row shows a spinner while it starts and a green dot once its window appears (no blank window).
+In an app window: ⌘R relaunch, ⌘L log (the app's stdout/stderr), ⌘W quit the app, ⌘0 launcher, ⌘Q quit everything.
+
+All apps run inside one SimRun process (`simapp.sh` starts it headless if SimRun.app isn't open; headless it exits
+after 10 idle minutes).
 Each app gets its own window; its stdout/stderr go to your terminal, `simapp.sh` exits with the app's status, and
 Ctrl-C (or closing the window) ends the app. Launching into a running server takes ~0.6 s to first frame
 (vs ~1.1 s standalone). `scripts/simrund.sh status|stop|log` manages the server; `SIMAPP_STANDALONE=1` runs an app in
@@ -43,7 +50,8 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
 | Path | Contents |
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs |
-| `src/host/` | macOS side: `simrund/` (server, per-app window sessions), `simapp/` (client), `gpuhost/` (IOSurface + Metal host services) |
+| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, per-app window sessions, environment), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
+| `resources/` | SimRun.app's Info.plist |
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `simfb/` |
 | `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
@@ -51,8 +59,9 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
 | `catalyst/` | Approach A: `sim2mac.sh` re-tags a Simulator .app as Mac Catalyst (runs on macOS's own UIKit instead) |
 | `docs/` | Write-ups (see below) |
 
-`make` builds everything into `build/` (`bin/`, `lib/`, `apps/`, `tests/`); `make core` builds only what `simapp.sh` needs.
-After rebuilding, run `scripts/simrund.sh stop` so the next launch starts the new server.
+`make` builds everything into `build/` (`SimRun.app`, `bin/`, `lib/`, `apps/`, `tests/`); `make core` builds SimRun.app
+and the client. Rebuilding while SimRun is open is safe (the bundle is swapped in atomically); quit and reopen SimRun
+(or `scripts/simrund.sh stop`) to pick up the new build.
 
 ## Useful knobs
 

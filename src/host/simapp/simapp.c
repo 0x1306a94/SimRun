@@ -21,11 +21,24 @@ static int try_connect(const char *path) {
   close(s); return -1;
 }
 
-// Start `simrund --serve` (next to this executable) as a detached session leader, logging to ~/Library/Logs/SimRun.
+// The SimRun.app executable: $SIMRUN_SERVER, else inside the bundle we live in (Contents/Helpers/simapp), else
+// build/SimRun.app next to build/bin/simapp.
+static int find_server(char *server, size_t n) {
+  const char *o = getenv("SIMRUN_SERVER");
+  if (o) { snprintf(server, n, "%s", o); return access(server, X_OK); }
+  char exe[PATH_MAX], real[PATH_MAX]; uint32_t len = sizeof exe;
+  _NSGetExecutablePath(exe, &len); realpath(exe, real);
+  char *dir = dirname(real);
+  snprintf(server, n, "%s/../MacOS/SimRun", dir);
+  if (access(server, X_OK) == 0) return 0;
+  snprintf(server, n, "%s/../SimRun.app/Contents/MacOS/SimRun", dir);
+  return access(server, X_OK);
+}
+
+// Start `SimRun --serve` as a detached session leader, logging to ~/Library/Logs/SimRun/simrund.log.
 static int start_server(void) {
-  char exe[PATH_MAX], real[PATH_MAX]; uint32_t n = sizeof exe;
-  _NSGetExecutablePath(exe, &n); realpath(exe, real);
-  char server[PATH_MAX]; snprintf(server, sizeof server, "%s/simrund", dirname(real));
+  char server[PATH_MAX];
+  if (find_server(server, sizeof server)) { fprintf(stderr, "simapp: SimRun.app not found (set SIMRUN_SERVER)\n"); return -1; }
   char log[1024]; simrund_log_path(log, sizeof log);
   posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
   posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);

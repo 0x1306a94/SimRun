@@ -1,6 +1,6 @@
 # SimRun — build everything into build/.
 #   make            core components + test apps
-#   make core       viewer, simns, injected dylibs, fake SimFramebuffer
+#   make core       SimRun.app (server + launcher, simns, injected dylibs, fake SimFramebuffer) and the simapp client
 #   make tests      test apps and test programs
 #   make clean
 
@@ -17,12 +17,14 @@ MACSWIFT:= env -u DYLD_ROOT_PATH xcrun -sdk macosx swiftc -O
 SIGN    := codesign -s - -f
 HDRS    := $(wildcard include/*.h)
 
-CORE  := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer
+APP   := $(BUILD)/SimRun.app
+CORE  := $(APP) $(BIN)/simapp
+PARTS := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput $(BIN)/rhost
 TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app \
          $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes
 
-.PHONY: all core tools tests clean
+.PHONY: all core tools tests clean $(APP)
 all: core tools tests
 core: $(CORE)
 tools: $(TOOLS)
@@ -32,9 +34,29 @@ $(BIN) $(LIB) $(APPS) $(TBIN):
 	@mkdir -p $@
 
 # ---------------------------------------------------------------- host (macOS)
-SIMRUND_SRC := src/host/simrund/simrund.m src/host/simrund/session.m src/host/gpuhost/gpuhost.m
-$(BIN)/simrund: $(SIMRUND_SRC) src/host/simrund/session.h $(HDRS) | $(BIN)
-	$(MACCC) $(SIMRUND_SRC) -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal -o $@
+SIMRUND_SRC := $(wildcard src/host/simrund/*.m) src/host/gpuhost/gpuhost.m
+$(BIN)/simrund: $(SIMRUND_SRC) $(wildcard src/host/simrund/*.h) $(HDRS) | $(BIN)
+	$(MACCC) -Isrc/host/simrund $(SIMRUND_SRC) -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal \
+	  -framework UniformTypeIdentifiers -o $@
+
+$(BUILD)/AppIcon.icns: tools/make_icon.swift | $(BIN)
+	$(MACSWIFT) tools/make_icon.swift -o $(BUILD)/make_icon && $(BUILD)/make_icon $@
+
+# SimRun.app: the server/launcher executable, helpers (simns, simapp) and the sim-side libraries.
+# Assembled in a staging bundle and swapped in with a rename, so a SimRun that is running from the old bundle keeps
+# its (unlinked) files instead of having them overwritten underneath it.
+$(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer resources/Info.plist $(BUILD)/AppIcon.icns
+	@rm -rf $(BUILD)/.SimRun.app.new $(BUILD)/.SimRun.app.old
+	@mkdir -p $(BUILD)/.SimRun.app.new/Contents/MacOS $(BUILD)/.SimRun.app.new/Contents/Helpers $(BUILD)/.SimRun.app.new/Contents/Resources/lib
+	@cp resources/Info.plist $(BUILD)/.SimRun.app.new/Contents/Info.plist
+	@cp $(BUILD)/AppIcon.icns $(BUILD)/.SimRun.app.new/Contents/Resources/
+	@cp $(BIN)/simrund $(BUILD)/.SimRun.app.new/Contents/MacOS/SimRun
+	@cp $(BIN)/simns $(BIN)/simapp $(BUILD)/.SimRun.app.new/Contents/Helpers/
+	@cp $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer $(BUILD)/.SimRun.app.new/Contents/Resources/lib/
+	@$(SIGN) --deep $(BUILD)/.SimRun.app.new 2>/dev/null
+	@if [ -d $@ ]; then mv $@ $(BUILD)/.SimRun.app.old; fi
+	@mv $(BUILD)/.SimRun.app.new $@ && rm -rf $(BUILD)/.SimRun.app.old
+	@echo "built $@"
 
 $(BIN)/simapp: src/host/simapp/simapp.c $(HDRS) | $(BIN)
 	xcrun -sdk macosx clang -arch arm64 -Wall -Iinclude $< -framework CoreFoundation -o $@

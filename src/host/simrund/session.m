@@ -4,6 +4,8 @@
 #import <IOSurface/IOSurface.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <pwd.h>
 #include "protocol.h"
 
 extern int posix_spawnattr_setspecialport_np(posix_spawnattr_t *, mach_port_t, int);
@@ -55,6 +57,8 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   mach_port_t _port; dispatch_source_t _portSource, _procSource;
   IOSurfaceRef _surface; NSMutableDictionary<NSNumber *, id> *_surfaces; NSSize _contentSize;
   BOOL _exited, _sawFrame;
+  dispatch_source_t _outSource; NSMutableString *_log; NSFileHandle *_logFile;
+  NSWindow *_logWindow; NSTextView *_logView;
   CFAbsoluteTime _spawnTime;
 }
 
@@ -74,10 +78,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   // No implicit animations: every frame swaps `contents`, which would otherwise cross-fade for 0.25 s.
   _surfaceLayer.actions = @{ @"contents": NSNull.null, @"contentsScale": NSNull.null, @"bounds": NSNull.null, @"position": NSNull.null };
   [_view.layer addSublayer:_surfaceLayer];
-  [self placeWindow];
-  [_window makeKeyAndOrderFront:nil];
-  [_window makeFirstResponder:_view];
-  [NSApp activateIgnoringOtherApps:YES];
+  [_window makeFirstResponder:_view];   // shown later, by -becomeReady
 
   mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &_port);
   mach_port_insert_right(mach_task_self(), _port, _port, MACH_MSG_TYPE_MAKE_SEND);
@@ -129,6 +130,9 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   free(cargv); free(cenv);
   if (r) { if (error) *error = [NSString stringWithFormat:@"spawn %@: %s", argv.firstObject, strerror(r)]; return NO; }
   _pid = pid; _spawnTime = CFAbsoluteTimeGetCurrent();
+  // an app that never draws still gets its window eventually, so it can be seen and closed
+  __weak SRSession *weakSelfReady = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [weakSelfReady becomeReady]; });
   _procSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, pid, DISPATCH_PROC_EXIT, dispatch_get_main_queue());
   __weak SRSession *weakSelf = self;
   dispatch_source_set_event_handler(_procSource, ^{ [weakSelf reap]; });
@@ -145,10 +149,76 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   mach_port_deallocate(mach_task_self(), _port);
   if (_view.inputPort) mach_port_deallocate(mach_task_self(), _view.inputPort);
   _window.delegate = nil; [_window close];
+  if (_logWindow) _logWindow.title = [NSString stringWithFormat:@"%@ — Log (exited)", _title];
   if (self.onExit) self.onExit(self, st);
 }
 
 // UIKit apps ignore SIGTERM (termination normally comes through FrontBoard/RunningBoard), so escalate to SIGKILL.
+- (NSWindow *)window { return _window; }
+- (void)bringToFront { if (_ready) { [_window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; } }
+
+- (void)becomeReady {
+  if (_ready || _exited) return;
+  _ready = YES;
+  [self placeWindow];
+  [_window makeKeyAndOrderFront:nil];
+  [NSApp activateIgnoringOtherApps:YES];
+  if (self.onReady) self.onReady(self);
+}
+
+- (void)captureOutputFrom:(int)fd {
+  _log = [NSMutableString string];
+  struct passwd *pw = getpwuid(getuid());   // not $HOME: under simrun.sh that is the simulated device's data dir
+  NSString *dir = [@(pw ? pw->pw_dir : "/tmp") stringByAppendingPathComponent:@"Library/Logs/SimRun"];
+  [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSString *path = [dir stringByAppendingPathComponent:[_title stringByAppendingPathExtension:@"log"]];
+  [NSFileManager.defaultManager createFileAtPath:path contents:nil attributes:nil];
+  _logFile = [NSFileHandle fileHandleForWritingAtPath:path];
+  fcntl(fd, F_SETFL, O_NONBLOCK);
+  dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, fd, 0, dispatch_get_main_queue());
+  __weak SRSession *weakSelf = self;
+  dispatch_source_set_event_handler(src, ^{
+    char buf[16384]; ssize_t n;
+    while ((n = read(fd, buf, sizeof buf)) > 0) [weakSelf appendOutput:[NSData dataWithBytes:buf length:n]];
+    if (n == 0 || !weakSelf) dispatch_source_cancel(src);   // EOF: the app (and anything it spawned) closed its output
+  });
+  dispatch_source_set_cancel_handler(src, ^{ close(fd); });
+  dispatch_resume(src);
+  _outSource = src;
+}
+- (void)appendOutput:(NSData *)d {
+  [_logFile writeData:d];
+  NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] ?: [[NSString alloc] initWithData:d encoding:NSISOLatin1StringEncoding];
+  if (!s) return;
+  [_log appendString:s];
+  if (_log.length > 2000000) [_log deleteCharactersInRange:NSMakeRange(0, _log.length - 1500000)];   // keep the tail
+  if (_logView) {
+    BOOL atEnd = NSMaxY(_logView.visibleRect) >= NSMaxY(_logView.bounds) - 20;
+    [_logView.textStorage appendAttributedString:[[NSAttributedString alloc] initWithString:s attributes:@{
+      NSFontAttributeName: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular], NSForegroundColorAttributeName: NSColor.textColor }]];
+    if (atEnd) [_logView scrollToEndOfDocument:nil];
+  }
+}
+- (void)showLog {
+  if (!_logWindow) {
+    _logWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 720, 420)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
+        backing:NSBackingStoreBuffered defer:NO];
+    _logWindow.title = [NSString stringWithFormat:@"%@ — Log", _title]; _logWindow.releasedWhenClosed = NO;
+    NSScrollView *sv = [[NSScrollView alloc] initWithFrame:_logWindow.contentView.bounds];
+    sv.hasVerticalScroller = YES; sv.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _logView = [[NSTextView alloc] initWithFrame:sv.bounds];
+    _logView.editable = NO; _logView.autoresizingMask = NSViewWidthSizable;
+    _logView.textContainerInset = NSMakeSize(6, 6);
+    sv.documentView = _logView; _logWindow.contentView = sv;
+    [_logView.textStorage setAttributedString:[[NSAttributedString alloc] initWithString:_log ?: @"(this app's output goes to the terminal that launched it)\n" attributes:@{
+      NSFontAttributeName: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular], NSForegroundColorAttributeName: NSColor.textColor }]];
+    [_logWindow center];
+  }
+  [_logWindow makeKeyAndOrderFront:nil];
+  [_logView scrollToEndOfDocument:nil];
+}
+
 - (void)terminate {
   if (_pid <= 0 || _exited) return;
   kill(_pid, SIGTERM);
@@ -191,6 +261,8 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
       case SR_MSG_FRAME:
         if (!_sawFrame) {
           _sawFrame = YES;
+          // let CA commit this frame's contents before the window appears, so it never shows black
+          dispatch_async(dispatch_get_main_queue(), ^{ [self becomeReady]; });
           fprintf(stderr, "[simrund] %s (pid %d) first frame %.3f s after spawn (t=%.3f)\n", _title.UTF8String, _pid,
                   CFAbsoluteTimeGetCurrent() - _spawnTime, CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970);
         }
