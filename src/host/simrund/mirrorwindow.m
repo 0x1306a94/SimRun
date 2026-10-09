@@ -1,28 +1,29 @@
-// mirrorwindow.m — see mirrorwindow.h.
+// mirrorwindow.m — see mirrorwindow.h. Modelled on iPhone Mirroring (ScreenContinuityUI + SwiftUI's AppKitWindow):
 //
-// The window is titled (real window behaviour: key/main, ⌘W, miniaturize) with a full-size content view and a clear
-// background, but the system title bar is hidden: SimRun draws its own frame. Its frame is either exactly the device
-// screen ("collapsed": all corners = device radius) or that rect grown by a margin on the sides/bottom and a title strip
-// on top ("expanded": a frame background and our own traffic lights fade in; top corners = the system window radius,
-// bottom corners = device radius + margin). The device screen's position on screen is the anchor: every animation step
-// sets the window frame and the screen view's offset inside it together, so the screen never moves while the frame
-// grows around it.
+//   - The window frame never changes on hover. It is always the full chrome size: the device screen plus an 8 pt
+//     margin on the sides and bottom and a T pt title strip on top.
+//   - What animates is the window's *shape*, set with AppKit's private -_setCornerPath:. The path clips the window,
+//     its shadow and system border, and is the window server's hit-test shape: while the chrome is hidden, clicks on
+//     the (invisible) margins go to whatever is behind the window.
+//       hidden:  the device-screen rect, all corners c (the device's screen corner radius)
+//       shown:   the whole frame, top corners 20 pt, bottom corners c + 8 (concentric with the screen)
+//     with continuous ("squircle") corners, interpolated by a critically damped spring (response 0.28 s).
+//   - The title strip (traffic lights) fades in/out (springs 0.7 s / 0.14 s) and slides down by T when hidden.
+//   - Hover: above the screen or within 10 pt of its top shows the chrome; moving onto the content (or away) hides it;
+//     the margins keep it shown.
 #import "mirrorwindow.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface NSWindow (SRPrivate)
-- (CGFloat)_topCornerRadius;      // AppKit private: corner mask (and shadow shape) radii
-- (CGFloat)_bottomCornerRadius;
-- (void)_cornerMaskChanged;
+- (void)_setCornerPath:(CGPathRef)path;          // window shape: clip, shadow, border, hit-testing
+- (void)_setNeedsToResetDragMargins:(BOOL)reset;
 @end
 
-static const CGFloat kMargin = 8;              // frame margin around the screen (sides and bottom) when expanded
-static const CGFloat kStrip = 40;              // title strip above the screen when expanded
-static const CGFloat kLightsLeft = 13;         // traffic lights: left inset and vertical centre within the strip
-static const CGFloat kLightsCenterY = 20;
-static const CGFloat kHotZone = 44;            // hovering this close to the top of the screen reveals the frame
-static const NSTimeInterval kDuration = 0.24;
-static const NSTimeInterval kCollapseDelay = 0.35;
+static const CGFloat kMargin = 8;                // chrome margin around the screen (sides and bottom)
+static const CGFloat kStrip = 38;                // title strip height (iPhone Mirroring's title bar safe area)
+static const CGFloat kTopRadius = 20;            // chrome top corners
+static const CGFloat kStatusBarZone = 10;        // hovering this close to the top of the screen shows the chrome
+static const CGFloat kLightsInset = 9, kLightsSpacing = 9;
 
 CGFloat SRDeviceCornerRadius(NSString *capabilitiesPath) {
   NSDictionary *caps = capabilitiesPath ? [NSDictionary dictionaryWithContentsOfFile:capabilitiesPath] : nil;
@@ -30,24 +31,54 @@ CGFloat SRDeviceCornerRadius(NSString *capabilitiesPath) {
   return [r isKindOfClass:NSNumber.class] && r.doubleValue > 0 ? r.doubleValue : 55;
 }
 
-// A rounded rect with separate top and bottom corner radii (non-flipped coordinates).
-static NSBezierPath *RoundedPath(NSRect r, CGFloat top, CGFloat bottom) {
-  top = MIN(top, MIN(NSWidth(r), NSHeight(r)) / 2); bottom = MIN(bottom, MIN(NSWidth(r), NSHeight(r)) / 2);
-  NSBezierPath *p = [NSBezierPath bezierPath];
-  [p moveToPoint:NSMakePoint(NSMinX(r) + bottom, NSMinY(r))];
-  [p appendBezierPathWithArcFromPoint:NSMakePoint(NSMaxX(r), NSMinY(r)) toPoint:NSMakePoint(NSMaxX(r), NSMaxY(r)) radius:bottom];
-  [p appendBezierPathWithArcFromPoint:NSMakePoint(NSMaxX(r), NSMaxY(r)) toPoint:NSMakePoint(NSMinX(r), NSMaxY(r)) radius:top];
-  [p appendBezierPathWithArcFromPoint:NSMakePoint(NSMinX(r), NSMaxY(r)) toPoint:NSMakePoint(NSMinX(r), NSMinY(r)) radius:top];
-  [p appendBezierPathWithArcFromPoint:NSMakePoint(NSMinX(r), NSMinY(r)) toPoint:NSMakePoint(NSMaxX(r), NSMinY(r)) radius:bottom];
-  [p closePath];
+// Continuous-corner ("squircle") rounded rect with per-corner radii — the iOS/SwiftUI .continuous corner curve.
+// Built in a top-left-origin space, then flipped into AppKit window coordinates (height `flipH`).
+static CGPathRef CreateContinuousRect(CGRect r, CGFloat tl, CGFloat tr, CGFloat br, CGFloat bl, CGFloat flipH) {
+  const CGFloat a = 1.52866483, b = 1.08849323, c = 0.86840689, d = 0.66993427, e = 0.06549600, f = 0.37282392, g = 0.16890344;
+  CGFloat lim = MIN(r.size.width, r.size.height) / 2 / a;
+  tl = MIN(tl, lim); tr = MIN(tr, lim); br = MIN(br, lim); bl = MIN(bl, lim);
+  CGFloat x0 = r.origin.x, y0 = r.origin.y, x1 = x0 + r.size.width, y1 = y0 + r.size.height;
+  CGMutablePathRef p = CGPathCreateMutable();
+  CGAffineTransform t = CGAffineTransformMake(1, 0, 0, -1, 0, flipH);   // y down -> y up
+  CGPathMoveToPoint(p, &t, x0 + a * tl, y0);
+  CGPathAddLineToPoint(p, &t, x1 - a * tr, y0);
+  CGPathAddCurveToPoint(p, &t, x1 - b * tr, y0, x1 - c * tr, y0, x1 - d * tr, y0 + e * tr);
+  CGPathAddCurveToPoint(p, &t, x1 - f * tr, y0 + g * tr, x1 - g * tr, y0 + f * tr, x1 - e * tr, y0 + d * tr);
+  CGPathAddCurveToPoint(p, &t, x1, y0 + c * tr, x1, y0 + b * tr, x1, y0 + a * tr);
+  CGPathAddLineToPoint(p, &t, x1, y1 - a * br);
+  CGPathAddCurveToPoint(p, &t, x1, y1 - b * br, x1, y1 - c * br, x1 - e * br, y1 - d * br);
+  CGPathAddCurveToPoint(p, &t, x1 - g * br, y1 - f * br, x1 - f * br, y1 - g * br, x1 - d * br, y1 - e * br);
+  CGPathAddCurveToPoint(p, &t, x1 - c * br, y1, x1 - b * br, y1, x1 - a * br, y1);
+  CGPathAddLineToPoint(p, &t, x0 + a * bl, y1);
+  CGPathAddCurveToPoint(p, &t, x0 + b * bl, y1, x0 + c * bl, y1, x0 + d * bl, y1 - e * bl);
+  CGPathAddCurveToPoint(p, &t, x0 + f * bl, y1 - g * bl, x0 + g * bl, y1 - f * bl, x0 + e * bl, y1 - d * bl);
+  CGPathAddCurveToPoint(p, &t, x0, y1 - c * bl, x0, y1 - b * bl, x0, y1 - a * bl);
+  CGPathAddLineToPoint(p, &t, x0, y0 + a * tl);
+  CGPathAddCurveToPoint(p, &t, x0, y0 + b * tl, x0, y0 + c * tl, x0 + e * tl, y0 + d * tl);
+  CGPathAddCurveToPoint(p, &t, x0 + g * tl, y0 + f * tl, x0 + f * tl, y0 + g * tl, x0 + d * tl, y0 + e * tl);
+  CGPathAddCurveToPoint(p, &t, x0 + c * tl, y0, x0 + b * tl, y0, x0 + a * tl, y0);
+  CGPathCloseSubpath(p);
   return p;
+}
+
+// Spring integrated per display frame. stiffness = (2π/response)², damping = 4πζ/response (mass 1).
+typedef struct { CGFloat value, velocity, target, k, d; } SRSpring;
+static void SpringSetResponse(SRSpring *s, CGFloat response, CGFloat dampingFraction) {
+  s->k = pow(2 * M_PI / response, 2); s->d = 4 * M_PI * dampingFraction / response;
+}
+static BOOL SpringStep(SRSpring *s, CGFloat dt) {   // returns YES while moving
+  for (int i = 0; i < 8; i++) {
+    CGFloat h = dt / 8, acc = -s->k * (s->value - s->target) - s->d * s->velocity;
+    s->velocity += acc * h; s->value += s->velocity * h;
+  }
+  if (fabs(s->value - s->target) < 1e-4 && fabs(s->velocity) < 1e-3) { s->value = s->target; s->velocity = 0; return NO; }
+  return YES;
 }
 
 // ---------------------------------------------------------------- traffic lights
 // Standard window buttons only show their ×/–/+ glyphs while the pointer is over the button group. On current macOS
 // they ask the window's theme frame (NSThemeFrame -_mouseInGroup:, set by -mouseEnteredLeftButtonGroup /
-// -mouseExitedLeftButtonGroup); older systems asked the buttons' superview (-_mouseInGroup: here). mouseInside is
-// driven by the window's hover tracking: this view starts hidden, so a tracking area of its own is never installed.
+// -mouseExitedLeftButtonGroup), then refresh on -mouseEnteredOrExited; older systems asked the buttons' superview.
 @interface SRTrafficLights : NSView
 @property (nonatomic) BOOL mouseInside;
 @end
@@ -59,20 +90,19 @@ static NSBezierPath *RoundedPath(NSRect r, CGFloat top, CGFloat bottom) {
     NSButton *b = [NSWindow standardWindowButton:(NSWindowButton)t.integerValue forStyleMask:style];
     [b setFrameOrigin:NSMakePoint(x, 0)];
     [self addSubview:b];
-    x += NSWidth(b.frame) + 6; h = MAX(h, NSHeight(b.frame));   // 6 pt gap, like the system title bar
+    x += NSWidth(b.frame) + kLightsSpacing; h = MAX(h, NSHeight(b.frame));
   }
-  [self setFrameSize:NSMakeSize(x - 6, h)];
+  [self setFrameSize:NSMakeSize(x - kLightsSpacing, h)];
   return self;
 }
 - (BOOL)_mouseInGroup:(NSButton *)button { return self.mouseInside; }
 - (void)setMouseInside:(BOOL)inside {
   if (_mouseInside == inside) return;
   _mouseInside = inside;
-  // The widgets ask the window's theme frame whether the pointer is in the button group; tell it.
   NSView *themeFrame = self.window.contentView.superview;
-  SEL sel = inside ? NSSelectorFromString(@"mouseEnteredLeftButtonGroup") : NSSelectorFromString(@"mouseExitedLeftButtonGroup");
+  SEL sel = NSSelectorFromString(inside ? @"mouseEnteredLeftButtonGroup" : @"mouseExitedLeftButtonGroup");
   if ([themeFrame respondsToSelector:sel]) ((void (*)(id, SEL))[themeFrame methodForSelector:sel])(themeFrame, sel);
-  SEL refresh = NSSelectorFromString(@"mouseEnteredOrExited");   // _NSThemeWidget: re-reads the group hover state
+  SEL refresh = NSSelectorFromString(@"mouseEnteredOrExited");
   for (NSView *b in self.subviews) {
     if ([b respondsToSelector:refresh]) ((void (*)(id, SEL))[b methodForSelector:refresh])(b, refresh);
     b.needsDisplay = YES;
@@ -80,17 +110,36 @@ static NSBezierPath *RoundedPath(NSRect r, CGFloat top, CGFloat bottom) {
 }
 @end
 
-// ---------------------------------------------------------------- root view
-// Hosts the frame background, the screen view and the traffic lights; reports hover; dragging the frame moves the window.
-@interface SRMirrorRootView : NSView
-@property (weak) SRMirrorWindow *mirror;
+// Title strip and margins: dragging them moves the window.
+@interface SRDragView : NSView @end
+@implementation SRDragView
+- (void)mouseDown:(NSEvent *)e { [self.window performWindowDragWithEvent:e]; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 @end
+
+// Phone screen hairline, shown with the chrome.
+@interface SRHairline : NSView @property CGFloat radius; @end
+@implementation SRHairline
+- (void)drawRect:(NSRect)r {
+  CGPathRef p = CreateContinuousRect(NSInsetRect(self.bounds, 0.5, 0.5), _radius, _radius, _radius, _radius, NSHeight(self.bounds));
+  CGContextRef ctx = NSGraphicsContext.currentContext.CGContext;
+  CGContextAddPath(ctx, p); CGContextSetStrokeColorWithColor(ctx, NSColor.quaternaryLabelColor.CGColor);
+  CGContextSetLineWidth(ctx, 1); CGContextStrokePath(ctx); CGPathRelease(p);
+}
+- (NSView *)hitTest:(NSPoint)p { return nil; }
+@end
+
+// ---------------------------------------------------------------- root view: hover tracking
+typedef NS_ENUM(NSInteger, SRHover) { SRHoverNone, SRHoverTitleBar, SRHoverStatusBar, SRHoverContent, SRHoverChrome };
 
 @interface SRMirrorWindow ()
 - (void)hoverAt:(NSPoint)p;
 - (void)hoverExited;
 @end
 
+@interface SRMirrorRootView : SRDragView
+@property (weak) SRMirrorWindow *mirror;
+@end
 @implementation SRMirrorRootView
 - (void)updateTrackingAreas {
   [super updateTrackingAreas];
@@ -103,171 +152,158 @@ static NSBezierPath *RoundedPath(NSRect r, CGFloat top, CGFloat bottom) {
 - (void)mouseExited:(NSEvent *)e { [self.mirror hoverExited]; }
 - (NSView *)hitTest:(NSPoint)p {
   NSView *v = [super hitTest:p];
-  return [v isKindOfClass:NSVisualEffectView.class] ? self : v;   // the frame background is just a drag surface
+  return [v isKindOfClass:NSVisualEffectView.class] ? self : v;   // the material is a drag surface
 }
-- (void)mouseDown:(NSEvent *)e { [self.window performWindowDragWithEvent:e]; }
-- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 @end
 
 // ---------------------------------------------------------------- window
 @implementation SRMirrorWindow {
   SRMirrorRootView *_root;
-  NSVisualEffectView *_frameBackground;
+  NSVisualEffectView *_material;
+  SRHairline *_hairline;
+  SRDragView *_strip;
   SRTrafficLights *_lights;
   NSView *_screen;
-  CGFloat _radius, _systemRadius;
-  CGFloat _topRadius, _bottomRadius;   // current corner radii (what -_topCornerRadius/-_bottomCornerRadius report)
-  NSRect _anchor;                       // device screen, screen coordinates
-  CGFloat _progress;                    // 0 collapsed … 1 expanded
-  CGFloat _from, _to; CFTimeInterval _animStart;
-  CADisplayLink *_link;
-  BOOL _inLayout;
-  NSTimer *_collapseTimer;
+  NSSize _size;            // device screen size (points)
+  CGFloat _radius;         // device screen corner radius c
+  SRSpring _shape, _stripAlpha;
+  SRHover _hover;
+  CADisplayLink *_link; CFTimeInterval _lastTick;
 }
 
 - (instancetype)initWithScreenView:(NSView *)screenView size:(NSSize)size cornerRadius:(CGFloat)cornerRadius {
   NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView;
-  if (!(self = [super initWithContentRect:NSMakeRect(0, 0, size.width, size.height) styleMask:style backing:NSBackingStoreBuffered defer:NO])) return nil;
-  _radius = cornerRadius;
-  _systemRadius = [super respondsToSelector:@selector(_topCornerRadius)] ? [super _topCornerRadius] : 16;
-  if (_systemRadius <= 0 || _systemRadius > 40) _systemRadius = 16;
-  _topRadius = _bottomRadius = _radius;
+  NSRect frame = NSMakeRect(0, 0, size.width + 2 * kMargin, size.height + kStrip + kMargin);
+  if (!(self = [super initWithContentRect:frame styleMask:style backing:NSBackingStoreBuffered defer:NO])) return nil;
+  _size = size; _radius = cornerRadius;
   self.titlebarAppearsTransparent = YES;
   self.titleVisibility = NSWindowTitleHidden;
   self.opaque = NO;
   self.backgroundColor = NSColor.clearColor;
   self.hasShadow = YES;
   self.releasedWhenClosed = NO;
-  // the system title bar would sit invisibly over the top of the device screen: SimRun draws its own
-  NSView *titlebarContainer = [self standardWindowButton:NSWindowCloseButton].superview.superview;
-  titlebarContainer.hidden = YES;
+  // SimRun draws its own title strip; the system one would sit over it (and over the screen while hidden)
+  [self standardWindowButton:NSWindowCloseButton].superview.superview.hidden = YES;
 
-  _root = [[SRMirrorRootView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+  _root = [[SRMirrorRootView alloc] initWithFrame:frame];
   _root.mirror = self; _root.wantsLayer = YES;
-  _frameBackground = [[NSVisualEffectView alloc] initWithFrame:_root.bounds];
-  _frameBackground.material = NSVisualEffectMaterialWindowBackground;
-  _frameBackground.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-  _frameBackground.state = NSVisualEffectStateActive;
-  _frameBackground.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-  _frameBackground.alphaValue = 0;
+  _material = [[NSVisualEffectView alloc] initWithFrame:frame];   // the chrome background (SwiftUI .ultraThinMaterial)
+  _material.material = NSVisualEffectMaterialUnderWindowBackground;
+  _material.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+  _material.state = NSVisualEffectStateActive;
+  _material.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   _screen = screenView;
   _screen.wantsLayer = YES;
   _screen.layer.cornerRadius = _radius; _screen.layer.cornerCurve = kCACornerCurveContinuous; _screen.layer.masksToBounds = YES;
+  _hairline = [[SRHairline alloc] initWithFrame:NSZeroRect]; _hairline.radius = _radius;
+  _strip = [[SRDragView alloc] initWithFrame:NSZeroRect];
   _lights = [[SRTrafficLights alloc] initWithStyleMask:style];
-  _lights.alphaValue = 0; _lights.hidden = YES;
-  [_root addSubview:_frameBackground];
-  [_root addSubview:_screen];
-  [_root addSubview:_lights];
+  [_strip addSubview:_lights];
+  for (NSView *v in @[ _material, _screen, _hairline, _strip ]) [_root addSubview:v];
   self.contentView = _root;
 
-  _anchor = NSMakeRect(0, 0, size.width, size.height);
-  [self applyProgress:0];
-  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(didMove:) name:NSWindowDidMoveNotification object:self];
+  SpringSetResponse(&_shape, 0.28, 1);
+  SpringSetResponse(&_stripAlpha, 0.7, 1);
+  [self layoutViews];
+  [self applyState];
   return self;
 }
 
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_link invalidate]; [_collapseTimer invalidate]; }
-
+- (void)dealloc { [_link invalidate]; }
 - (BOOL)canBecomeKeyWindow { return YES; }
 - (BOOL)canBecomeMainWindow { return YES; }
-// AppKit builds the window's corner mask and shadow from these.
-- (CGFloat)_topCornerRadius { return _topRadius; }
-- (CGFloat)_bottomCornerRadius { return _bottomRadius; }
 
 // ---------------------------------------------------------------- geometry
-- (NSRect)screenFrame { return _anchor; }
-- (BOOL)isExpanded { return _to > 0.5; }
-- (NSSize)screenSize { return _anchor.size; }
+- (NSRect)screenFrame { return NSMakeRect(NSMinX(self.frame) + kMargin, NSMinY(self.frame) + kMargin, _size.width, _size.height); }
+- (BOOL)isExpanded { return _shape.target > 0.5; }
+- (NSSize)screenSize { return _size; }
 - (void)setScreenSize:(NSSize)size {
-  if (NSEqualSizes(size, _anchor.size)) return;
-  CGFloat top = NSMaxY(_anchor);
-  _anchor.size = size; _anchor.origin.y = top - size.height;   // keep the top-left
-  [self applyProgress:_progress];
+  if (NSEqualSizes(size, _size)) return;
+  NSPoint topLeft = NSMakePoint(NSMinX(self.frame), NSMaxY(self.frame));   // keep the screen's top-left
+  _size = size;
+  NSRect f = NSMakeRect(topLeft.x, topLeft.y - (size.height + kStrip + kMargin), size.width + 2 * kMargin, size.height + kStrip + kMargin);
+  [self setFrame:f display:YES];
+  [self layoutViews];
+  [self applyState];
 }
-- (void)setScreenTopLeft:(NSPoint)topLeft {
-  _anchor.origin = NSMakePoint(topLeft.x, topLeft.y - NSHeight(_anchor));
-  [self applyProgress:_progress];
-}
-// Window moved by the user (dragging the frame): the screen moves with it.
-- (void)didMove:(NSNotification *)n {
-  if (_inLayout) return;
-  CGFloat m = kMargin * _progress;
-  _anchor.origin = NSMakePoint(NSMinX(self.frame) + m, NSMinY(self.frame) + m);
+- (void)setScreenTopLeft:(NSPoint)topLeft { [self setFrameTopLeftPoint:NSMakePoint(topLeft.x - kMargin, topLeft.y + kStrip)]; }
+
+- (void)layoutViews {
+  _screen.frame = NSMakeRect(kMargin, kMargin, _size.width, _size.height);
+  _hairline.frame = _screen.frame;
+  NSSize ls = _lights.frame.size;
+  [_lights setFrameOrigin:NSMakePoint(kLightsInset, (kStrip - ls.height) / 2)];
+  [_strip setFrameSize:NSMakeSize(NSWidth(_root.bounds), kStrip)];
 }
 
-static CGFloat Ease(CGFloat t) { return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2; }   // ease-in-out cubic
 static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
-- (void)applyProgress:(CGFloat)p {
-  _progress = p;
-  CGFloat m = kMargin * p, strip = kStrip * p;
-  NSRect frame = NSMakeRect(NSMinX(_anchor) - m, NSMinY(_anchor) - m, NSWidth(_anchor) + 2 * m, NSHeight(_anchor) + m + strip);
-  _topRadius = Lerp(_radius, _systemRadius, p);
-  _bottomRadius = _radius + m;
-  _inLayout = YES;
-  [self setFrame:frame display:YES];
-  _inLayout = NO;
-  _screen.frame = NSMakeRect(m, m, NSWidth(_anchor), NSHeight(_anchor));
-  // traffic lights ride with the top edge; vertically centred in the strip once it is fully open
-  NSSize ls = _lights.frame.size;
-  [_lights setFrameOrigin:NSMakePoint(Lerp(0, kLightsLeft, p), NSHeight(frame) - kLightsCenterY - ls.height / 2)];
-  _lights.alphaValue = p; _lights.hidden = p < 0.01;
-  _frameBackground.alphaValue = p;
-  _frameBackground.maskImage = [self maskImage];
-  if ([self respondsToSelector:@selector(_cornerMaskChanged)]) [self _cornerMaskChanged];
-  if (p == 0 || p == 1) [self invalidateShadow];
-}
-
-- (NSImage *)maskImage {
-  CGFloat top = _topRadius, bottom = _bottomRadius, w = MAX(top, bottom) * 2 + 1;
-  NSImage *img = [NSImage imageWithSize:NSMakeSize(w, top + bottom + 1) flipped:NO drawingHandler:^BOOL(NSRect rect) {
-    [NSColor.blackColor setFill];
-    [RoundedPath(rect, top, bottom) fill];
-    return YES;
-  }];
-  img.capInsets = NSEdgeInsetsMake(top, MAX(top, bottom), bottom, MAX(top, bottom));
-  img.resizingMode = NSImageResizingModeStretch;
-  return img;
+// Shape, strip and hairline for the current spring values.
+- (void)applyState {
+  CGFloat p = _shape.value, alpha = MAX(0, MIN(1, _stripAlpha.value));
+  NSRect b = _root.bounds;
+  // insets (top, sides, bottom) and radii interpolate between "just the screen" and "the whole frame"
+  CGFloat top = Lerp(kStrip, 0, p), side = Lerp(kMargin, 0, p);
+  CGFloat rTop = Lerp(_radius, kTopRadius, p), rBottom = Lerp(_radius, _radius + kMargin, p);
+  CGRect shape = CGRectMake(side, top, NSWidth(b) - 2 * side, NSHeight(b) - top - side);   // top-left origin
+  CGPathRef path = CreateContinuousRect(shape, rTop, rTop, rBottom, rBottom, NSHeight(b));
+  if ([self respondsToSelector:@selector(_setCornerPath:)]) [self _setCornerPath:path];
+  CGPathRelease(path);
+  // the strip slides down by its height while hidden (it then sits, invisible, over the top of the screen)
+  [_strip setFrameOrigin:NSMakePoint(0, NSHeight(b) - kStrip - kStrip * (1 - p))];
+  _strip.alphaValue = alpha;
+  _strip.hidden = alpha < 0.01 && p < 0.01;
+  _hairline.alphaValue = p;
 }
 
 // ---------------------------------------------------------------- animation
-- (void)animateTo:(CGFloat)target {
-  if (_to == target && (_link || _progress == target)) return;
-  _from = _progress; _to = target; _animStart = CACurrentMediaTime();
+- (void)setChromeVisible:(BOOL)visible {
+  CGFloat target = visible ? 1 : 0;
+  if (_shape.target == target) return;
+  _shape.target = target; _stripAlpha.target = target;
+  SpringSetResponse(&_stripAlpha, visible ? 0.7 : 0.14, 1);
   if (!_link) {
     _link = [_root displayLinkWithTarget:self selector:@selector(tick:)];
     [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    _lastTick = CACurrentMediaTime();
   }
 }
 - (void)tick:(CADisplayLink *)link {
-  CGFloat span = fabs(_to - _from);
-  CGFloat t = span > 0 ? MIN(1, (CACurrentMediaTime() - _animStart) / (kDuration * span)) : 1;
-  [self applyProgress:_from + (_to - _from) * Ease(t)];
-  if (t >= 1) { [_link invalidate]; _link = nil; }
+  CFTimeInterval now = CACurrentMediaTime();
+  CGFloat dt = MIN(0.05, MAX(0.001, now - _lastTick)); _lastTick = now;
+  BOOL a = SpringStep(&_shape, dt), b = SpringStep(&_stripAlpha, dt);
+  [self applyState];
+  if (!a && !b) {
+    [_link invalidate]; _link = nil;
+    if ([self respondsToSelector:@selector(_setNeedsToResetDragMargins:)]) [self _setNeedsToResetDragMargins:YES];
+    [self invalidateShadow];
+  }
 }
 
 // ---------------------------------------------------------------- hover
-- (BOOL)isHotPoint:(NSPoint)p {
-  NSRect screen = _screen.frame;
-  if (!NSPointInRect(p, NSInsetRect(_root.bounds, -1, -1))) return NO;
-  if (!NSPointInRect(p, screen)) return _progress > 0;                 // over the revealed frame
-  return p.y >= NSMaxY(screen) - kHotZone;                               // near the top of the screen
+- (SRHover)hoverForPoint:(NSPoint)p {
+  NSRect r = _screen.frame;
+  if (!NSPointInRect(p, _root.bounds)) return SRHoverNone;
+  if (p.y >= NSMaxY(r)) return SRHoverTitleBar;
+  if (NSPointInRect(p, r)) return p.y >= NSMaxY(r) - kStatusBarZone ? SRHoverStatusBar : SRHoverContent;
+  return SRHoverChrome;
 }
 - (void)hoverAt:(NSPoint)p {
-  _lights.mouseInside = !_lights.hidden && NSPointInRect(p, NSInsetRect(_lights.frame, -2, -2));
+  _lights.mouseInside = !_strip.hidden && NSPointInRect([_strip convertPoint:p fromView:_root], NSInsetRect(_lights.frame, -2, -2));
   if (NSEvent.pressedMouseButtons) return;   // a drag on the screen is a touch, not hover
-  if ([self isHotPoint:p]) { [_collapseTimer invalidate]; _collapseTimer = nil; [self animateTo:1]; }
-  else [self scheduleCollapse];
+  SRHover h = [self hoverForPoint:p], prev = _hover;
+  _hover = h;
+  switch (h) {
+    case SRHoverTitleBar: case SRHoverStatusBar: [self setChromeVisible:YES]; break;
+    case SRHoverContent: case SRHoverNone: [self setChromeVisible:NO]; break;
+    case SRHoverChrome:   // the margins keep the chrome only if the pointer came from it or from the top
+      if (prev != SRHoverTitleBar && prev != SRHoverStatusBar && prev != SRHoverChrome) [self setChromeVisible:NO];
+      break;
+  }
 }
-- (void)hoverExited { _lights.mouseInside = NO; if (!NSEvent.pressedMouseButtons) [self scheduleCollapse]; }
-- (void)scheduleCollapse {
-  if (_to == 0 || _collapseTimer) return;
-  __weak SRMirrorWindow *weakSelf = self;
-  _collapseTimer = [NSTimer scheduledTimerWithTimeInterval:kCollapseDelay repeats:NO block:^(NSTimer *t) {
-    SRMirrorWindow *w = weakSelf; if (!w) return;
-    w->_collapseTimer = nil;
-    NSPoint p = [w->_root convertPoint:[w mouseLocationOutsideOfEventStream] fromView:nil];
-    if (![w isHotPoint:p]) [w animateTo:0];
-  }];
+- (void)hoverExited {
+  _lights.mouseInside = NO;
+  _hover = SRHoverNone;
+  if (!NSEvent.pressedMouseButtons) [self setChromeVisible:NO];
 }
 @end
