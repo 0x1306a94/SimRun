@@ -4,6 +4,15 @@
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
 #include <pwd.h>
+#include <dlfcn.h>
+
+// CoreUI (private): reads compiled asset catalogs (Assets.car), including iOS ones, on macOS.
+@interface CUICatalog : NSObject
+- (instancetype)initWithURL:(NSURL *)url error:(NSError **)error;
+- (id)iconImageWithName:(NSString *)name scaleFactor:(double)scale deviceIdiom:(long long)idiom deviceSubtype:(unsigned long long)subtype
+           displayGamut:(long long)gamut layoutDirection:(long long)dir sizeClassHorizontal:(long long)h sizeClassVertical:(long long)v
+            desiredSize:(CGSize)size appearanceName:(NSString *)appearance;
+@end
 
 NSNotificationName const SRLibraryDidChangeNotification = @"SRLibraryDidChange";
 static NSString *const kLibraryKey = @"SRLibraryPaths";
@@ -62,9 +71,42 @@ static uint32_t Arm64Platform(NSString *path) {
   return a;
 }
 
-// iOS apps list icon file prefixes in CFBundleIcons (or CFBundleIconFiles); pick the largest matching PNG.
-// Icons that exist only inside a compiled asset catalog (Assets.car) aren't readable here: fall back to a generic icon.
+// The app icon, best source first: the asset catalog (Assets.car, full resolution, light + dark variants), then the
+// PNG files listed in Info.plist, then a generic icon. iOS icons are full-bleed squares, so they get iOS's rounded mask.
 + (NSImage *)iconForBundle:(NSString *)path info:(NSDictionary *)info {
+  NSDictionary *primary = info[@"CFBundleIcons"][@"CFBundlePrimaryIcon"] ?: info[@"CFBundleIcons~ipad"][@"CFBundlePrimaryIcon"];
+  NSString *iconName = [primary isKindOfClass:NSDictionary.class] ? primary[@"CFBundleIconName"] : nil;
+  NSImage *img = [self catalogIcon:[path stringByAppendingPathComponent:@"Assets.car"] name:iconName ?: @"AppIcon"];
+  if (!img) img = [self pngIconInBundle:path info:info];
+  if (!img) return [NSWorkspace.sharedWorkspace iconForContentType:UTTypeApplicationBundle];
+  return img;
+}
+
+static CGImageRef CatalogIconImage(CUICatalog *cat, NSString *name, NSString *appearance) {
+  for (long long idiom = 1; idiom <= 2; idiom++) {   // phone, then pad
+    id named = [cat iconImageWithName:name scaleFactor:1 deviceIdiom:idiom deviceSubtype:0 displayGamut:0 layoutDirection:0
+                  sizeClassHorizontal:0 sizeClassVertical:0 desiredSize:CGSizeMake(1024, 1024) appearanceName:appearance];
+    CGImageRef cg = [named respondsToSelector:@selector(image)] ? (__bridge CGImageRef)[named performSelector:@selector(image)] : NULL;
+    if (cg) return CGImageRetain(cg);
+  }
+  return NULL;
+}
+
++ (NSImage *)catalogIcon:(NSString *)carPath name:(NSString *)name {
+  static dispatch_once_t once; dispatch_once(&once, ^{ dlopen("/System/Library/PrivateFrameworks/CoreUI.framework/CoreUI", RTLD_LAZY); });
+  Class C = NSClassFromString(@"CUICatalog");
+  if (!C || ![NSFileManager.defaultManager fileExistsAtPath:carPath]) return nil;
+  CUICatalog *cat = [[C alloc] initWithURL:[NSURL fileURLWithPath:carPath] error:nil];
+  if (![cat respondsToSelector:@selector(iconImageWithName:scaleFactor:deviceIdiom:deviceSubtype:displayGamut:layoutDirection:sizeClassHorizontal:sizeClassVertical:desiredSize:appearanceName:)]) return nil;
+  CGImageRef light = CatalogIconImage(cat, name, nil);
+  if (!light) return nil;
+  CGImageRef dark = CatalogIconImage(cat, name, @"UIAppearanceDark");
+  NSImage *masked = [self roundedIconFrom:light dark:dark];
+  CGImageRelease(light); if (dark) CGImageRelease(dark);
+  return masked;
+}
+
++ (NSImage *)pngIconInBundle:(NSString *)path info:(NSDictionary *)info {
   NSMutableArray *names = [NSMutableArray array];
   for (NSString *k in @[ @"CFBundleIcons", @"CFBundleIcons~ipad" ]) {
     NSArray *f = info[k][@"CFBundlePrimaryIcon"][@"CFBundleIconFiles"];
@@ -72,16 +114,35 @@ static uint32_t Arm64Platform(NSString *path) {
   }
   if ([info[@"CFBundleIconFiles"] isKindOfClass:NSArray.class]) [names addObjectsFromArray:info[@"CFBundleIconFiles"]];
   if ([info[@"CFBundleIconFile"] isKindOfClass:NSString.class]) [names addObject:info[@"CFBundleIconFile"]];
-  NSImage *best = nil; CGFloat bestW = 0;
+  CGImageRef best = NULL; size_t bestW = 0;
   NSArray *files = [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:nil];
   for (NSString *n in names)
     for (NSString *f in files) {
       if (![f hasPrefix:n.stringByDeletingPathExtension] || ![f.pathExtension isEqualToString:@"png"]) continue;
       NSImage *img = [[NSImage alloc] initWithContentsOfFile:[path stringByAppendingPathComponent:f]];
-      CGFloat w = img.representations.firstObject.pixelsWide;
-      if (img && w > bestW) { best = img; bestW = w; }
+      CGImageRef cg = [img CGImageForProposedRect:NULL context:nil hints:nil];
+      if (cg && CGImageGetWidth(cg) > bestW) { if (best) CGImageRelease(best); best = CGImageRetain(cg); bestW = CGImageGetWidth(cg); }
     }
-  return best ?: [NSWorkspace.sharedWorkspace iconForContentType:UTTypeApplicationBundle];
+  if (!best) return nil;
+  NSImage *img = [self roundedIconFrom:best dark:NULL];
+  CGImageRelease(best);
+  return img;
+}
+
+// An NSImage that draws `light` (or `dark` under a dark appearance) clipped to iOS's rounded icon shape.
++ (NSImage *)roundedIconFrom:(CGImageRef)light dark:(CGImageRef)dark {
+  id l = (__bridge id)light, d = dark ? (__bridge id)dark : nil;
+  return [NSImage imageWithSize:NSMakeSize(64, 64) flipped:NO drawingHandler:^BOOL(NSRect r) {
+    BOOL isDark = d && [[NSAppearance.currentDrawingAppearance bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]]
+                        isEqualToString:NSAppearanceNameDarkAqua];
+    CGImageRef img = (__bridge CGImageRef)(isDark ? d : l);
+    CGFloat radius = r.size.width * 0.2237;   // iOS app icon corner radius
+    [[NSBezierPath bezierPathWithRoundedRect:r xRadius:radius yRadius:radius] addClip];
+    CGContextRef ctx = NSGraphicsContext.currentContext.CGContext;
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+    CGContextDrawImage(ctx, NSRectToCGRect(r), img);
+    return YES;
+  }];
 }
 @end
 

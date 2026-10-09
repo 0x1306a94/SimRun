@@ -4,7 +4,7 @@
 
 // ---------------------------------------------------------------- row view: icon, name, path, running dot
 @interface SRAppCell : NSTableCellView
-@property NSTextField *subtitle; @property NSView *runningDot; @property NSProgressIndicator *spinner;
+@property NSTextField *subtitle; @property NSView *runningDot; @property NSProgressIndicator *spinner; @property NSView *status;
 - (void)setState:(SRAppState)state;
 @end
 @implementation SRAppCell
@@ -20,24 +20,25 @@
   NSProgressIndicator *spin = [NSProgressIndicator new];
   spin.style = NSProgressIndicatorStyleSpinning; spin.controlSize = NSControlSizeSmall; spin.displayedWhenStopped = NO;
   spin.translatesAutoresizingMaskIntoConstraints = NO; spin.toolTip = @"Launching…";
-  // three columns: icon | name + path (stacked, vertically centered) | status (running dot or launch spinner)
+  // three columns: icon | name + path (stacked) | status (running dot or launch spinner). The status column is hidden
+  // (and takes no space) while the app isn't running, so the titles use the full width.
   NSStackView *titles = [NSStackView stackViewWithViews:@[ title, sub ]];
   titles.orientation = NSUserInterfaceLayoutOrientationVertical; titles.alignment = NSLayoutAttributeLeading; titles.spacing = 2;
-  titles.translatesAutoresizingMaskIntoConstraints = NO;
-  [titles setClippingResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-  // long names/paths truncate instead of widening the row
   for (NSTextField *f in @[ title, sub ]) [f setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   NSView *status = [NSView new]; status.translatesAutoresizingMaskIntoConstraints = NO;
   [status addSubview:dot]; [status addSubview:spin];
-  for (NSView *v in @[ iv, titles, status ]) [self addSubview:v];
-  self.imageView = iv; self.textField = title; self.subtitle = sub; self.runningDot = dot; self.spinner = spin;
+  NSStackView *row = [NSStackView stackViewWithViews:@[ iv, titles, status ]];
+  row.orientation = NSUserInterfaceLayoutOrientationHorizontal; row.alignment = NSLayoutAttributeCenterY; row.spacing = 10;
+  row.detachesHiddenViews = YES; row.translatesAutoresizingMaskIntoConstraints = NO;
+  [row setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [titles setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [self addSubview:row];
+  self.imageView = iv; self.textField = title; self.subtitle = sub; self.runningDot = dot; self.spinner = spin; self.status = status;
   [NSLayoutConstraint activateConstraints:@[
-    [iv.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8], [iv.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+    [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8], [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-10],
+    [row.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
     [iv.widthAnchor constraintEqualToConstant:36], [iv.heightAnchor constraintEqualToConstant:36],
-    [titles.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:10], [titles.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-    [titles.trailingAnchor constraintEqualToAnchor:status.leadingAnchor constant:-10],
-    [status.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8], [status.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-    [status.widthAnchor constraintEqualToConstant:20], [status.heightAnchor constraintEqualToConstant:20],
+    [status.widthAnchor constraintEqualToConstant:18], [status.heightAnchor constraintEqualToConstant:18],
     [dot.centerXAnchor constraintEqualToAnchor:status.centerXAnchor], [dot.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
     [dot.widthAnchor constraintEqualToConstant:8], [dot.heightAnchor constraintEqualToConstant:8],
     [spin.centerXAnchor constraintEqualToAnchor:status.centerXAnchor], [spin.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
@@ -45,6 +46,7 @@
   return self;
 }
 - (void)setState:(SRAppState)state {
+  self.status.hidden = state == SRAppStateStopped;
   self.runningDot.hidden = state != SRAppStateRunning;
   if (state == SRAppStateLaunching) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];
 }
