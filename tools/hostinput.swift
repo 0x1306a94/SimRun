@@ -1,7 +1,7 @@
 // hostinput.swift — host-side test driver: synthesizes macOS mouse/keyboard events into the SimRun viewer window
 // (exercises viewer.m -> sr_input_msg_t -> hid.dylib receiver -> UIKit). Coordinates are sim scene points (viewer
 // content view is 1:1 with scene points, origin top-left).
-// usage: swift hostinput.swift <viewer-pid> cmd [cmd...]
+// usage: swift hostinput.swift <viewer-pid> cmd [cmd...]      (HOSTINPUT_TITLE=<window title> picks one of several windows)
 //   click X Y | drag X0 Y0 X1 Y1 | type TEXT | key KEYCODE [FLAGS] | wait SECS
 import CoreGraphics
 import Foundation
@@ -11,7 +11,10 @@ guard args.count > 2, let pid = pid_t(args[1]) else { print("usage: hostinput <p
 
 func viewerContentOrigin() -> CGPoint {
   let l = (CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]]) ?? []
-  let ws = l.filter { ($0["kCGWindowOwnerPID"] as? Int) == Int(pid) && ($0["kCGWindowLayer"] as? Int) == 0 }
+  let title = ProcessInfo.processInfo.environment["HOSTINPUT_TITLE"]
+  let ws = l.filter { ($0["kCGWindowOwnerPID"] as? Int) == Int(pid) && ($0["kCGWindowLayer"] as? Int) == 0 &&
+                      ((($0["kCGWindowBounds"] as? [String: Double])?["Height"] ?? 0) > 100) &&
+                      (title == nil || ($0["kCGWindowName"] as? String) == title) }
   guard let w = ws.first, let b = w["kCGWindowBounds"] as? [String: Double] else { print("no viewer window"); exit(1) }
   let titleBar = b["Height"]! - 874  // content view is 874 pt tall
   return CGPoint(x: b["X"]!, y: b["Y"]! + titleBar)

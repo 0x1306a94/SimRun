@@ -22,6 +22,9 @@ enum {
   SIMNS_MSG_READY,                    // header only, host -> NS: "host-side registrations done, start the app"
   SIMNS_MSG_REPLY,                    // simns_reply_t
   SIMNS_MSG_DUMP,                     // header only: server prints its registry to its log
+  SIMNS_MSG_NEW_NS,                   // header only, reply port in msgh_local_port: create a per-app namespace
+  SIMNS_MSG_NS_REPLY,                 // simns_port_msg_t: port = send right to the new namespace (use as TASK_BOOTSTRAP_PORT).
+                                      // The namespace layers over the global one and is destroyed when its last send right goes.
 };
 
 // flags for SIMNS_MSG_REGISTER

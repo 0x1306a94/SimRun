@@ -9,6 +9,12 @@ make
 scripts/simapp.sh build/apps/SUI.app          # or any arm64 iOS-Simulator .app / binary
 ```
 
+Apps run inside a shared server, `simrund`, which `simapp.sh` starts on first use and which exits after 10 idle minutes.
+Each app gets its own window; its stdout/stderr go to your terminal, `simapp.sh` exits with the app's status, and
+Ctrl-C (or closing the window) ends the app. Launching into a running server takes ~0.6 s to first frame
+(vs ~1.1 s standalone). `scripts/simrund.sh status|stop|log` manages the server; `SIMAPP_STANDALONE=1` runs an app in
+its own private server instead.
+
 Requirements: Apple Silicon, SIP disabled, Xcode with an iOS Simulator runtime installed (the newest one is picked up
 automatically; override with `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>`). Apps must adopt the UIScene lifecycle.
 Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime.
@@ -16,18 +22,20 @@ Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime.
 ## How it works
 
 ```
-build/bin/viewer        macOS AppKit app: window, input forwarding, and the host-side "sim2host" services
-  │                     (com.apple.IOSurface.Remote via IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation)
-  └─ build/bin/simns    launchd_sim stand-in: the app's TASK_BOOTSTRAP_PORT; speaks sim libxpc's XPC-pipe protocol;
-       │                launches allow-listed real sim daemons on demand (trustd, securityd, cfprefsd)
-       └─ the app, with DYLD_INSERT_LIBRARIES =
-            rshim.dylib    Metal shader-compiler XPC service spawning, bootstrap fallbacks
-            glue.dylib     starts the in-process CA render server (CAWindowServer) and hosts the scene's layers
-                           on the display (SpringBoard's job)
-            scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene), BKSDisplayServices stub
-            hid.dylib      mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:], keyboard focus
-       SimFramebuffer     fake SimFramebuffer (SIMULATOR_FRAMEBUFFER_FRAMEWORK): the render server's display;
-                          presented IOSurfaces are sent to the viewer (include/protocol.h)
+simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit server: one window per app, input forwarding, and the
+  argv, env, stdio fds                   │            host-side "sim2host" services (com.apple.IOSurface.Remote via
+                                         │            IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation)
+                                         ├─ build/bin/simns --serve   launchd_sim stand-in speaking sim libxpc's XPC-pipe protocol;
+                                         │     │                      one private namespace per app layered over a shared global one;
+                                         │     └─ trustd, cfprefsd…   real sim daemons launched on demand, shared by all apps
+                                         └─ each app (bootstrap port = its namespace), with DYLD_INSERT_LIBRARIES =
+                                              rshim.dylib    Metal shader-compiler XPC service spawning, bootstrap fallbacks
+                                              glue.dylib     starts the in-process CA render server (CAWindowServer) and hosts the
+                                                             scene's layers on the display (SpringBoard's job)
+                                              scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene)
+                                              hid.dylib      mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:]
+                                            SimFramebuffer   fake SimFramebuffer: the render server's display; presented
+                                                             IOSurfaces go to the app's window (include/protocol.h)
 ```
 
 ## Layout
@@ -35,23 +43,27 @@ build/bin/viewer        macOS AppKit app: window, input forwarding, and the host
 | Path | Contents |
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs |
-| `src/host/` | macOS side: `viewer/` (window + input), `gpuhost/` (IOSurface + Metal host services) |
+| `src/host/` | macOS side: `simrund/` (server, per-app window sessions), `simapp/` (client), `gpuhost/` (IOSurface + Metal host services) |
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `simfb/` |
-| `scripts/` | `simapp.sh` (run an app), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
+| `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
 | `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`) |
 | `catalyst/` | Approach A: `sim2mac.sh` re-tags a Simulator .app as Mac Catalyst (runs on macOS's own UIKit instead) |
 | `docs/` | Write-ups (see below) |
 
 `make` builds everything into `build/` (`bin/`, `lib/`, `apps/`, `tests/`); `make core` builds only what `simapp.sh` needs.
+After rebuilding, run `scripts/simrund.sh stop` so the next launch starts the new server.
 
 ## Useful knobs
 
 | Variable | Effect |
 |---|---|
-| `SIMNS_QUIET=1` | Hide simns's log of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
+| `SIMNS_QUIET=1` | Hide simns's log (in the server log, `simrund.sh log`, for shared launches) of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
 | `SIMNS_DAEMONS=a,b` / `none` | Labels of real sim daemons simns may launch on demand |
 | `SIMAPP_EXTRA_INSERT=x.dylib` | Inject an extra sim dylib into the app |
+| `SIMAPP_STANDALONE=1` | Run the app in its own private `simrund --run` instead of the shared server |
+| `SIMRUND_IDLE=secs` | Shared server exits after this long without apps (default 600, 0 = never); set when it starts |
+| `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
 | `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default 402×874 @3x) |
 | `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1` | Component tracing |
 | `OS_ACTIVITY_DT_MODE=1` | Mirror os_log/NSLog to stderr |
@@ -69,4 +81,5 @@ build/bin/viewer        macOS AppKit app: window, input forwarding, and the host
 
 No RunningBoard (backgrounded apps keep running), no on-screen keyboard (needs SpringBoard hosting), hardware keyboard
 is US-positional, first text-field focus stalls ~2–3 s, rotation input mapping, no audio, notifyd not provided,
-app extensions and embedded frameworks untested, possible tearing (viewer shows the live framebuffer).
+app extensions and embedded frameworks untested, possible tearing (the window shows the live framebuffer). UIKit apps ignore SIGTERM, so ending an app is SIGTERM
+followed by SIGKILL after 1.5 s (no applicationWillTerminate).

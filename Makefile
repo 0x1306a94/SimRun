@@ -17,7 +17,7 @@ MACSWIFT:= env -u DYLD_ROOT_PATH xcrun -sdk macosx swiftc -O
 SIGN    := codesign -s - -f
 HDRS    := $(wildcard include/*.h)
 
-CORE  := $(BIN)/viewer $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer
+CORE  := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput $(BIN)/rhost
 TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app \
          $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes
@@ -32,8 +32,12 @@ $(BIN) $(LIB) $(APPS) $(TBIN):
 	@mkdir -p $@
 
 # ---------------------------------------------------------------- host (macOS)
-$(BIN)/viewer: src/host/viewer/viewer.m src/host/gpuhost/gpuhost.m $(HDRS) | $(BIN)
-	$(MACCC) src/host/viewer/viewer.m src/host/gpuhost/gpuhost.m -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal -o $@
+SIMRUND_SRC := src/host/simrund/simrund.m src/host/simrund/session.m src/host/gpuhost/gpuhost.m
+$(BIN)/simrund: $(SIMRUND_SRC) src/host/simrund/session.h $(HDRS) | $(BIN)
+	$(MACCC) $(SIMRUND_SRC) -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal -o $@
+
+$(BIN)/simapp: src/host/simapp/simapp.c $(HDRS) | $(BIN)
+	xcrun -sdk macosx clang -arch arm64 -Wall -Iinclude $< -framework CoreFoundation -o $@
 
 $(BIN)/rhost: tools/rhost.m src/host/gpuhost/gpuhost.m $(HDRS) | $(BIN)
 	$(MACCC) tools/rhost.m src/host/gpuhost/gpuhost.m -framework Foundation -framework Metal -framework IOSurface -framework CoreGraphics -framework ImageIO -o $@

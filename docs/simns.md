@@ -48,3 +48,13 @@ Dead daemons are relaunched on the next lookup; all are SIGTERMed when the app e
 Why: without trustd, every TLS handshake fails (-9808 errSSLBadCert / NSURLErrorDomain -1202). Plain BSD sockets and
 getaddrinfo work without any daemon. notifyd is NOT allow-listed: it needs XPC event-publisher routines simns lacks
 (aborts "Event publisher error").
+
+## Shared server mode (simns --serve)
+Used by simrund. simns spawns no app; the host sends SIMNS_MSG_NEW_NS (reply port in msgh_local_port) and gets back
+SIMNS_MSG_NS_REPLY carrying a send right to a fresh per-app namespace port, which it passes to the app as its
+TASK_BOOTSTRAP_PORT. Requests are resolved by the port they arrive on: the app's namespace first, then the global
+one (daemons, host services, control port). Registrations/check-ins made through an app namespace stay private to it
+(e.g. each app's in-process com.apple.CARenderServer). Daemons are spawned on the global port, so they are shared.
+simns asks for a no-senders notification on each namespace port and frees it when the app and host have dropped
+their send rights. simns exits (stopping its daemons) when its parent, simrund, goes away. Daemons that ignore
+SIGTERM are SIGKILLed after 1 s.

@@ -35,7 +35,11 @@ extern int proc_name(int pid, void *buf, uint32_t size);
 extern char **environ;
 
 typedef struct entry { char *name; mach_port_t send, recv; uint32_t flags; unsigned lookups; struct entry *next; } entry_t;
-static entry_t *gEntries;
+// A namespace = one bootstrap port with its own registrations. The global one (gNS) holds daemons, host services and
+// the control port; each app launched by a shared server gets a private one layered on top (lookups fall back to global),
+// so per-app check-ins such as the in-process com.apple.CARenderServer never leak between apps.
+typedef struct ns { mach_port_t port; entry_t *entries; pid_t owner; struct ns *next; } ns_t;
+static ns_t gGlobal, *gApps;
 static pthread_mutex_t gLock = PTHREAD_MUTEX_INITIALIZER;
 static mach_port_t gNS, gCtl, gSet;
 static FILE *gLog; static int gQuiet;
@@ -46,23 +50,27 @@ static void L(const char *fmt, ...) {
   if (!gQuiet) fprintf(stderr, "[simns] %s\n", buf);
   if (gLog) { fprintf(gLog, "%s\n", buf); fflush(gLog); }
 }
-static entry_t *find(const char *name) { for (entry_t *e = gEntries; e; e = e->next) if (!strcmp(e->name, name)) return e; return NULL; }
-static entry_t *get(const char *name) {
-  entry_t *e = find(name); if (e) return e;
-  e = calloc(1, sizeof *e); e->name = strdup(name); e->next = gEntries; gEntries = e; return e;
+static entry_t *find(ns_t *n, const char *name) { for (entry_t *e = n->entries; e; e = e->next) if (!strcmp(e->name, name)) return e; return NULL; }
+static entry_t *get(ns_t *n, const char *name) {
+  entry_t *e = find(n, name); if (e) return e;
+  e = calloc(1, sizeof *e); e->name = strdup(name); e->next = n->entries; n->entries = e; return e;
+}
+static ns_t *ns_for_port(mach_port_t port) {   // caller holds gLock
+  for (ns_t *n = gApps; n; n = n->next) if (n->port == port) return n;
+  return &gGlobal;
 }
 // Register a send right (consumes one user ref of `send`).
-static void reg(const char *name, mach_port_t send, uint32_t flags) {
+static void reg(ns_t *n, const char *name, mach_port_t send, uint32_t flags) {
   pthread_mutex_lock(&gLock);
-  entry_t *e = get(name);
+  entry_t *e = get(n, name);
   if (e->send) mach_port_deallocate(mach_task_self(), e->send);
   e->send = send; e->flags = flags;
   pthread_mutex_unlock(&gLock);
 }
 // Hand out a receive right for `name` (check-in); creates the port on demand, keeps a send right for lookups.
-static mach_port_t checkin(const char *name) {
+static mach_port_t checkin(ns_t *n, const char *name) {
   pthread_mutex_lock(&gLock);
-  entry_t *e = get(name);
+  entry_t *e = get(n, name);
   mach_port_t r = e->recv;
   if (!r) {
     mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &r);
@@ -74,17 +82,28 @@ static mach_port_t checkin(const char *name) {
   pthread_mutex_unlock(&gLock);
   return r;
 }
-static mach_port_t lookup(const char *name, uint32_t *flags) {
-  pthread_mutex_lock(&gLock);
-  entry_t *e = find(name); mach_port_t p = MACH_PORT_NULL;
+static mach_port_t lookup_in(ns_t *n, const char *name, uint32_t *flags) {
+  entry_t *e = find(n, name);
   if (e && e->send) {
     mach_port_type_t t = 0;
     if (mach_port_type(mach_task_self(), e->send, &t) == KERN_SUCCESS && (t & (MACH_PORT_TYPE_SEND | MACH_PORT_TYPE_RECEIVE)) && !(t & MACH_PORT_TYPE_DEAD_NAME)) {
-      p = e->send; e->lookups++; if (flags) *flags = e->flags;
+      e->lookups++; if (flags) *flags = e->flags; return e->send;
     }
   }
+  return MACH_PORT_NULL;
+}
+static mach_port_t lookup(ns_t *n, const char *name, uint32_t *flags) {
+  pthread_mutex_lock(&gLock);
+  mach_port_t p = n != &gGlobal ? lookup_in(n, name, flags) : MACH_PORT_NULL;
+  if (!p) p = lookup_in(&gGlobal, name, flags);
   pthread_mutex_unlock(&gLock);
   return p;
+}
+static void free_entries(entry_t *e) {
+  while (e) { entry_t *nx = e->next;
+    if (e->send) mach_port_deallocate(mach_task_self(), e->send);
+    if (e->recv) mach_port_mod_refs(mach_task_self(), e->recv, MACH_PORT_RIGHT_RECEIVE, -1);
+    free(e->name); free(e); e = nx; }
 }
 static const char *pname(pid_t pid) { static char b[64]; b[0] = 0; proc_name(pid, b, sizeof b); return b; }
 
@@ -177,7 +196,7 @@ static void ensure_daemon(const char *name) {
     if (d->pid > 0) { int st; waitpid(d->pid, &st, WNOHANG); }
     pthread_mutex_lock(&gLock);
     for (int i = 0; i < d->nservices; i++) {
-      entry_t *e = get(d->services[i]);
+      entry_t *e = get(&gGlobal, d->services[i]);
       if (e->recv || port_alive(e->send)) {
         // a previous instance's port whose receive right died is a dead name: replace it
         mach_port_type_t t = 0;
@@ -204,9 +223,19 @@ static void ensure_daemon(const char *name) {
     return;
   }
 }
-static void stop_daemons(void) { for (daemon_t *d = gDaemons; d; d = d->next) if (d->pid > 0) kill(d->pid, SIGTERM); }
+// Daemons may ignore or defer SIGTERM (like launchd's ExitTimeOut): give them a moment, then SIGKILL.
+static void stop_daemons(void) {
+  int alive = 0;
+  for (daemon_t *d = gDaemons; d; d = d->next) if (d->pid > 0 && kill(d->pid, SIGTERM) == 0) alive++;
+  for (int t = 0; alive && t < 20; t++) {
+    usleep(50000); alive = 0;
+    for (daemon_t *d = gDaemons; d; d = d->next)
+      if (d->pid > 0) { if (waitpid(d->pid, NULL, WNOHANG) == d->pid || kill(d->pid, 0) != 0) d->pid = 0; else alive++; }
+  }
+  for (daemon_t *d = gDaemons; d; d = d->next) if (d->pid > 0) { kill(d->pid, SIGKILL); d->pid = 0; }
+}
 static pid_t gAppPid;
-static void on_term(int sig) { stop_daemons(); if (gAppPid > 0) kill(gAppPid, SIGTERM); _exit(128 + sig); }
+static void on_term(int sig) { if (gAppPid > 0) kill(gAppPid, SIGKILL); stop_daemons(); _exit(128 + sig); }
 
 static void handle_pipe(mach_msg_header_t *h, pid_t pid) {
   uint32_t routine = h->msgh_id & 0xffffff;
@@ -219,12 +248,13 @@ static void handle_pipe(mach_msg_header_t *h, pid_t pid) {
   if (xpc_receive_mach_msg(dm, 0, 0, 0, &msg) != 0 || !msg) { L("pid %d: undecodable pipe msg id=%x", pid, h->msgh_id); dispatch_release(dm); return; }
   const char *name = xpc_dictionary_get_string(msg, "name");
   if (!name) name = "";
+  pthread_mutex_lock(&gLock); ns_t *n = ns_for_port(h->msgh_local_port); pthread_mutex_unlock(&gLock);
   xpc_object_t reply = wants_reply ? xpc_dictionary_create_reply(msg) : NULL;
   const char *who = pname(pid);
   switch (routine) {
     case 207: case 804: {
       ensure_daemon(name);
-      uint32_t fl = 0; mach_port_t p = lookup(name, &fl);
+      uint32_t fl = 0; mach_port_t p = lookup(n, name, &fl);
       static char seen[64][128]; static unsigned nseen;   // log each missing name once
       int dup = 0;
       if (!p) { for (unsigned i = 0; i < nseen; i++) if (!strcmp(seen[i], name)) dup = 1;
@@ -239,12 +269,12 @@ static void handle_pipe(mach_msg_header_t *h, pid_t pid) {
     case 204: {
       mach_port_t p = xpc_dictionary_copy_mach_send(msg, "port");
       L("%-16s %d  register %s port=%x", who, pid, name, p);
-      if (p) reg(name, p, 0);
+      if (p) reg(n, name, p, 0);
       if (reply) xpc_dictionary_set_int64(reply, "error", 0);
       break;
     }
     case 206: case 805: {
-      mach_port_t r = checkin(name);
+      mach_port_t r = checkin(n, name);
       L("%-16s %d  checkin  %s (%s)", who, pid, name, routine == 805 ? "xpc listener" : "bootstrap");
       if (reply) xpc_dictionary_set_mach_recv(reply, "port", r);
       break;
@@ -267,17 +297,49 @@ static void handle_ctl(mach_msg_header_t *h) {
       simns_register_msg_t *m = (simns_register_msg_t *)h;
       m->name[SIMNS_NAME_MAX - 1] = 0;
       L("ctl register %s port=%x%s", m->name, m->port.name, (m->flags & SIMNS_F_HOST_SIDE) ? " (host)" : "");
-      reg(m->name, m->port.name, m->flags);
+      reg(&gGlobal, m->name, m->port.name, m->flags);
       break;
     }
     case SIMNS_MSG_READY: L("host helper ready"); gReady = 1; break;
     case SIMNS_MSG_DUMP:
       pthread_mutex_lock(&gLock);
-      for (entry_t *e = gEntries; e; e = e->next) L("  %-60s send=%x recv=%x lookups=%u", e->name, e->send, e->recv, e->lookups);
+      for (ns_t *n = &gGlobal; n; n = (n == &gGlobal) ? gApps : n->next) {
+        L("namespace %x%s", n->port, n == &gGlobal ? " (global)" : "");
+        for (entry_t *e = n->entries; e; e = e->next) L("  %-60s send=%x recv=%x lookups=%u", e->name, e->send, e->recv, e->lookups);
+      }
       pthread_mutex_unlock(&gLock);
       break;
+    case SIMNS_MSG_NEW_NS: {
+      mach_port_t me = mach_task_self(), p;
+      mach_port_allocate(me, MACH_PORT_RIGHT_RECEIVE, &p);
+      mach_port_move_member(me, p, gSet);
+      ns_t *n = calloc(1, sizeof *n); n->port = p;
+      pthread_mutex_lock(&gLock); n->next = gApps; gApps = n; pthread_mutex_unlock(&gLock);
+      simns_port_msg_t r = {0};
+      r.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0) | MACH_MSGH_BITS_COMPLEX;
+      r.h.msgh_size = sizeof r; r.h.msgh_remote_port = h->msgh_remote_port; r.h.msgh_id = SIMNS_MSG_NS_REPLY;
+      r.b.msgh_descriptor_count = 1; r.port.name = p; r.port.disposition = MACH_MSG_TYPE_MAKE_SEND; r.port.type = MACH_MSG_PORT_DESCRIPTOR;
+      kern_return_t kr = mach_msg(&r.h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof r, 0, 0, 1000, 0);
+      // tear the namespace down once nobody (host, app) holds a send right any more
+      mach_port_t prev = MACH_PORT_NULL;
+      mach_port_request_notification(me, p, MACH_NOTIFY_NO_SENDERS, 1, p, MACH_MSG_TYPE_MAKE_SEND_ONCE, &prev);
+      L("new namespace %x (reply kr=%x)", p, kr);
+      break;
+    }
     default: L("ctl: unknown msg %x", h->msgh_id); mach_msg_destroy(h);
   }
+}
+
+static void destroy_ns(mach_port_t port) {
+  pthread_mutex_lock(&gLock);
+  ns_t **pp = &gApps, *n = NULL;
+  while (*pp) { if ((*pp)->port == port) { n = *pp; *pp = n->next; break; } pp = &(*pp)->next; }
+  pthread_mutex_unlock(&gLock);
+  if (!n) return;
+  free_entries(n->entries);
+  mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_RECEIVE, -1);
+  L("namespace %x destroyed", port);
+  free(n);
 }
 
 static void *serve(void *arg) {
@@ -290,6 +352,7 @@ static void *serve(void *arg) {
     mach_msg_audit_trailer_t *t = (mach_msg_audit_trailer_t *)((char *)h + round_msg(h->msgh_size));
     pid_t pid = audit_token_to_pid(t->msgh_audit);
     if (h->msgh_local_port == gCtl) handle_ctl(h);
+    else if (h->msgh_id == MACH_NOTIFY_NO_SENDERS) destroy_ns(h->msgh_local_port);
     else if ((h->msgh_id & 0x40000000) || (h->msgh_id & 0x10000000)) handle_pipe(h, pid);
     else { L("pid %d: non-pipe msg id=%x", pid, h->msgh_id); mach_msg_destroy(h); }
   }
@@ -297,16 +360,18 @@ static void *serve(void *arg) {
 }
 
 int main(int argc, char **argv) {
-  if (argc < 2) { fprintf(stderr, "usage: simns <app> [args]\n"); return 2; }
+  if (argc < 2) { fprintf(stderr, "usage: simns <app> [args]   |   simns --serve\n"); return 2; }
+  int serve_only = !strcmp(argv[1], "--serve");   // shared server: apps are spawned by the host with SIMNS_MSG_NEW_NS namespaces
   gQuiet = getenv("SIMNS_QUIET") != NULL;
   if (getenv("SIMNS_LOG")) gLog = fopen(getenv("SIMNS_LOG"), "w");
   mach_port_t me = mach_task_self();
   mach_port_allocate(me, MACH_PORT_RIGHT_RECEIVE, &gNS);  mach_port_insert_right(me, gNS, gNS, MACH_MSG_TYPE_MAKE_SEND);
+  gGlobal.port = gNS;
   mach_port_allocate(me, MACH_PORT_RIGHT_RECEIVE, &gCtl); mach_port_insert_right(me, gCtl, gCtl, MACH_MSG_TYPE_MAKE_SEND);
   mach_port_allocate(me, MACH_PORT_RIGHT_PORT_SET, &gSet);
   mach_port_move_member(me, gNS, gSet); mach_port_move_member(me, gCtl, gSet);
   // The control port is itself discoverable in the namespace (for the app-side shim).
-  mach_port_mod_refs(me, gCtl, MACH_PORT_RIGHT_SEND, 1); reg("dev.simrun.simns.control", gCtl, 0);
+  mach_port_mod_refs(me, gCtl, MACH_PORT_RIGHT_SEND, 1); reg(&gGlobal, "dev.simrun.simns.control", gCtl, 0);
   pthread_t th; pthread_create(&th, NULL, serve, NULL);
 
   const char *slot = getenv("SIMNS_HOST_SLOT");
@@ -341,6 +406,15 @@ int main(int argc, char **argv) {
   for (int i = 0; i < k; i++) if (strncmp(env[i], "DYLD_INSERT_LIBRARIES=", 22)) gChildEnv[kd++] = env[i];
   gRoot = getenv("SIMULATOR_ROOT") ? getenv("SIMULATOR_ROOT") : "";
   load_daemons();
+
+  if (serve_only) {
+    signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);
+    L("serving (shared)");
+    pid_t parent = getppid();
+    while (getppid() == parent) sleep(1);   // the host server went away
+    stop_daemons();
+    return 0;
+  }
 
   posix_spawnattr_t attr; posix_spawnattr_init(&attr);
   posix_spawnattr_setspecialport_np(&attr, gNS, TASK_BOOTSTRAP_PORT);
