@@ -56,7 +56,10 @@ terminal get only what their environment says.
 
 ## Runtimes
 
-SimRun has a runtime of its own: `SIMRUN_RUNTIME_ROOT`, else the one chosen in **SimRun ▸ iOS Runtime** (a build
+SimRun finds the installed iOS runtimes the way Xcode does, with `xcrun simctl list runtimes`: they can be mounted
+under `/Library/Developer/CoreSimulator/Volumes` (disk images), under `/private/var/run/com.apple.security.cryptexd/mnt`
+(cryptexes) or installed in `/Library/Developer/CoreSimulator/Profiles/Runtimes`; those places are scanned only when
+simctl can't be run. SimRun has a runtime of its own: `SIMRUN_RUNTIME_ROOT`, else the one chosen in **SimRun ▸ iOS Runtime** (a build
 version, `SRRuntimeBuild` in its user defaults), else the newest installed iOS runtime. It is read once at start, so a
 new choice takes effect when SimRun is reopened; the menu says so while the two differ. Its `simns --serve`, and with
 it the shared daemons (cfprefsd, containermanagerd, trustd, securityd), runs from that runtime.

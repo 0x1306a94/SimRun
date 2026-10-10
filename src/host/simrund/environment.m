@@ -30,26 +30,80 @@ static NSString *const kRuntimeKey = @"SRRuntimeBuild";
 
 @implementation SREnvironment
 
-// Runtimes are disk images mounted under CoreSimulator/Volumes (Xcode 16+), or bundles in CoreSimulator/Profiles.
-+ (NSArray<SRRuntime *> *)installedRuntimes {
+// The available iOS runtimes' roots as CoreSimulator knows them, wherever they are mounted (disk images under
+// CoreSimulator/Volumes, cryptexes under /private/var/run/com.apple.security.cryptexd/mnt, bundles in
+// CoreSimulator/Profiles); nil if simctl can't be run or doesn't answer within 5 s.
+static NSArray<NSString *> *SimctlRuntimeRoots(void) {
+  NSTask *t = [NSTask new];
+  t.executableURL = [NSURL fileURLWithPath:@"/usr/bin/xcrun"];
+  t.arguments = @[ @"simctl", @"list", @"runtimes", @"--json" ];
+  // a Mac process: none of the sim environment SimRun itself may have been started with (simrun.sh)
+  NSMutableDictionary *env = [NSMutableDictionary dictionary];
+  [NSProcessInfo.processInfo.environment enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *stop) {
+    if (![k hasPrefix:@"DYLD_"] && ![k hasPrefix:@"SIMULATOR_"] && ![k hasPrefix:@"IPHONE_"] && ![@[ @"CFFIXED_USER_HOME", @"TMPDIR" ] containsObject:k]) env[k] = v;
+  }];
+  env[@"HOME"] = RealHome();
+  t.environment = env;
+  NSPipe *out = [NSPipe pipe];
+  t.standardOutput = out; t.standardError = [NSFileHandle fileHandleWithNullDevice];
+  if (![t launchAndReturnError:nil]) return nil;
+  __block NSData *data = nil;
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    data = [out.fileHandleForReading readDataToEndOfFile];
+    dispatch_semaphore_signal(done);
+  });
+  if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC))) { [t terminate]; return nil; }
+  [t waitUntilExit];
+  if (t.terminationStatus != 0) return nil;
+  NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  NSArray *list = [json isKindOfClass:NSDictionary.class] && [json[@"runtimes"] isKindOfClass:NSArray.class] ? json[@"runtimes"] : nil;
+  if (!list) return nil;
+  NSMutableArray *roots = [NSMutableArray array];
+  for (NSDictionary *r in list) {
+    if (![r isKindOfClass:NSDictionary.class] || ![r[@"platform"] isEqual:@"iOS"] || ![r[@"isAvailable"] boolValue]) continue;
+    if ([r[@"runtimeRoot"] isKindOfClass:NSString.class]) [roots addObject:r[@"runtimeRoot"]];
+  }
+  return roots;
+}
+
+// Without simctl: the places runtimes are mounted or installed.
+static NSArray<NSString *> *ScannedRuntimeRoots(void) {
   NSFileManager *fm = NSFileManager.defaultManager;
   NSMutableArray<NSString *> *dirs = [NSMutableArray arrayWithObject:@"/Library/Developer/CoreSimulator/Profiles/Runtimes"];
-  NSString *vols = @"/Library/Developer/CoreSimulator/Volumes";
-  for (NSString *v in [fm contentsOfDirectoryAtPath:vols error:nil])
-    if ([v hasPrefix:@"iOS_"]) [dirs addObject:[vols stringByAppendingFormat:@"/%@/Library/Developer/CoreSimulator/Profiles/Runtimes", v]];
-  NSMutableArray<SRRuntime *> *out = [NSMutableArray array];
-  NSMutableSet *builds = [NSMutableSet set];
+  for (NSString *mounts in @[ @"/Library/Developer/CoreSimulator/Volumes", @"/private/var/run/com.apple.security.cryptexd/mnt" ])
+    for (NSString *v in [fm contentsOfDirectoryAtPath:mounts error:nil])
+      if ([v hasPrefix:@"iOS_"]) [dirs addObject:[mounts stringByAppendingFormat:@"/%@/Library/Developer/CoreSimulator/Profiles/Runtimes", v]];
+  NSMutableArray *roots = [NSMutableArray array];
   for (NSString *dir in dirs)
-    for (NSString *r in [fm contentsOfDirectoryAtPath:dir error:nil]) {
-      if (![r hasPrefix:@"iOS"] || ![r.pathExtension isEqualToString:@"simruntime"]) continue;
-      SRRuntime *rt = [SRRuntime runtimeAtRoot:[dir stringByAppendingFormat:@"/%@/Contents/Resources/RuntimeRoot", r]];
+    for (NSString *r in [fm contentsOfDirectoryAtPath:dir error:nil])
+      if ([r hasPrefix:@"iOS"] && [r.pathExtension isEqualToString:@"simruntime"])
+        [roots addObject:[dir stringByAppendingFormat:@"/%@/Contents/Resources/RuntimeRoot", r]];
+  return roots;
+}
+
+static NSArray<SRRuntime *> *gRuntimes;
+static CFAbsoluteTime gRuntimesTime;
+
++ (void)reloadInstalledRuntimes { @synchronized(self) { gRuntimes = nil; } }
+
++ (NSArray<SRRuntime *> *)installedRuntimes {
+  @synchronized(self) {
+    if (gRuntimes && CFAbsoluteTimeGetCurrent() - gRuntimesTime < 30) return gRuntimes;
+    NSArray *roots = SimctlRuntimeRoots() ?: ScannedRuntimeRoots();
+    NSMutableArray<SRRuntime *> *out = [NSMutableArray array];
+    NSMutableSet *builds = [NSMutableSet set];
+    for (NSString *root in roots) {
+      SRRuntime *rt = [SRRuntime runtimeAtRoot:root];
       if (rt && ![builds containsObject:rt.build]) { [builds addObject:rt.build]; [out addObject:rt]; }
     }
-  [out sortUsingComparator:^NSComparisonResult(SRRuntime *a, SRRuntime *b) {
-    NSComparisonResult c = [b.version compare:a.version options:NSNumericSearch];
-    return c != NSOrderedSame ? c : [b.build compare:a.build options:NSNumericSearch];
-  }];
-  return out;
+    [out sortUsingComparator:^NSComparisonResult(SRRuntime *a, SRRuntime *b) {
+      NSComparisonResult c = [b.version compare:a.version options:NSNumericSearch];
+      return c != NSOrderedSame ? c : [b.build compare:a.build options:NSNumericSearch];
+    }];
+    gRuntimes = out; gRuntimesTime = CFAbsoluteTimeGetCurrent();
+    return out;
+  }
 }
 + (SRRuntime *)installedRuntimeWithBuild:(NSString *)build {
   for (SRRuntime *r in [self installedRuntimes]) if ([r.build isEqualToString:build]) return r;

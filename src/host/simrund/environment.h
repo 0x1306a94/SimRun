@@ -11,8 +11,10 @@
 @end
 
 @interface SREnvironment : NSObject
-// The installed iOS Simulator runtimes, newest first; the one with this build version, or nil.
+// The installed iOS Simulator runtimes, newest first, as CoreSimulator lists them (`simctl list runtimes`; cached for
+// 30 s, reloadInstalledRuntimes forgets that); the one with this build version, or nil.
 + (NSArray<SRRuntime *> *)installedRuntimes;
++ (void)reloadInstalledRuntimes;
 + (SRRuntime *)installedRuntimeWithBuild:(NSString *)build;
 // The runtime chosen in SimRun ▸ iOS Runtime (its build version; nil = the newest installed). Takes effect the next
 // time SimRun starts: runtimeRoot is read once.

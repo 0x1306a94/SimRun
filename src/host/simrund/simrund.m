@@ -256,6 +256,7 @@ static void LOG(NSString *fmt, ...) {
 // SimRun ▸ iOS Runtime: the runtime SimRun's shared services run on (and apps without their own), from the next start.
 - (void)menuNeedsUpdate:(NSMenu *)menu {
   [menu removeAllItems];
+  [SREnvironment reloadInstalledRuntimes];   // a runtime may have been installed or removed since
   NSArray<SRRuntime *> *installed = SREnvironment.installedRuntimes;
   NSString *pref = SREnvironment.preferredRuntimeBuild;
   NSMenuItem *newest = [menu addItemWithTitle:installed.count ? [NSString stringWithFormat:@"Newest Installed — %@", installed[0].name] : @"Newest Installed"

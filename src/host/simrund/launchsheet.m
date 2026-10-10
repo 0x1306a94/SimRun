@@ -77,6 +77,7 @@ static NSMutableSet<SRLaunchSheet *> *gShown;   // a sheet keeps itself alive un
   SRLaunchSheet *s = [SRLaunchSheet new];
   s->_app = app; s->_running = running; s->_launch = [launch copy]; s->_parent = window;
   s->_options = [SRLaunchOptions optionsForAppAtPath:app.path];
+  [SREnvironment reloadInstalledRuntimes];
   s->_switchBoxes = [NSMutableArray array];
   [s build]; [s refresh];
   if (!gShown) gShown = [NSMutableSet set];
