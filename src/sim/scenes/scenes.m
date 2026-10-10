@@ -19,6 +19,7 @@
 //  * BKSDisplayServicesStart stub + GSSetMainScreenInfo (no backboardd).
 //  * os_trace_set_mode fix: NSLog/os_log visible with OS_ACTIVITY_DT_MODE=1 even in null-bootstrap mode.
 //  * BackBoard HID BSService endpoint ("com.apple.backboard.hid-services.xpc") -> in-process anonymous XPC sink.
+//  * No com.apple.runningboard: RBS assertion acquisition fails at once instead of a sleep-and-retry (~100 ms of launch).
 //  * Only when there is no CARenderServer: +[CADisplay displays] -> @[] (skips a 5 s retry loop), synthesized main
 //    FBSDisplayConfiguration for UIScreen, remote CAContext -> local CAContext fallback.
 // Exported API (scenes.h): SRScenesCreate, SRScenesUpdate, SRScenesSetLayersCallback, SRScenesGetMainContextID.
@@ -380,6 +381,26 @@ static id sr_endpointForMachName(id self, SEL _cmd, NSString *mach, NSString *se
   return e;
 }
 
+// No runningboardd: -[RBSConnection acquireAssertion:error:] retries forever, sleeping between tries, while the reply
+// is NSXPCConnectionReplyInvalid (4101) — which the first attempt on a connection to the missing service sometimes
+// returns, depending on timing. UIKit acquires its launch background task this way, and the main thread waits for
+// that (_UIApplicationWaitForBackgroundAssertionsToFlush): ~100 ms of most launches. Fail at once, with the error the
+// retried attempt ends with anyway.
+extern kern_return_t bootstrap_look_up(mach_port_t bp, const char *name, mach_port_t *out);
+static IMP gOrigAcquireAssertion;
+static id sr_acquireAssertion(id self, SEL _cmd, id assertion, NSError **error) {
+  static BOOL missing; static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    mach_port_t p = MACH_PORT_NULL;
+    missing = bootstrap_look_up(bootstrap_port, "com.apple.runningboard", &p) != KERN_SUCCESS;
+    if (p) mach_port_deallocate(mach_task_self(), p);
+  });
+  if (!missing) return ((id (*)(id, SEL, id, NSError **))gOrigAcquireAssertion)(self, _cmd, assertion, error);
+  if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSXPCConnectionInvalid
+                                      userInfo:@{ NSLocalizedFailureReasonErrorKey: @"no runningboardd (SimRun)" }];
+  return nil;
+}
+
 // Without a render server UIKit creates the main UIScreen with a nil FBSDisplayConfiguration -> bounds {0,0},
 // scale 1. Synthesize a main-display configuration (what FrontBoardServices would build from the main CADisplay) so
 // UIScreen / trait displayScale are right. Only used when CADisplay has no displays.
@@ -408,6 +429,8 @@ __attribute__((constructor)) static void scenes_init(void) {
   {
     Method m = class_getClassMethod(NSClassFromString(@"BSServiceConnectionEndpoint"), NSSelectorFromString(@"endpointForMachName:service:instance:"));
     gOrigEndpointForMachName = method_setImplementation(m, (IMP)sr_endpointForMachName);
+    Method a = class_getInstanceMethod(NSClassFromString(@"RBSConnection"), NSSelectorFromString(@"acquireAssertion:error:"));
+    if (a) gOrigAcquireAssertion = method_setImplementation(a, (IMP)sr_acquireAssertion);
   }
   const char *e;
   if ((e = getenv("SCENES_W"))) gW = atof(e);
