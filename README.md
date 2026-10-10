@@ -38,7 +38,9 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
                                          │     │                      one private namespace per app layered over a shared global one;
                                          │     └─ trustd, cfprefsd…   real sim daemons launched on demand, shared by all apps
                                          └─ each app (bootstrap port = its namespace), with DYLD_INSERT_LIBRARIES =
-                                              rshim.dylib    Metal shader-compiler XPC service spawning, bootstrap fallbacks
+                                              rshim.dylib    Metal shader-compiler XPC service spawning, bootstrap fallbacks,
+                                                             the Mac's language & region (locale, languages, 24-hour
+                                                             time, first weekday...) into the device's global preferences
                                               glue.dylib     starts the in-process CA render server (CAWindowServer) and hosts the
                                                              scene's layers on the display (SpringBoard's job)
                                               scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene)
@@ -66,7 +68,7 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
 | `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`, `keychain/kctest`) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
 | `catalyst/` | Approach A: `sim2mac.sh` re-tags a Simulator .app as Mac Catalyst (runs on macOS's own UIKit instead) |
 | `docs/` | Write-ups (see below) |
 
@@ -90,6 +92,7 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 | `DRAG_DISABLE=1` | No drag server in the app (drags lift and then go nowhere) |
 | `KEYCHAIN_DISABLE=1` | SecItem calls go to the runtime's securityd again (which answers -34018, missing entitlement) |
 | `WEBKIT_DISABLE=1` | WebKit's helper processes aren't launched (web views stay blank) |
+| `LOCALE_DISABLE=1` | Don't copy the Mac's language & region settings into the device's global preferences (keep what is there, e.g. to test another locale) |
 | `SIMFB_CHECK=1` | Frame diagnostics: stale pixels outside partial presents (app side), and buffers overwritten while on screen (server log) |
 | `SIMRUN_DEBUG_STALL=ms`, `SIMRUN_CHROME_DEMO=secs` | Testing: block SimRun's main thread for *ms* every 100 ms; toggle the window chrome on a timer (no mouse needed) |
 | `OS_ACTIVITY_DT_MODE=1` | Mirror os_log/NSLog to stderr |

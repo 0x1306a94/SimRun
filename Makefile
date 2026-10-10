@@ -22,7 +22,7 @@ CORE  := $(APP) $(BIN)/simapp
 PARTS := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput $(BIN)/rhost
 TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app \
-         $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes $(TBIN)/pbtest $(TBIN)/kctest
+         $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest
 
 .PHONY: all core tools tests clean $(APP)
 all: core tools tests
@@ -164,6 +164,9 @@ $(TBIN)/pbtest: tests/pboard/pbtest.m | $(TBIN)
 	@$(SIGN) $@ 2>/dev/null
 $(TBIN)/kctest: tests/keychain/kctest.m | $(TBIN)
 	$(SIMCC) $< -framework Foundation -framework Security -o $@
+	@$(SIGN) $@ 2>/dev/null
+$(TBIN)/loctest: tests/locale/loctest.m | $(TBIN)
+	$(SIMCC) $< -framework Foundation -o $@
 	@$(SIGN) $@ 2>/dev/null
 $(TBIN)/fakeframes: tests/viewer/fakeframes.m $(HDRS) | $(TBIN)
 	$(SIMCC) $< -framework Foundation -framework IOSurface -framework CoreGraphics -o $@

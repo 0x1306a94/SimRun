@@ -66,6 +66,23 @@ static NSString *RealHome(void) { struct passwd *pw = getpwuid(getuid()); return
   };
 }
 
++ (NSString *)hostInternationalSettings {
+  // The Mac's language & region settings (rshim.dylib applies them in each app). Read from the plist: when SimRun runs
+  // from simrun.sh, HOME and CFFIXED_USER_HOME are the device's, and CFPreferences would read the device's instead.
+  NSDictionary *g = [NSDictionary dictionaryWithContentsOfFile:[RealHome() stringByAppendingPathComponent:@"Library/Preferences/.GlobalPreferences.plist"]];
+  if (!g) return nil;
+  NSMutableDictionary *out = [NSMutableDictionary dictionary];
+  for (NSString *k in @[ @"AppleLocale", @"AppleLanguages", @"AppleLanguagesSchemaVersion", @"AppleCollationOrder", @"AppleFirstWeekday",
+                         @"AppleMeasurementUnits", @"AppleMetricUnits", @"AppleTemperatureUnit", @"AppleICUForce12HourTime",
+                         @"AppleICUForce24HourTime", @"AppleICUDateFormatStrings", @"AppleICUTimeFormatStrings",
+                         @"AppleICUNumberSymbols", @"AppleICUDateTimeSymbols" ]) {
+    id v = g[k];
+    out[k] = v && [NSJSONSerialization isValidJSONObject:@[ v ]] ? v : NSNull.null;   // null: not set on the Mac
+  }
+  NSData *d = [NSJSONSerialization dataWithJSONObject:out options:NSJSONWritingSortedKeys error:NULL];
+  return d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil;
+}
+
 + (NSArray<NSString *> *)processEnvironment {
   NSMutableArray *a = [NSMutableArray array];
   for (char **e = environ; *e; e++) [a addObject:@(*e)];

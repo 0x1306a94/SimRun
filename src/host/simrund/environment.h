@@ -13,6 +13,9 @@
 // `base` ("KEY=VALUE" strings, e.g. this process's environment) with `overrides` applied.
 + (NSArray<NSString *> *)environment:(NSArray<NSString *> *)base withOverrides:(NSDictionary<NSString *, NSString *> *)overrides;
 + (NSArray<NSString *> *)processEnvironment;
+// SIMRUN_HOST_INTL value: the Mac's language & region preferences as JSON (null for a key the Mac doesn't set); nil if
+// they can't be read.
++ (NSString *)hostInternationalSettings;
 
 + (NSString *)simnsPath;                 // the simns helper
 + (NSString *)libraryDirectory;          // rshim/glue/scenes/hid/pboard/drag/keychain dylibs + SimFramebuffer

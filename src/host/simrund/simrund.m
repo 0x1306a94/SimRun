@@ -317,9 +317,11 @@ static void LOG(NSString *fmt, ...) {
   for (NSString *kv in env) {
     if ([kv hasPrefix:@"SIMNS_INSERT="]) insert = [kv substringFromIndex:13];
     if ([kv hasPrefix:@"DYLD_INSERT_LIBRARIES="] || [kv hasPrefix:@"XPC_SIMULATOR_LAUNCHD_NAME="] || [kv hasPrefix:@"XPC_FLAGS="] ||
-        [kv hasPrefix:@"XPC_SERVICE_NAME="] || [kv hasPrefix:@"SIMNS_"]) continue;
+        [kv hasPrefix:@"XPC_SERVICE_NAME="] || [kv hasPrefix:@"SIMNS_"] || [kv hasPrefix:@"SIMRUN_HOST_INTL="]) continue;
     [out addObject:kv];
   }
+  NSString *intl = [SREnvironment hostInternationalSettings];   // read at each launch: follows changes on the Mac
+  if (intl) [out addObject:[@"SIMRUN_HOST_INTL=" stringByAppendingString:intl]];
   [out addObject:@"XPC_SIMULATOR_LAUNCHD_NAME=dev.simrun.simns"];   // value unused; makes sim libxpc use our bootstrap port
   [out addObject:@"XPC_FLAGS=0x0"];
   if (insert.length) [out addObject:[@"DYLD_INSERT_LIBRARIES=" stringByAppendingString:insert]];
