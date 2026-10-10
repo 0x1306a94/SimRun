@@ -62,6 +62,7 @@ static void LOG(NSString *fmt, ...) {
   NSMutableArray<NSString *> *_openAtLaunch;
   NSTimer *_idleTimer;
   SRLauncher *_launcher;
+  NSMenuItem *_quitServerItem, *_quitAppItem;   // ⌘Q quits the app whose window is key, else SimRun
   SRPasteboardHost *_pasteboard; mach_port_t _pasteboardPort;
   BOOL _launched;
 }
@@ -152,7 +153,7 @@ static void LOG(NSString *fmt, ...) {
   ho.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
   [appMenu addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@""];
   [appMenu addItem:NSMenuItem.separatorItem];
-  [appMenu addItemWithTitle:@"Quit SimRun" action:@selector(terminate:) keyEquivalent:@"q"];
+  _quitServerItem = [appMenu addItemWithTitle:@"Quit SimRun" action:@selector(terminate:) keyEquivalent:@"q"];
 
   NSMenu *file = [[NSMenu alloc] initWithTitle:@"File"];
   [file addItemWithTitle:@"Add App…" action:@selector(addApp:) keyEquivalent:@"o"].target = self;
@@ -162,7 +163,8 @@ static void LOG(NSString *fmt, ...) {
 
   NSMenu *appCmds = [[NSMenu alloc] initWithTitle:@"App"];
   [appCmds addItemWithTitle:@"Relaunch" action:@selector(relaunchFrontApp:) keyEquivalent:@"r"].target = self;
-  [appCmds addItemWithTitle:@"Quit App" action:@selector(quitFrontApp:) keyEquivalent:@""].target = self;
+  _quitAppItem = [appCmds addItemWithTitle:@"Quit App" action:@selector(quitFrontApp:) keyEquivalent:@""];
+  _quitAppItem.target = self;
   [appCmds addItemWithTitle:@"Show Log" action:@selector(showFrontAppLog:) keyEquivalent:@"l"].target = self;
   [appCmds addItemWithTitle:@"Show Keychain Items" action:@selector(showFrontAppKeychain:) keyEquivalent:@""].target = self;
 
@@ -175,13 +177,25 @@ static void LOG(NSString *fmt, ...) {
 
   for (NSMenu *m in @[ appMenu, file, appCmds, win ]) { NSMenuItem *it = [NSMenuItem new]; it.submenu = m; [bar addItem:it]; }
   NSApp.mainMenu = bar; NSApp.windowsMenu = win;
+  for (NSNotificationName n in @[ NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification ])
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(keyWindowChanged:) name:n object:nil];
 }
 
-- (SRRequest *)frontRequest {
-  NSWindow *k = NSApp.keyWindow ?: NSApp.mainWindow;
-  for (SRRequest *r in _active) if (r.session.window == k) return r;
+// Key equivalents are matched without opening the menu, so move ⌘Q as the key window changes: to "Quit <app>"
+// while an app window is key (SimRun itself then quits with ⌥⌘Q), back to "Quit SimRun" otherwise.
+- (void)keyWindowChanged:(NSNotification *)n {
+  // on resign, NSApp.keyWindow can still be the resigning window
+  SRRequest *r = [n.name isEqualToString:NSWindowDidBecomeKeyNotification] ? [self requestForWindow:n.object] : nil;
+  _quitAppItem.title = r ? [NSString stringWithFormat:@"Quit %@", r.session.title] : @"Quit App";
+  _quitAppItem.keyEquivalent = r ? @"q" : @"";
+  _quitServerItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | (r ? NSEventModifierFlagOption : 0);
+}
+
+- (SRRequest *)requestForWindow:(NSWindow *)w {
+  for (SRRequest *r in _active) if (w && r.session.window == w) return r;
   return nil;
 }
+- (SRRequest *)frontRequest { return [self requestForWindow:NSApp.keyWindow ?: NSApp.mainWindow]; }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
   SEL a = item.action;
   if (a == @selector(relaunchFrontApp:)) return [self frontRequest].appPath != nil;

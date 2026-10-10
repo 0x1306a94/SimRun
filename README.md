@@ -13,7 +13,8 @@ scripts/simapp.sh build/apps/SUI.app           # or launch from the terminal (ou
 **SimRun.app** is a regular Mac app: drop iOS Simulator `.app` bundles on its window or Dock icon (or use
 File ▸ Add App…, Add Xcode Builds, or Finder's Open With ▸ SimRun). The library is remembered; double-click or Launch
 to run an app — the row shows a spinner while it starts and a green dot once its window appears (no blank window).
-In an app window: ⌘R relaunch, ⌘L log (the app's stdout/stderr), ⌘W quit the app, ⌘0 launcher, ⌘Q quit everything.
+In an app window: ⌘R relaunch, ⌘L log (the app's stdout/stderr), ⌘Q or ⌘W quit the app, ⌘0 launcher, ⌥⌘Q quit
+everything (⌘Q elsewhere).
 ⇧⌘K opens the Keychain window: what apps stored with the SecItem API, passwords in plaintext (docs/keychain.md).
 
 Each app has its own **data container**, like an iOS sandbox container: its HOME (Documents, Library — preferences,
