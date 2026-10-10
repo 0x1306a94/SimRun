@@ -1,8 +1,8 @@
 // keychain.h — SimRun's fake keychain store, shared by keychain.dylib (every app's SecItem* calls) and SimRun.app (the
 // Keychain window). Objective-C (Foundation) code only. See docs/keychain.md.
 //
-// One XML property list in the simulated device's data directory, SRKC_FILE: no encryption, readable and editable by
-// hand. Every access holds flock(2) on "<file>.lock" (shared to read, exclusive to write); writes replace the file
+// One XML property list in the simulated device's shared data directory (not an app's container), SRKC_FILE: no
+// encryption, readable and editable by hand. Every access holds flock(2) on "<file>.lock" (shared to read, exclusive to write); writes replace the file
 // atomically. The file is the only state: apps don't cache it, so changes made by SimRun (or an editor) apply at once.
 //
 //   { version: 1,
@@ -19,7 +19,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define SRKC_FILE "Library/Keychains/simrun-keychain.plist"   // relative to the data directory ($HOME of the apps)
+#define SRKC_FILE "Library/Keychains/simrun-keychain.plist"   // relative to the shared data directory
+                                                              // (SIMULATOR_SHARED_RESOURCES_DIRECTORY of the apps)
 
 // Loads the items, runs `body` on them (mutable) and, if `write` and body returns YES, saves them. The whole call
 // holds the store's lock. Returns NO if the file exists but can't be read (it is then left alone) or can't be saved.

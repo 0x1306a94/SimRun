@@ -156,7 +156,7 @@ static kern_return_t my_bootstrap_look_up(mach_port_t bp, const char *name, mach
 
 // ---------- the Mac's language & region ----------
 // The device's language & region settings (AppleLocale, AppleLanguages, AppleFirstWeekday, 24-hour time, ...) live
-// in the global preferences domain, the data directory's .GlobalPreferences.plist; Simulator.app's devices get theirs
+// in the global preferences domain, .GlobalPreferences.plist in the app's container; Simulator.app's devices get theirs
 // copied from the Mac. SimRun passes the Mac's in SIMRUN_HOST_INTL (JSON, null = not set on the Mac) and each app
 // writes the ones that differ through cfprefsd here, before anything reads them. (Writing the plist from the host
 // wouldn't do: the shared cfprefsd caches the domain and never sees later edits.) The time zone needs nothing: sim

@@ -16,6 +16,8 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <libproc.h>
+#include <sys/proc.h>
 #include "session.h"
 #include "environment.h"
 #include "library.h"
@@ -220,6 +222,43 @@ static void LOG(NSString *fmt, ...) {
 - (void)quitApp:(SRAppInfo *)app { [[self requestForApp:app].session terminate]; }
 - (void)showLogForApp:(SRAppInfo *)app { [[self requestForApp:app].session showLog]; }
 
+- (void)resetDataForApp:(SRAppInfo *)app {
+  if ([self requestForApp:app]) return;   // running: it would recreate what we delete
+  NSString *ident = [SREnvironment containerIdentifierForExecutable:app.executablePath];
+  // The shared cfprefsd caches the app's preferences domain and would write it straight back into the new container:
+  // stop it first (letting it flush). simns keeps its service port meanwhile and relaunches it on the next message, so
+  // running apps keep their CFPreferences connection (docs/simns.md).
+  [self stopSimDaemonsNamed:@"cfprefsd"];
+  NSFileManager *fm = NSFileManager.defaultManager;
+  [fm removeItemAtPath:[SREnvironment containerPathForIdentifier:ident] error:nil];
+  // cfprefsd copies a domain missing from a container from the shared Preferences (where every app's preferences
+  // lived before apps had containers); don't let a stale copy come back
+  [fm removeItemAtPath:[[SREnvironment dataDirectory] stringByAppendingFormat:@"/Library/Preferences/%@.plist", ident] error:nil];
+  LOG(@"reset the data container of %@", ident);
+}
+
+// SIGTERM to the simns-spawned daemons with this process name; waits up to 1 s for them, then SIGKILL. (They are
+// simns's children: once exited they stay zombies until simns reaps them at the next lookup.)
+static BOOL ProcessGone(pid_t pid) {
+  struct proc_bsdinfo bi;
+  return proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, sizeof bi) != sizeof bi || bi.pbi_status == SZOMB;
+}
+- (void)stopSimDaemonsNamed:(NSString *)name {
+  if (_simnsPid <= 0) return;
+  pid_t kids[512];
+  int n = proc_listchildpids(_simnsPid, kids, sizeof kids);
+  NSMutableArray<NSNumber *> *pids = [NSMutableArray array];
+  for (int i = 0; i < n && i < (int)(sizeof kids / sizeof *kids); i++) {
+    char buf[64] = {0};
+    if (proc_name(kids[i], buf, sizeof buf) > 0 && [@(buf) isEqualToString:name] && kill(kids[i], SIGTERM) == 0) [pids addObject:@(kids[i])];
+  }
+  for (int t = 0; t < 50 && pids.count; t++) {
+    usleep(20000);
+    for (NSNumber *p in [pids copy]) if (ProcessGone(p.intValue)) [pids removeObject:p];
+  }
+  for (NSNumber *p in pids) kill(p.intValue, SIGKILL);
+}
+
 - (void)launchApp:(SRAppInfo *)app {
   SRRequest *running = [self requestForApp:app];
   if (running) { [running.session bringToFront]; return; }   // no-op while it is still launching
@@ -311,7 +350,15 @@ static void LOG(NSString *fmt, ...) {
   if (_nsCtl) [self launch:r]; else { [_pending addObject:r]; [_launcher reloadState]; }
 }
 
-- (NSArray<NSString *> *)appEnvironmentFrom:(NSArray<NSString *> *)env {
+// The app's environment: the client's (or the launcher's), aimed at this server's simns and at the app's own data
+// container (HOME), with the shared data directory for what is managed centrally (keychain, app groups, daemons).
+- (NSArray<NSString *> *)appEnvironmentFrom:(NSArray<NSString *> *)env executable:(NSString *)exe {
+  NSString *data = [SREnvironment dataDirectory];
+  NSString *home = [SREnvironment createContainerForIdentifier:[SREnvironment containerIdentifierForExecutable:exe]];
+  env = [SREnvironment environment:env withOverrides:@{
+    @"HOME": home, @"CFFIXED_USER_HOME": home, @"TMPDIR": [home stringByAppendingString:@"/tmp/"],
+    @"SIMULATOR_SHARED_RESOURCES_DIRECTORY": data, @"IPHONE_SHARED_RESOURCES_DIRECTORY": data,
+  }];
   NSString *insert = nil;
   NSMutableArray *out = [NSMutableArray array];
   for (NSString *kv in env) {
@@ -339,7 +386,7 @@ static void LOG(NSString *fmt, ...) {
   mach_port_t ns = [self newNamespace];
   int fds[3] = { r.fd0, r.fd1, r.fd2 };
   NSString *err = nil;
-  BOOL ok = ns && [s spawnArgv:r.argv env:[self appEnvironmentFrom:r.env] cwd:r.cwd bootstrap:ns fds:fds error:&err];
+  BOOL ok = ns && [s spawnArgv:r.argv env:[self appEnvironmentFrom:r.env executable:r.argv.firstObject] cwd:r.cwd bootstrap:ns fds:fds error:&err];
   if (ns) mach_port_deallocate(mach_task_self(), ns);   // the app holds its own send right; simns frees the namespace after it
   for (int i = 0; i < 3; i++) if (fds[i] >= 0) close(fds[i]);
   r.fd0 = r.fd1 = r.fd2 = -1;

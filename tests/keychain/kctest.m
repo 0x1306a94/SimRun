@@ -104,7 +104,8 @@ static void passwords(void) {
   check_status(SecItemDelete((__bridge CFDictionaryRef)genp(@"bob")), errSecItemNotFound, @"delete again -> not found");
 
   // the file holds the password as text
-  NSString *file = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Keychains/simrun-keychain.plist"];
+  NSString *data = NSProcessInfo.processInfo.environment[@"SIMULATOR_SHARED_RESOURCES_DIRECTORY"] ?: NSHomeDirectory();
+  NSString *file = [data stringByAppendingPathComponent:@"Library/Keychains/simrun-keychain.plist"];
   NSString *text = [NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:NULL];
   check([text containsString:@"<string>s3cret</string>"], [NSString stringWithFormat:@"stored in plaintext (%@)", file]);
 }

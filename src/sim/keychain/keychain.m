@@ -581,9 +581,10 @@ __attribute__((constructor)) static void keychain_init(void) {
   gVerbose = getenv("KEYCHAIN_VERBOSE") != NULL;
   gDisabled = getenv("KEYCHAIN_DISABLE") != NULL || !strcmp(getprogname(), "MTLCompilerService");
   if (gDisabled) return;
-  const char *home = getenv("CFFIXED_USER_HOME") ?: getenv("HOME");
-  if (!home) { gDisabled = 1; fprintf(stderr, "[keychain] no HOME: SecItem calls go to securityd\n"); return; }
-  gPath = [@(home) stringByAppendingPathComponent:@SRKC_FILE];
+  // the device's shared data directory, not the app's container (HOME): one keychain for all apps
+  const char *data = getenv("SIMULATOR_SHARED_RESOURCES_DIRECTORY") ?: getenv("HOME");
+  if (!data) { gDisabled = 1; fprintf(stderr, "[keychain] no data directory: SecItem calls go to securityd\n"); return; }
+  gPath = [@(data) stringByAppendingPathComponent:@SRKC_FILE];
   setup_groups();
   LOG("store %s, access groups %s\n", gPath.UTF8String, [[gGroups componentsJoinedByString:@", "] UTF8String]);
 }

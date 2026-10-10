@@ -16,6 +16,15 @@ to run an app — the row shows a spinner while it starts and a green dot once i
 In an app window: ⌘R relaunch, ⌘L log (the app's stdout/stderr), ⌘W quit the app, ⌘0 launcher, ⌘Q quit everything.
 ⇧⌘K opens the Keychain window: what apps stored with the SecItem API, passwords in plaintext (docs/keychain.md).
 
+Each app has its own **data container**, like an iOS sandbox container: its HOME (Documents, Library — preferences,
+caches, cookies, WebKit data — and tmp) is `~/Library/Developer/SimRun/data/Containers/Data/Application/<bundle id>/`
+(the executable's name for a bare binary). What is managed centrally stays in the shared data directory `data/`
+(`SIMULATOR_SHARED_RESOURCES_DIRECTORY`): the keychain, app group containers (`Containers/Shared/AppGroup/`, served by
+the runtime's containermanagerd to apps entitled to the group) and the shared daemons' state. In the launcher, an
+app's menu has App Container ▸ Show in Finder / Reset… (deletes the container; keychain items and app group
+containers are kept). Containers are a convention, not a sandbox: apps run unsandboxed as you. `scripts/simrun.sh`
+on its own (no SimRun server) still runs a binary with the shared directory as HOME.
+
 All apps run inside one SimRun process (`simapp.sh` starts it headless if SimRun.app isn't open; headless it exits
 after 10 idle minutes).
 Each app gets its own window; its stdout/stderr go to your terminal, `simapp.sh` exits with the app's status, and
@@ -101,7 +110,8 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 ## Docs
 
 - `docs/research-log.md` — chronological findings from the investigation (paths in it refer to the original prototype layout)
-- `docs/simns.md` — how sim libxpc finds launchd, the XPC-pipe routines, service inventory, on-demand daemons
+- `docs/simns.md` — how sim libxpc finds launchd, the XPC-pipe routines, service inventory, on-demand daemons (and how
+  they come back when they die)
 - `docs/render.md` — in-process render server, the SimFramebuffer API, sim2host GPU/IOSurface services
 - `docs/scenes.md` — how UIKit obtains a UIWindowScene and the in-process FrontBoard host
 - `docs/hid.md` — input injection, keyboard focus/deferring, event fields

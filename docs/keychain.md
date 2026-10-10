@@ -32,7 +32,8 @@ app process
 
 - **keychain.dylib** (`src/sim/keychain/keychain.m`, injected last) interposes the four SecItem functions and
   implements their semantics over the store; securityd is never contacted.
-  - Store: `~/Library/Developer/SimRun/data/Library/Keychains/simrun-keychain.plist` (follows `SIMRUN_DATA`), mode
+  - Store: `~/Library/Developer/SimRun/data/Library/Keychains/simrun-keychain.plist` — the shared data directory
+    (`SIMULATOR_SHARED_RESOURCES_DIRECTORY`, follows `SIMRUN_DATA`), not the app's own container — mode
     0600. Format in `include/keychain.h`: per item its class, a UUID, the app that added it, the `kSecAttr*` attributes
     under their own keys (`acct`, `svce`, `agrp`, `cdat`, …) and the value — a password as a `<string>` when it is
     UTF-8, anything else as `<data>`. Every call locks the file (`flock` on `….lock`), reads it, and replaces it

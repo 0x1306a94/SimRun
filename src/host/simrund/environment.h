@@ -8,8 +8,15 @@
 + (NSString *)runtimeRoot;
 // Variables a sim process needs (DYLD_ROOT_PATH, HOME = the simulated device's data dir, SIMULATOR_*, ...).
 + (NSDictionary<NSString *, NSString *> *)simulatorVariables;
-// The simulated device's data directory (the apps' HOME): SIMRUN_DATA, else ~/Library/Developer/SimRun/data.
+// The simulated device's shared data directory (the daemons' HOME, SIMULATOR_SHARED_RESOURCES_DIRECTORY for apps):
+// SIMRUN_DATA, else ~/Library/Developer/SimRun/data. Holds what is managed centrally: the keychain, device-wide
+// preferences, app group containers, daemon state.
 + (NSString *)dataDirectory;
+// Each app's own data container — its HOME, like an iOS sandbox container: <data>/Containers/Data/Application/<id>,
+// <id> being the app's bundle identifier (the executable's name for a bare binary).
++ (NSString *)containerIdentifierForExecutable:(NSString *)executable;
++ (NSString *)containerPathForIdentifier:(NSString *)identifier;
++ (NSString *)createContainerForIdentifier:(NSString *)identifier;   // the path, with Documents/, Library/, tmp/ made
 // `base` ("KEY=VALUE" strings, e.g. this process's environment) with `overrides` applied.
 + (NSArray<NSString *> *)environment:(NSArray<NSString *> *)base withOverrides:(NSDictionary<NSString *, NSString *> *)overrides;
 + (NSArray<NSString *> *)processEnvironment;

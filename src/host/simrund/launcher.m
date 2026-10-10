@@ -1,6 +1,7 @@
 // launcher.m — see launcher.h.
 #import "launcher.h"
 #import "keychainwindow.h"
+#import "environment.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 // ---------------------------------------------------------------- row view: icon, name, path, running dot
@@ -208,6 +209,26 @@
 - (void)removeSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [SRLibrary.shared removePath:a.path]; }
 - (void)quitSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate quitApp:a]; }
 - (void)logSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate showLogForApp:a]; }
+- (NSString *)containerOfApp:(SRAppInfo *)a {
+  return [SREnvironment containerPathForIdentifier:[SREnvironment containerIdentifierForExecutable:a.executablePath]];
+}
+- (void)containerSelected:(id)sender {
+  SRAppInfo *a = [self selectedApp];
+  if (a) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:[self containerOfApp:a]] ]];
+}
+- (void)resetSelected:(id)sender {
+  SRAppInfo *a = [self selectedApp];
+  if (!a) return;
+  NSAlert *al = [NSAlert new];
+  al.messageText = [NSString stringWithFormat:@"Reset the data of %@?", a.name];
+  al.informativeText = @"Its data container (documents, preferences, caches, everything under its home directory) is deleted, as if "
+                        "the app were deleted and installed again. Keychain items and app group containers are kept.";
+  [al addButtonWithTitle:@"Reset"].hasDestructiveAction = YES;
+  [al addButtonWithTitle:@"Cancel"];
+  [al beginSheetModalForWindow:_window completionHandler:^(NSModalResponse r) {
+    if (r == NSAlertFirstButtonReturn) [self->_delegate resetDataForApp:a];
+  }];
+}
 - (void)keychainSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [SRKeychainWindow.shared showWithFilter:a.bundleIdentifier ?: @""]; }
 
 - (void)menuNeedsUpdate:(NSMenu *)menu {
@@ -220,6 +241,18 @@
   if (st != SRAppStateStopped) [menu addItemWithTitle:@"Quit App" action:@selector(quitSelected:) keyEquivalent:@""].target = self;
   [menu addItemWithTitle:@"Show Log" action:@selector(logSelected:) keyEquivalent:@""].target = self;
   [menu addItemWithTitle:@"Show Keychain Items" action:@selector(keychainSelected:) keyEquivalent:@""].target = self;
+  [menu addItem:NSMenuItem.separatorItem];
+  // the app's data container: there once the app has run; reset only while it isn't running
+  BOOL hasData = [NSFileManager.defaultManager fileExistsAtPath:[self containerOfApp:a]];
+  NSMenu *container = [[NSMenu alloc] initWithTitle:@"App Container"];
+  container.autoenablesItems = NO;
+  NSMenuItem *show = [container addItemWithTitle:@"Show in Finder" action:@selector(containerSelected:) keyEquivalent:@""];
+  NSMenuItem *reset = [container addItemWithTitle:@"Reset…" action:@selector(resetSelected:) keyEquivalent:@""];
+  show.target = reset.target = self;
+  show.enabled = hasData;
+  reset.enabled = hasData && st == SRAppStateStopped;
+  if (hasData && st != SRAppStateStopped) reset.toolTip = @"Quit the app to reset its data.";
+  [menu addItemWithTitle:@"App Container" action:nil keyEquivalent:@""].submenu = container;
   [menu addItem:NSMenuItem.separatorItem];
   [menu addItemWithTitle:@"Show in Finder" action:@selector(showInFinder:) keyEquivalent:@""].target = self;
   [menu addItemWithTitle:@"Remove from SimRun" action:@selector(removeSelected:) keyEquivalent:@""].target = self;

@@ -41,13 +41,21 @@ The control port is also registered as `dev.simrun.simns.control` so an in-app s
 ## On-demand sim daemons
 simns reads $SIMULATOR_ROOT/System/Library/{LaunchDaemons,LaunchAgents}/*.plist. For allow-listed labels
 (env SIMNS_DAEMONS, comma-separated; default com.apple.trustd,com.apple.securityd,com.apple.cfprefsd.xpc.daemon,
-com.apple.cfprefsd.xpc.agent; "none" disables) the first lookup of any of the daemon's MachServices pre-creates its ports
-(lookups succeed immediately, messages queue), then spawns the daemon (ProgramArguments rebased into the runtime root,
-plist EnvironmentVariables, XPC_SERVICE_NAME=label, simns as bootstrap). Check-in hands it the queued receive rights.
-Dead daemons are relaunched on the next lookup; all are SIGTERMed when the app exits or simns is terminated.
+com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd; "none" disables) the first lookup of any of the daemon's
+MachServices pre-creates its ports (lookups succeed immediately, messages queue), then spawns the daemon
+(ProgramArguments rebased into the runtime root, plist EnvironmentVariables, XPC_SERVICE_NAME=label, simns as
+bootstrap). Check-in hands it the queued receive rights. All are SIGTERMed when the app exits or simns is terminated.
+Dead daemons come back as with launchd: before handing a daemon its service port, simns requests a port-destroyed
+notification, so when the daemon dies the receive right (and any queued messages) returns to simns instead of being
+destroyed. Clients' send rights stay valid; the port waits in a port set that a thread watches, and the first
+message to it relaunches the daemon, which checks the same port in again. (Before, a dead daemon's port became a dead
+name and clients already connected — e.g. every app's CFPreferences — were cut off for good; the daemon also wasn't
+relaunched while it was an unreaped zombie.) SimRun relies on this to restart cfprefsd when it resets an app's data.
 Why: without trustd, every TLS handshake fails (-9808 errSSLBadCert / NSURLErrorDomain -1202). Plain BSD sockets and
 getaddrinfo work without any daemon. notifyd is NOT allow-listed: it needs XPC event-publisher routines simns lacks
 (aborts "Event publisher error").
+containermanagerd serves app group containers (`containerURL(forSecurityApplicationGroupIdentifier:)`, and cfprefsd
+for group suites) under data/Containers/Shared/AppGroup/ to apps entitled to the group; ~0.4 s on first use.
 
 ## Shared server mode (simns --serve)
 Used by simrund. simns spawns no app; the host sends SIMNS_MSG_NEW_NS (reply port in msgh_local_port) and gets back

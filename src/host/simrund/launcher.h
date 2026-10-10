@@ -14,6 +14,7 @@ typedef NS_ENUM(NSInteger, SRAppState) {
 - (SRAppState)stateForApp:(SRAppInfo *)app;
 - (void)quitApp:(SRAppInfo *)app;
 - (void)showLogForApp:(SRAppInfo *)app;
+- (void)resetDataForApp:(SRAppInfo *)app;      // deletes its data container (the app isn't running)
 @end
 
 @interface SRLauncher : NSObject

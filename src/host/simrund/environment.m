@@ -38,6 +38,24 @@ static NSString *RealHome(void) { struct passwd *pw = getpwuid(getuid()); return
   return NSProcessInfo.processInfo.environment[@"SIMRUN_DATA"] ?: [RealHome() stringByAppendingPathComponent:@"Library/Developer/SimRun/data"];
 }
 
++ (NSString *)containerIdentifierForExecutable:(NSString *)executable {
+  NSString *dir = executable.stringByDeletingLastPathComponent;
+  NSString *ident = nil;
+  if ([dir.pathExtension isEqualToString:@"app"])
+    ident = [NSDictionary dictionaryWithContentsOfFile:[dir stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"];
+  if (![ident isKindOfClass:NSString.class] || !ident.length) ident = executable.lastPathComponent;
+  return [ident stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+}
++ (NSString *)containerPathForIdentifier:(NSString *)identifier {
+  return [[[self dataDirectory] stringByAppendingPathComponent:@"Containers/Data/Application"] stringByAppendingPathComponent:identifier];
+}
++ (NSString *)createContainerForIdentifier:(NSString *)identifier {
+  NSString *c = [self containerPathForIdentifier:identifier];
+  for (NSString *sub in @[ @"Documents", @"Library/Caches", @"Library/Preferences", @"tmp" ])
+    [NSFileManager.defaultManager createDirectoryAtPath:[c stringByAppendingPathComponent:sub] withIntermediateDirectories:YES attributes:nil error:nil];
+  return c;
+}
+
 + (NSDictionary<NSString *, NSString *> *)simulatorVariables {
   NSDictionary *env = NSProcessInfo.processInfo.environment;
   NSString *R = [self runtimeRoot];

@@ -42,6 +42,8 @@ typedef struct ns { mach_port_t port; entry_t *entries; pid_t owner; struct ns *
 static ns_t gGlobal, *gApps;
 static pthread_mutex_t gLock = PTHREAD_MUTEX_INITIALIZER;
 static mach_port_t gNS, gCtl, gSet;
+static mach_port_t gReturned;   // in gSet: port-destroyed notifications (a daemon's service port coming back)
+static mach_port_t gIdle;       // port set: service ports of daemons that aren't running (watched by idle_watch)
 static FILE *gLog; static int gQuiet;
 static volatile int gReady;
 
@@ -67,7 +69,11 @@ static void reg(ns_t *n, const char *name, mach_port_t send, uint32_t flags) {
   e->send = send; e->flags = flags;
   pthread_mutex_unlock(&gLock);
 }
+static int is_daemon_service(const char *name);
 // Hand out a receive right for `name` (check-in); creates the port on demand, keeps a send right for lookups.
+// A daemon's service ports come back when it dies (as with launchd): the receive right with any queued messages
+// returns to us instead of being destroyed, so clients' send rights stay valid and the daemon is relaunched when the
+// next message arrives (idle_watch) — a crashed or restarted cfprefsd doesn't cut off the apps that were using it.
 static mach_port_t checkin(ns_t *n, const char *name) {
   pthread_mutex_lock(&gLock);
   entry_t *e = get(n, name);
@@ -80,6 +86,12 @@ static mach_port_t checkin(ns_t *n, const char *name) {
   }
   e->recv = MACH_PORT_NULL;
   pthread_mutex_unlock(&gLock);
+  if (n == &gGlobal && is_daemon_service(name)) {
+    mach_port_move_member(mach_task_self(), r, MACH_PORT_NULL);   // out of gIdle, if it was waiting there
+    mach_port_t prev = MACH_PORT_NULL;
+    mach_port_request_notification(mach_task_self(), r, MACH_NOTIFY_PORT_DESTROYED, 0, gReturned, MACH_MSG_TYPE_MAKE_SEND_ONCE, &prev);
+    if (prev) mach_port_deallocate(mach_task_self(), prev);
+  }
   return r;
 }
 static mach_port_t lookup_in(ns_t *n, const char *name, uint32_t *flags) {
@@ -112,14 +124,14 @@ static const char *pname(pid_t pid) { static char b[64]; b[0] = 0; proc_name(pid
 // The runtime's LaunchDaemons/LaunchAgents plists map MachServices -> program. For allow-listed labels, the first
 // lookup of one of those names pre-creates the port (callers get a send right at once; messages queue), and spawns
 // the daemon with our namespace as its bootstrap; its check-in then receives the queued receive right.
-typedef struct daemon { char *label; char **argv; char **env; char **services; int nservices; pid_t pid; struct daemon *next; } daemon_t;
+typedef struct daemon { char *label; char **argv; char **env; char **services; int nservices; pid_t pid; int gone; struct daemon *next; } daemon_t;
 static daemon_t *gDaemons;
 static char **gChildEnv;   // base environment for children (set in main)
 static char *gRoot;
 
 static int allowed(const char *label) {
   const char *list = getenv("SIMNS_DAEMONS");
-  if (!list) list = "com.apple.trustd,com.apple.securityd,com.apple.cfprefsd.xpc.daemon,com.apple.cfprefsd.xpc.agent";  // notifyd needs XPC event-publisher routines (crashes)
+  if (!list) list = "com.apple.trustd,com.apple.securityd,com.apple.cfprefsd.xpc.daemon,com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd";  // notifyd needs XPC event-publisher routines (crashes)
   if (!strcmp(list, "none")) return 0;
   size_t n = strlen(label);
   for (const char *p = list; (p = strstr(p, label)); p += n)
@@ -187,13 +199,24 @@ static int port_alive(mach_port_t p) {
   mach_port_type_t t = 0;
   return p && mach_port_type(mach_task_self(), p, &t) == KERN_SUCCESS && !(t & MACH_PORT_TYPE_DEAD_NAME) && (t & (MACH_PORT_TYPE_SEND | MACH_PORT_TYPE_RECEIVE));
 }
+static daemon_t *daemon_for(const char *name) {
+  for (daemon_t *d = gDaemons; d; d = d->next)
+    for (int i = 0; i < d->nservices; i++) if (!strcmp(d->services[i], name)) return d;
+  return NULL;
+}
+static int is_daemon_service(const char *name) { return daemon_for(name) != NULL; }
+static pthread_mutex_t gDaemonLock = PTHREAD_MUTEX_INITIALIZER;   // lookups (serve) and idle_watch both launch
 // If `name` belongs to an allow-listed daemon that isn't running, declare its ports and spawn it.
 static void ensure_daemon(const char *name) {
-  for (daemon_t *d = gDaemons; d; d = d->next) {
-    int mine = 0; for (int i = 0; i < d->nservices; i++) if (!strcmp(d->services[i], name)) mine = 1;
-    if (!mine) continue;
-    if (d->pid > 0 && kill(d->pid, 0) == 0) return;
-    if (d->pid > 0) { int st; waitpid(d->pid, &st, WNOHANG); }
+  pthread_mutex_lock(&gDaemonLock);
+  for (daemon_t *d = daemon_for(name); d; d = NULL) {
+    if (d->gone && d->pid > 0)   // its ports came back: it is exiting, if not gone yet
+      for (int t = 0; t < 50 && waitpid(d->pid, NULL, WNOHANG) == 0; t++) usleep(10000);
+    if (d->gone) { d->pid = 0; d->gone = 0; }
+    // reap first: a daemon that died (crashed, or stopped by simrund) is a zombie until then, and kill(pid, 0) succeeds
+    // on zombies, so it would count as running and never be relaunched
+    if (d->pid > 0) { int st; if (waitpid(d->pid, &st, WNOHANG) == d->pid) d->pid = 0; }
+    if (d->pid > 0 && kill(d->pid, 0) == 0) break;
     pthread_mutex_lock(&gLock);
     for (int i = 0; i < d->nservices; i++) {
       entry_t *e = get(&gGlobal, d->services[i]);
@@ -220,8 +243,47 @@ static void ensure_daemon(const char *name) {
     posix_spawnattr_destroy(&attr); free(env);
     if (r) { L("spawn daemon %s failed: %s", d->label, strerror(r)); d->pid = 0; }
     else L("launched %s (pid %d) for %s", d->label, d->pid, name);
-    return;
   }
+  pthread_mutex_unlock(&gDaemonLock);
+}
+
+// A daemon died and its service port came back (MACH_NOTIFY_PORT_DESTROYED carries the receive right): keep it, with
+// its queued messages, until the next message calls for the daemon again.
+static void port_returned(mach_port_destroyed_notification_t *m) {
+  mach_port_t p = m->not_port.name;
+  const char *name = NULL;
+  pthread_mutex_lock(&gLock);
+  for (entry_t *e = gGlobal.entries; e; e = e->next) if (e->send == p) { e->recv = p; name = e->name; break; }
+  pthread_mutex_unlock(&gLock);
+  daemon_t *d = name ? daemon_for(name) : NULL;
+  if (!d) { mach_port_mod_refs(mach_task_self(), p, MACH_PORT_RIGHT_RECEIVE, -1); return; }
+  pthread_mutex_lock(&gDaemonLock); d->gone = 1; pthread_mutex_unlock(&gDaemonLock);
+  mach_port_move_member(mach_task_self(), p, gIdle);
+  L("%s exited; %s kept, relaunch on demand", d->label, name);
+}
+
+// Waits for a message on any idle daemon's service port and launches that daemon (which checks the port in again).
+static void *idle_watch(void *arg) {
+  mach_port_t me = mach_task_self();
+  for (;;) {
+    mach_msg_header_t h;   // too small on purpose: the message stays queued for the daemon
+    kern_return_t kr = mach_msg(&h, MACH_RCV_MSG | MACH_RCV_LARGE, 0, sizeof h, gIdle, 0, 0);
+    if (kr != MACH_RCV_TOO_LARGE) { if (kr) { L("idle watch: mach_msg %x", kr); usleep(100000); } continue; }
+    mach_port_name_array_t members = NULL; mach_msg_type_number_t count = 0;
+    if (mach_port_get_set_status(me, gIdle, &members, &count)) continue;
+    for (mach_msg_type_number_t i = 0; i < count; i++) {
+      mach_port_status_t st; mach_msg_type_number_t sc = MACH_PORT_RECEIVE_STATUS_COUNT;
+      if (mach_port_get_attributes(me, members[i], MACH_PORT_RECEIVE_STATUS, (mach_port_info_t)&st, &sc) || !st.mps_msgcount) continue;
+      mach_port_move_member(me, members[i], MACH_PORT_NULL);
+      char name[256] = "";
+      pthread_mutex_lock(&gLock);
+      for (entry_t *e = gGlobal.entries; e; e = e->next) if (e->recv == members[i]) { strlcpy(name, e->name, sizeof name); break; }
+      pthread_mutex_unlock(&gLock);
+      if (name[0]) ensure_daemon(name);
+    }
+    vm_deallocate(me, (vm_address_t)members, count * sizeof *members);
+  }
+  return NULL;
 }
 // Daemons may ignore or defer SIGTERM (like launchd's ExitTimeOut): give them a moment, then SIGKILL.
 static void stop_daemons(void) {
@@ -352,6 +414,7 @@ static void *serve(void *arg) {
     mach_msg_audit_trailer_t *t = (mach_msg_audit_trailer_t *)((char *)h + round_msg(h->msgh_size));
     pid_t pid = audit_token_to_pid(t->msgh_audit);
     if (h->msgh_local_port == gCtl) handle_ctl(h);
+    else if (h->msgh_local_port == gReturned && h->msgh_id == MACH_NOTIFY_PORT_DESTROYED) port_returned((mach_port_destroyed_notification_t *)h);
     else if (h->msgh_id == MACH_NOTIFY_NO_SENDERS) destroy_ns(h->msgh_local_port);
     else if ((h->msgh_id & 0x40000000) || (h->msgh_id & 0x10000000)) handle_pipe(h, pid);
     else { L("pid %d: non-pipe msg id=%x", pid, h->msgh_id); mach_msg_destroy(h); }
@@ -370,9 +433,12 @@ int main(int argc, char **argv) {
   mach_port_allocate(me, MACH_PORT_RIGHT_RECEIVE, &gCtl); mach_port_insert_right(me, gCtl, gCtl, MACH_MSG_TYPE_MAKE_SEND);
   mach_port_allocate(me, MACH_PORT_RIGHT_PORT_SET, &gSet);
   mach_port_move_member(me, gNS, gSet); mach_port_move_member(me, gCtl, gSet);
+  mach_port_allocate(me, MACH_PORT_RIGHT_RECEIVE, &gReturned); mach_port_move_member(me, gReturned, gSet);
+  mach_port_allocate(me, MACH_PORT_RIGHT_PORT_SET, &gIdle);
   // The control port is itself discoverable in the namespace (for the app-side shim).
   mach_port_mod_refs(me, gCtl, MACH_PORT_RIGHT_SEND, 1); reg(&gGlobal, "dev.simrun.simns.control", gCtl, 0);
   pthread_t th; pthread_create(&th, NULL, serve, NULL);
+  pthread_t idle; pthread_create(&idle, NULL, idle_watch, NULL);
 
   const char *slot = getenv("SIMNS_HOST_SLOT");
   if (slot) {
