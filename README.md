@@ -31,7 +31,8 @@ Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime.
 ```
 simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit server: one window per app, input forwarding, and the
   argv, env, stdio fds                   │            host-side "sim2host" services (com.apple.IOSurface.Remote via
-                                         │            IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation)
+                                         │            IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation,
+                                         │            dev.simrun.pasteboard: the Mac's NSPasteboard)
                                          ├─ build/bin/simns --serve   launchd_sim stand-in speaking sim libxpc's XPC-pipe protocol;
                                          │     │                      one private namespace per app layered over a shared global one;
                                          │     └─ trustd, cfprefsd…   real sim daemons launched on demand, shared by all apps
@@ -41,6 +42,8 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
                                                              scene's layers on the display (SpringBoard's job)
                                               scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene)
                                               hid.dylib      mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:]
+                                              pboard.dylib   in-process pasteboard daemon (com.apple.pasteboard.pasted) backed
+                                                             by the Mac pasteboard via simrund (docs/pasteboard.md)
                                             SimFramebuffer   fake SimFramebuffer: the render server's display; presented
                                                              IOSurfaces go to the app's window (include/protocol.h)
 ```
@@ -50,12 +53,12 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
 | Path | Contents |
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs |
-| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, per-app window sessions, environment), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
+| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, per-app window sessions, environment, host pasteboard), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
-| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `simfb/` |
+| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `simfb/` |
 | `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`) |
 | `catalyst/` | Approach A: `sim2mac.sh` re-tags a Simulator .app as Mac Catalyst (runs on macOS's own UIKit instead) |
 | `docs/` | Write-ups (see below) |
 
@@ -74,7 +77,8 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 | `SIMRUND_IDLE=secs` | Shared server exits after this long without apps (default 600, 0 = never); set when it starts |
 | `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
 | `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default 402×874 @3x) |
-| `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1` | Component tracing (`SIMFB_VERBOSE` also reports the frame-copy latency) |
+| `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1`, `PBOARD_VERBOSE=1` | Component tracing (`SIMFB_VERBOSE` also reports the frame-copy latency) |
+| `PBOARD_DISABLE=1` | No pasteboard service in the app (UIPasteboard fails as it did before pboard.dylib) |
 | `SIMFB_CHECK=1` | Frame diagnostics: stale pixels outside partial presents (app side), and buffers overwritten while on screen (server log) |
 | `SIMRUN_DEBUG_STALL=ms`, `SIMRUN_CHROME_DEMO=secs` | Testing: block SimRun's main thread for *ms* every 100 ms; toggle the window chrome on a timer (no mouse needed) |
 | `OS_ACTIVITY_DT_MODE=1` | Mirror os_log/NSLog to stderr |
@@ -86,11 +90,12 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 - `docs/render.md` — in-process render server, the SimFramebuffer API, sim2host GPU/IOSurface services
 - `docs/scenes.md` — how UIKit obtains a UIWindowScene and the in-process FrontBoard host
 - `docs/hid.md` — input injection, keyboard focus/deferring, event fields
+- `docs/pasteboard.md` — UIPasteboard ⇄ Mac pasteboard: the pasted protocol, UIKit's cache, the fake server
 - `docs/approach-a-catalyst.md` — the simpler Mac Catalyst re-tagging approach
 
 ## Known gaps
 
 No RunningBoard (backgrounded apps keep running), no on-screen keyboard (needs SpringBoard hosting), hardware keyboard
 is US-positional, first text-field focus stalls ~2–3 s, rotation input mapping, no audio, notifyd not provided,
-app extensions and embedded frameworks untested. UIKit apps ignore SIGTERM, so ending an app is SIGTERM
-followed by SIGKILL after 1.5 s (no applicationWillTerminate).
+app extensions and embedded frameworks untested, no secure paste (`UIPasteControl`) or pasteboard pattern detection.
+UIKit apps ignore SIGTERM, so ending an app is SIGTERM followed by SIGKILL after 1.5 s (no applicationWillTerminate).

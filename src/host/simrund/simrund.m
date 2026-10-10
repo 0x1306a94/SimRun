@@ -1,8 +1,9 @@
 // SimRun.app / simrund — the SimRun host process (macOS, AppKit).
 //
-// One process owns the launcher, every app window, one set of host-side "sim2host" services (IOSurface, Metal) and
-// one `simns --serve` (the launchd_sim stand-in, which also runs the shared sim daemons). Each iOS app is still its
-// own process: it gets a private simns namespace layered over the global one and a window (SRSession).
+// One process owns the launcher, every app window, one set of host-side "sim2host" services (IOSurface, Metal, the
+// Mac pasteboard) and one `simns --serve` (the launchd_sim stand-in, which also runs the shared sim daemons). Each
+// iOS app is still its own process: it gets a private simns namespace layered over the global one and a window
+// (SRSession).
 //
 //   SimRun [app.app ...]         GUI: the launcher window (drop .app bundles to add + launch them); also serves
 //                                `simapp` clients on the Unix socket. If another instance already serves the socket,
@@ -19,9 +20,11 @@
 #include "environment.h"
 #include "library.h"
 #include "launcher.h"
+#include "pasteboard.h"
 #include "simns_proto.h"
 #include "simrund_proto.h"
 #include "gpuhost.h"
+#include "pboard.h"
 
 typedef NS_ENUM(NSInteger, SRMode) { SRModeGUI, SRModeServe, SRModeRun };
 
@@ -56,6 +59,7 @@ static void LOG(NSString *fmt, ...) {
   NSMutableArray<NSString *> *_openAtLaunch;
   NSTimer *_idleTimer;
   SRLauncher *_launcher;
+  SRPasteboardHost *_pasteboard; mach_port_t _pasteboardPort;
   BOOL _launched;
 }
 
@@ -259,6 +263,8 @@ static void LOG(NSString *fmt, ...) {
     if (srgpu_host_start(&ios, &mtl) != 0) LOG(@"host GPU services failed to start");
     if (ios) [self registerName:"com.apple.IOSurface.Remote" port:ios];
     if (mtl) [self registerName:"com.apple.metal.simulator" port:mtl];
+    if (!_pasteboard) { _pasteboard = [SRPasteboardHost new]; _pasteboardPort = [_pasteboard start]; }
+    if (_pasteboardPort) [self registerName:SRPB_SERVICE port:_pasteboardPort]; else LOG(@"host pasteboard service failed to start");
     mach_msg_header_t ready = { .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0), .msgh_size = sizeof ready,
                                 .msgh_remote_port = _nsCtl, .msgh_id = SIMNS_MSG_READY };
     mach_msg(&ready, MACH_SEND_MSG, sizeof ready, 0, 0, 0, 0);

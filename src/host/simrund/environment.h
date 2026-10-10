@@ -13,7 +13,7 @@
 + (NSArray<NSString *> *)processEnvironment;
 
 + (NSString *)simnsPath;                 // the simns helper
-+ (NSString *)libraryDirectory;          // rshim/glue/scenes/hid dylibs + SimFramebuffer
++ (NSString *)libraryDirectory;          // rshim/glue/scenes/hid/pboard dylibs + SimFramebuffer
 + (NSString *)injectedLibraries;         // SIMNS_INSERT value for apps
 + (NSString *)framebufferFramework;      // SIMULATOR_FRAMEBUFFER_FRAMEWORK value
 @end

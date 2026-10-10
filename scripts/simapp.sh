@@ -12,7 +12,7 @@ T="$1"; shift
 if [[ -d "$T" ]]; then EXE="$T/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$T/Info.plist")"; else EXE="$T"; fi
 L="$APP/Contents/Resources/lib"
 export SIMULATOR_FRAMEBUFFER_FRAMEWORK="$L/SimFramebuffer"
-export SIMNS_INSERT="$L/rshim.dylib:$L/glue.dylib:$L/scenes.dylib:$L/hid.dylib${SIMAPP_EXTRA_INSERT:+:$SIMAPP_EXTRA_INSERT}"
+export SIMNS_INSERT="$L/rshim.dylib:$L/glue.dylib:$L/scenes.dylib:$L/hid.dylib:$L/pboard.dylib${SIMAPP_EXTRA_INSERT:+:$SIMAPP_EXTRA_INSERT}"
 export SIMRUN_TITLE="${SIMRUN_TITLE:-$(basename "$T" .app)}"
 if [[ -n "$SIMAPP_STANDALONE" ]]; then
   exec "$ROOT/scripts/simrun.sh" "$APP/Contents/MacOS/SimRun" --run "$EXE" "$@"
