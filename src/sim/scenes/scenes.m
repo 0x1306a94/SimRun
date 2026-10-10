@@ -20,6 +20,7 @@
 //  * os_trace_set_mode fix: NSLog/os_log visible with OS_ACTIVITY_DT_MODE=1 even in null-bootstrap mode.
 //  * BackBoard HID BSService endpoint ("com.apple.backboard.hid-services.xpc") -> in-process anonymous XPC sink.
 //  * No com.apple.runningboard: RBS assertion acquisition fails at once instead of a sleep-and-retry (~100 ms of launch).
+//  * No LaunchServices: -[UTType conformsToType:nil] (unresolvable type) is NO instead of an assertion (drag & drop).
 //  * Only when there is no CARenderServer: +[CADisplay displays] -> @[] (skips a 5 s retry loop), synthesized main
 //    FBSDisplayConfiguration for UIScreen, remote CAContext -> local CAContext fallback.
 // Exported API (scenes.h): SRScenesCreate, SRScenesUpdate, SRScenesSetLayersCallback, SRScenesGetMainContextID.
@@ -401,6 +402,16 @@ static id sr_acquireAssertion(id self, SEL _cmd, id assertion, NSError **error) 
   return nil;
 }
 
+// No LaunchServices (lsd and its containermanagerd chain don't run): UTType resolves only the built-in core types, so
+// +[UTType typeWithIdentifier:] (even _typeWithIdentifier:allowUndeclared:YES) returns nil for anything else, e.g.
+// UIKit's own com.apple.uikit.useractivity. Callers that assume a type, like the drag statistics logged when a drag
+// begins, then hit -conformsToType:'s "type != nil" assertion and crash the app. A type that can't be resolved
+// conforms to nothing.
+static IMP gOrigConformsToType;
+static BOOL sr_conformsToType(id self, SEL _cmd, id type) {
+  return type ? ((BOOL (*)(id, SEL, id))gOrigConformsToType)(self, _cmd, type) : NO;
+}
+
 // Without a render server UIKit creates the main UIScreen with a nil FBSDisplayConfiguration -> bounds {0,0},
 // scale 1. Synthesize a main-display configuration (what FrontBoardServices would build from the main CADisplay) so
 // UIScreen / trait displayScale are right. Only used when CADisplay has no displays.
@@ -431,6 +442,8 @@ __attribute__((constructor)) static void scenes_init(void) {
     gOrigEndpointForMachName = method_setImplementation(m, (IMP)sr_endpointForMachName);
     Method a = class_getInstanceMethod(NSClassFromString(@"RBSConnection"), NSSelectorFromString(@"acquireAssertion:error:"));
     if (a) gOrigAcquireAssertion = method_setImplementation(a, (IMP)sr_acquireAssertion);
+    Method c = class_getInstanceMethod(NSClassFromString(@"UTType"), @selector(conformsToType:));
+    if (c) gOrigConformsToType = method_setImplementation(c, (IMP)sr_conformsToType);
   }
   const char *e;
   if ((e = getenv("SCENES_W"))) gW = atof(e);
