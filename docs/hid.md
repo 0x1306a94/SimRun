@@ -132,6 +132,9 @@ Notes:
 ```c
 void SRHIDTouch(int phase, float x, float y);                    // finger 0; SRHID_TOUCH_BEGAN/MOVED/ENDED/CANCELLED = 1..4
 void SRHIDTouchFinger(int finger, int phase, float x, float y);  // multitouch, finger 0..9 (9 is used by SRHIDScroll)
+bool SRHIDDetachTouches(SRHIDDetachedTouchHandler h, void *ctx); // drag began: cancel the app's touches, send their
+                                                                 // moves/lift to h (drag.dylib, docs/dragdrop.md)
+void SRHIDDragEvent(uint32_t session, int locus, float x, float y, bool touching); // a drag HID event
 void SRHIDScroll(float x, float y, float dx, float dy);          // wheel/trackpad, emulated (see §6)
 void SRHIDKeyUsage(uint32_t hidUsage, bool down);                // USB HID page 7
 void SRHIDKeyMac(uint16_t macKeyCode, bool down, uint32_t macModifierFlags);

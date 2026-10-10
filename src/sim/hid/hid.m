@@ -8,6 +8,8 @@
 //            id of the window under the first finger (BKSHIDEventSetDigitizerInfo);
 //   keys:    keyboard events (usage page 7) + BKSHIDEventBaseAttributes {source externalKeyboard, token = key window
 //            CAContext id} (BKSHIDEventSetSimpleInfo) — UIKit drops keyboard events whose context id maps to no window.
+//   drags:   for drag.dylib, the finger is taken from UIKit when a drag begins (its touch is cancelled) and drag events
+//            are built instead: digitizer events whose path attributes carry the drag session id and locus.
 // Plus the backboardd/SpringBoard state UIKit needs for text input:
 //   * GSEventIsHardwareKeyboardAttached() -> YES (interposed; normally notifyd state set by backboardd)
 //   * keyboardFocus/system event-deferring chains pushed to BKSHIDEventObserver (normally from backboardd's
@@ -49,6 +51,8 @@ extern void IOHIDEventSetSenderID(IOHIDEventRef, uint64_t senderID);
 // (event, contextID, systemGesturesPossible, systemGestureStateChange, displayUUID, initialTouchTimestamp, maxForce)
 extern void BKSHIDEventSetDigitizerInfo(IOHIDEventRef, uint32_t contextID, Boolean systemGesturePossible, Boolean systemGestureStateChange,
     CFStringRef displayUUID, double initialTouchTimestamp, double maxForce);
+extern id BKSHIDEventGetDigitizerAttributes(IOHIDEventRef);
+extern void BKSHIDEventSetDigitizerAttributes(IOHIDEventRef, id attributes);
 
 // (event, BKSHIDEventSource, options(1 = ?), displayHardwareIdentifier, contextID, systemEnvironment) -> BKSHIDEventBaseAttributes
 extern void BKSHIDEventSetSimpleInfo(IOHIDEventRef, uint32_t source, int options, CFStringRef display, uint32_t contextID, Boolean systemEnv);
@@ -107,13 +111,21 @@ static UIWindow *SRHIDWindowAt(CGPoint p) {
 
 // ---------------------------------------------------------------- touches
 #define SRHID_MAX_FINGERS 10
-typedef struct { bool down; float x, y; uint32_t identity, ctx; } SRFinger;
+typedef struct { bool down, detached; float x, y; uint32_t identity, ctx; } SRFinger;
 static SRFinger gFingers[SRHID_MAX_FINGERS];
 static uint32_t gNextIdentity = 2;
+static SRHIDDetachedTouchHandler gDetachedHandler;   // a drag owns the detached fingers
+static void *gDetachedCtx;
 
 static void SRHIDTouchFingerMain(int finger, int phase, float x, float y) {
   if (finger < 0 || finger >= SRHID_MAX_FINGERS) return;
   SRFinger *f = &gFingers[finger];
+  if (f->detached && phase != SRHID_TOUCH_BEGAN) {   // taken by a drag: UIKit already saw this touch cancelled
+    f->x = x; f->y = y;
+    if (phase == SRHID_TOUCH_ENDED || phase == SRHID_TOUCH_CANCELLED) f->down = f->detached = false;
+    if (gDetachedHandler) gDetachedHandler(phase, x, y, gDetachedCtx);
+    return;
+  }
   if (phase == SRHID_TOUCH_BEGAN) {
     if (f->down) SRHIDTouchFingerMain(finger, SRHID_TOUCH_ENDED, f->x, f->y); // missing end: close the old touch
     UIWindow *w = SRHIDWindowAt(CGPointMake(x, y));
@@ -121,7 +133,7 @@ static void SRHIDTouchFingerMain(int finger, int phase, float x, float y) {
     // all fingers of one hand event must share the context; join an existing touch's context if any
     uint32_t ctx = [w _contextId];
     for (int i = 0; i < SRHID_MAX_FINGERS; i++) if (gFingers[i].down) { ctx = gFingers[i].ctx; break; }
-    *f = (SRFinger){ true, x, y, gNextIdentity++, ctx };
+    *f = (SRFinger){ .down = true, .x = x, .y = y, .identity = gNextIdentity++, .ctx = ctx };
   } else {
     if (!f->down) return; // moved/ended without began: ignore
     f->x = x; f->y = y;
@@ -157,6 +169,59 @@ static void SRHIDTouchFingerMain(int finger, int phase, float x, float y) {
 }
 
 void SRHIDTouchFinger(int finger, int phase, float x, float y) { SRHIDOnMain(^{ SRHIDTouchFingerMain(finger, phase, x, y); }); }
+
+// ---------------------------------------------------------------- drag & drop
+bool SRHIDDetachTouches(SRHIDDetachedTouchHandler handler, void *ctx) {
+  __block bool any = false;
+  void (^detach)(void) = ^{
+    for (int i = 0; i < SRHID_MAX_FINGERS; i++) {
+      SRFinger *f = &gFingers[i];
+      if (!f->down || f->detached) continue;
+      float x = f->x, y = f->y;
+      SRHIDTouchFingerMain(i, SRHID_TOUCH_CANCELLED, x, y);   // UIKit: touch cancelled
+      f->down = f->detached = true;                           // still on the glass, now the drag's
+      any = true;
+    }
+    gDetachedHandler = handler; gDetachedCtx = ctx;
+    VLOG("detached touches for a drag: %d", any);
+  };
+  if (pthread_main_np()) detach(); else dispatch_sync(dispatch_get_main_queue(), detach);
+  return any;
+}
+
+static void SRHIDDragEventMain(uint32_t sessionID, int locus, float x, float y, bool touching) {
+  static const uint32_t kDragIdentity = 0x5ee;   // the drag's own touch path
+  UIWindow *w = SRHIDWindowAt(CGPointMake(x, y));
+  uint32_t ctx = [w _contextId];
+  if (!ctx) { VLOG("drag event: no window at (%.1f,%.1f)", x, y); return; }
+  uint64_t ts = mach_absolute_time();
+  uint32_t mask = locus == SRHID_DRAG_ENTERED || !touching ? (kMaskRange | kMaskTouch | kMaskIdentity) : kMaskPosition;
+  IOHIDEventRef hand = IOHIDEventCreateDigitizerEvent(kCFAllocatorDefault, ts, kTransducerHand, 0, 0, mask, 0, x, y, 0, 0, 0,
+                                                      touching, touching, 0);
+  IOHIDEventSetIntegerValue(hand, kFieldDigitizerIsDisplayIntegrated, 1);
+  IOHIDEventRef child = IOHIDEventCreateDigitizerFingerEvent(kCFAllocatorDefault, ts, 1, kDragIdentity, mask, x, y, 0, touching ? 1 : 0, 0,
+                                                             touching, touching, 0);
+  IOHIDEventAppendEvent(hand, child, 0);
+  CFRelease(child);
+  IOHIDEventSetSenderID(hand, kDigitizerSenderID);
+  BKSHIDEventSetDigitizerInfo(hand, ctx, false, false, NULL, 0, 0);
+  // path attributes for finger 1: which drag session this is and where the drag is relative to the app
+  id attrs = BKSHIDEventGetDigitizerAttributes(hand);
+  id path = [NSClassFromString(@"BKSHIDEventDigitizerPathAttributes") new];
+  [path setValue:@1 forKey:@"pathIndex"];
+  [path setValue:@(kDragIdentity) forKey:@"touchIdentifier"];
+  [path setValue:@(sessionID) forKey:@"userIdentifier"];
+  [path setValue:@(locus) forKey:@"locus"];
+  [path setValue:[NSValue valueWithCGPoint:CGPointMake(x, y)] forKey:@"hitTestLocation"];
+  [attrs setValue:@[ path ] forKey:@"pathAttributes"];
+  BKSHIDEventSetDigitizerAttributes(hand, attrs);
+  VLOG("drag event session=%u locus=%d (%.1f,%.1f) touching=%d ctx=0x%x", sessionID, locus, x, y, touching, ctx);
+  [UIApplication.sharedApplication _enqueueHIDEvent:hand];
+  CFRelease(hand);
+}
+void SRHIDDragEvent(uint32_t sessionID, int locus, float x, float y, bool touching) {
+  SRHIDOnMain(^{ SRHIDDragEventMain(sessionID, locus, x, y, touching); });
+}
 void SRHIDTouch(int phase, float x, float y) { SRHIDTouchFinger(0, phase, x, y); }
 
 // ---------------------------------------------------------------- scroll wheel / trackpad (emulated)

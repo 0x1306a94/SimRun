@@ -34,6 +34,17 @@ void SRHIDReleaseModifiers(void);
 // the active keyboard input delegate (UIKeyboardImpl insertText:), like the software keyboard / IME commit.
 void SRHIDText(const char *utf8);
 
+// Drag & drop (drag.dylib, the in-process stand-in for the druid drag server). What backboardd does when a drag begins:
+// the fingers touching the screen are taken from UIKit (their touches are cancelled) and from then on their moves and
+// lift go to `handler` (on the main thread) instead, until they lift. Returns false if no finger is down.
+typedef void (*SRHIDDetachedTouchHandler)(int phase, float x, float y, void *ctx);
+bool SRHIDDetachTouches(SRHIDDetachedTouchHandler handler, void *ctx);
+// A drag event, as backboardd delivers them during a drag: a digitizer event at scene point (x, y) whose path attributes
+// carry the drag session id and the locus (SRHID_DRAG_*), sent to the window under the point. touching = false: the
+// finger lifted (drag end).
+enum { SRHID_DRAG_WITHIN = 1, SRHID_DRAG_ENTERED = 2, SRHID_DRAG_EXITED = 3 };
+void SRHIDDragEvent(uint32_t sessionID, int locus, float x, float y, bool touching);
+
 // Start the viewer-protocol receiver (viewer/protocol.h): allocates a receive port, sends SR_MSG_HELLO with it to
 // mach_ports_lookup()[SR_PORT_SLOT_HOST], and turns SR_MSG_INPUT messages into the calls above. Called automatically
 // by the dylib constructor when a host port exists (disable with HID_NO_RECEIVER=1). Idempotent.
