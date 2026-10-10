@@ -1,6 +1,7 @@
 # SimRun — build everything into build/.
-#   make            core components + test apps
+#   make            core components, tools and test programs
 #   make core       SimRun.app (server + launcher, simns, injected dylibs, fake SimFramebuffer) and the simapp client
+#   make test-apps  sample/test apps (build/apps)
 #   make tests      test apps and test programs
 #   make clean
 
@@ -21,14 +22,16 @@ APP   := $(BUILD)/SimRun.app
 CORE  := $(APP) $(BIN)/simapp
 PARTS := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput $(BIN)/rhost
-TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/Showcase.app \
-         $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest
+TEST_APPS  := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/Showcase.app
+TEST_PROGS := $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest
 
-.PHONY: all core tools tests clean $(APP)
-all: core tools tests
+.PHONY: all core tools test-apps test-programs tests clean $(APP)
+all: core tools test-programs
 core: $(CORE)
 tools: $(TOOLS)
-tests: $(TESTS)
+test-apps: $(TEST_APPS)
+test-programs: $(TEST_PROGS)
+tests: test-apps test-programs
 
 $(BIN) $(LIB) $(APPS) $(TBIN):
 	@mkdir -p $@

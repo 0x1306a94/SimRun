@@ -51,8 +51,14 @@ SimRun is developed on macOS 27.2 with Xcode 27.1 and the iOS 27.1 runtime. Othe
 make
 ```
 
-This builds `build/SimRun.app`, plus a few sample apps in `build/apps/`. You can rebuild while SimRun is open; quit
-and reopen SimRun to pick up the new version.
+This builds `build/SimRun.app`. You can rebuild while SimRun is open; quit and reopen SimRun to pick up the new
+version.
+
+To also build the sample apps into `build/apps/`, including Showcase, a tour of what SimRun can do:
+
+```bash
+make test-apps
+```
 
 ## Use
 
@@ -72,7 +78,7 @@ SimRun opens a launcher window listing your apps. To add one, do any of the foll
 SimRun remembers the list. Double-click an app to launch it. While it starts, its row shows a spinner; once the
 window is up, the row shows a green dot.
 
-To see what SimRun can do, try the built-in tour: add `build/apps/Showcase.app` and launch it.
+To see what SimRun can do, build the sample apps (`make test-apps`), then add `build/apps/Showcase.app` and launch it.
 
 How your Mac maps to an iPhone:
 

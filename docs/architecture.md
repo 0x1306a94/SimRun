@@ -73,8 +73,10 @@ on its own (no SimRun server) still runs a binary with the shared directory as H
 
 ## Building
 
-`make` builds everything into `build/` (`SimRun.app`, `bin/`, `lib/`, `apps/`, `tests/`); `make core` builds
-SimRun.app and the client, `make tests` the test apps and programs, `make tools` the tools. Rebuilding while SimRun
+Everything builds into `build/` (`SimRun.app`, `bin/`, `lib/`, `apps/`, `tests/`). `make` builds SimRun.app, the
+client, the tools and the test programs; `make core` only SimRun.app and the client, `make tools` the tools,
+`make test-apps` the test apps (`build/apps/`), `make test-programs` the test programs (`build/tests/`), and
+`make tests` both. Rebuilding while SimRun
 is open is safe (the bundle is assembled in a staging directory and swapped in with a rename); quit and reopen SimRun
 (or `scripts/simrund.sh stop`) to pick up the new build.
 
