@@ -14,7 +14,7 @@
 
 | Variable | Effect |
 |---|---|
-| `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>` | Use this iOS Simulator runtime instead of the newest installed one |
+| `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>` | Use this iOS Simulator runtime instead of the one chosen in SimRun ▸ iOS Runtime (default: the newest installed). For SimRun (and `simrun.sh`): its own runtime; in a `simapp` client's environment: that app's runtime |
 | `SIMRUN_DATA=dir` | Shared data directory (default `~/Library/Developer/SimRun/data`) |
 | `SIMNS_QUIET=1` | Hide simns's log (in the server log, `simrund.sh log`, for shared launches) of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
 | `SIMNS_DAEMONS=a,b` / `none` | Labels of real sim daemons simns may launch on demand |
@@ -35,7 +35,7 @@
 
 ## Keyboard shortcuts
 
-In an app window: ⌘R relaunch, ⌘L log (the app's stdout/stderr), ⌘Q or ⌘W quit the app, ⌘0 launcher, ⇧⌘K Keychain
+In an app window: ⌘R relaunch, ⌥⌘R relaunch with other launch options, ⌘L log (the app's stdout/stderr), ⌘Q or ⌘W quit the app, ⌘0 launcher, ⇧⌘K Keychain
 window, ⌥⌘Q quit SimRun (⌘Q in SimRun's own windows). Edit menu commands (undo, redo, cut, copy, paste, delete,
 select all) go to the app while one of its windows is key.
 

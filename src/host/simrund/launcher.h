@@ -11,6 +11,7 @@ typedef NS_ENUM(NSInteger, SRAppState) {
 
 @protocol SRLauncherDelegate <NSObject>
 - (void)launchApp:(SRAppInfo *)app;           // launches, or brings the running instance to the front
+- (void)relaunchApp:(SRAppInfo *)app;         // quits the running instance (if any), then launches
 - (SRAppState)stateForApp:(SRAppInfo *)app;
 - (void)quitApp:(SRAppInfo *)app;
 - (void)showLogForApp:(SRAppInfo *)app;
@@ -25,4 +26,6 @@ typedef NS_ENUM(NSInteger, SRAppState) {
 - (void)openPaths:(NSArray<NSString *> *)paths;
 - (void)addAppWithPanel;
 - (void)addXcodeBuilds;
+// The Launch With… sheet for `app` on the launcher window; Launch saves its options and (re)launches the app.
+- (void)showLaunchOptionsForApp:(SRAppInfo *)app;
 @end

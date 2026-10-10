@@ -47,6 +47,28 @@ The launcher remembers its library of apps. **File ▸ Add Xcode Simulator Build
 if it has a top-level `Info.plist` with a `CFBundleExecutable` whose arm64 slice is built for the `IOSSIMULATOR`
 platform.
 
+Holding ⌥ in an app's menu turns **Launch** into **Launch With…** (**Relaunch With…** while it runs; ⌥⌘R in an app
+window): a sheet, like a scheme's Run action in Xcode, with the app's launch options — its iOS runtime, arguments and
+environment variables, language & region, which SimRun services it gets, and diagnostics (os_log mirroring, component
+tracing, frame checks; these are the variables in [reference.md](reference.md)). They are saved per app path
+(`SRLaunchOptions` in SimRun's user defaults) and used by every launch from the launcher; apps launched from the
+terminal get only what their environment says.
+
+## Runtimes
+
+SimRun has a runtime of its own: `SIMRUN_RUNTIME_ROOT`, else the one chosen in **SimRun ▸ iOS Runtime** (a build
+version, `SRRuntimeBuild` in its user defaults), else the newest installed iOS runtime. It is read once at start, so a
+new choice takes effect when SimRun is reopened; the menu says so while the two differ. Its `simns --serve`, and with
+it the shared daemons (cfprefsd, containermanagerd, trustd, securityd), runs from that runtime.
+
+An app can run on another installed runtime (Launch With… ▸ Info, or `SIMRUN_RUNTIME_ROOT` in a `simapp` client's
+environment). SimRun then starts a second `simns --serve` from that runtime the first time it is needed, publishes the
+same host services (IOSurface, Metal, pasteboard) in it, and gives the app a namespace there, so an app never talks to
+another runtime's daemons. Either way the server sets the runtime variables (`DYLD_ROOT_PATH`, `SIMULATOR_ROOT`,
+`SIMULATOR_RUNTIME_VERSION`, …) itself, replacing whatever runtime a client's environment pointed at. Extra simns stay
+until SimRun quits. All runtimes share the data directory (app containers, keychain, app groups, preferences); apps on
+two runtimes at once means two cfprefsd and containermanagerd instances over the same files.
+
 ## Data containers
 
 Each app has its own **data container**, like an iOS sandbox container: its HOME (Documents, Library — preferences,
@@ -63,7 +85,7 @@ on its own (no SimRun server) still runs a binary with the shared directory as H
 | Path | Contents |
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
-| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, per-app window sessions, environment, host pasteboard, Keychain window), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
+| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment and runtimes, host pasteboard, Keychain window), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
 | `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
@@ -80,6 +102,5 @@ client, the tools and the test programs; `make core` only SimRun.app and the cli
 is open is safe (the bundle is assembled in a staging directory and swapped in with a rename); quit and reopen SimRun
 (or `scripts/simrund.sh stop`) to pick up the new build.
 
-Requirements: Apple Silicon, SIP disabled, Xcode with an iOS Simulator runtime installed (the newest one is picked up
-automatically; override with `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>`). Apps must adopt the UIScene lifecycle.
-Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime.
+Requirements: Apple Silicon, SIP disabled, Xcode with an iOS Simulator runtime installed (see [Runtimes](#runtimes)).
+Apps must adopt the UIScene lifecycle. Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime; iOS 27.0 also works.

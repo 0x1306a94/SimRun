@@ -3,10 +3,29 @@
 #pragma once
 #import <Foundation/Foundation.h>
 
+// An iOS Simulator runtime: its RuntimeRoot and version.
+@interface SRRuntime : NSObject
+@property (readonly) NSString *root, *version, *build;   // ".../RuntimeRoot", "27.1", "24A94401"
+@property (readonly) NSString *name;                     // "iOS 27.1 (24A94401)"
++ (instancetype)runtimeAtRoot:(NSString *)root;          // nil if it has no SystemVersion.plist
+@end
+
 @interface SREnvironment : NSObject
-// The iOS Simulator runtime root (SIMRUN_RUNTIME_ROOT, else the newest installed iOS runtime); nil if none.
+// The installed iOS Simulator runtimes, newest first; the one with this build version, or nil.
++ (NSArray<SRRuntime *> *)installedRuntimes;
++ (SRRuntime *)installedRuntimeWithBuild:(NSString *)build;
+// The runtime chosen in SimRun ▸ iOS Runtime (its build version; nil = the newest installed). Takes effect the next
+// time SimRun starts: runtimeRoot is read once.
+@property (class, copy) NSString *preferredRuntimeBuild;
+// This process's runtime, which its shared simns and daemons run on and apps use unless they have their own:
+// SIMRUN_RUNTIME_ROOT, else the preferred runtime, else the newest installed one; nil if none.
 + (NSString *)runtimeRoot;
-// Variables a sim process needs (DYLD_ROOT_PATH, HOME = the simulated device's data dir, SIMULATOR_*, ...).
++ (BOOL)runtimeRootFromEnvironment;   // SIMRUN_RUNTIME_ROOT chose it
+// The variables that select a runtime (DYLD_ROOT_PATH, SIMULATOR_ROOT, SIMULATOR_RUNTIME_VERSION, ...).
++ (NSDictionary<NSString *, NSString *> *)runtimeVariablesForRoot:(NSString *)root;
+// Variables a sim process needs (DYLD_ROOT_PATH, HOME = the simulated device's data dir, SIMULATOR_*, ...), for
+// `root` or this process's runtime.
++ (NSDictionary<NSString *, NSString *> *)simulatorVariablesForRoot:(NSString *)root;
 + (NSDictionary<NSString *, NSString *> *)simulatorVariables;
 // The simulated device's shared data directory (the daemons' HOME, SIMULATOR_SHARED_RESOURCES_DIRECTORY for apps):
 // SIMRUN_DATA, else ~/Library/Developer/SimRun/data. Holds what is managed centrally: the keychain, device-wide

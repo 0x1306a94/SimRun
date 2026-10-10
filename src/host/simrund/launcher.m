@@ -2,6 +2,8 @@
 #import "launcher.h"
 #import "keychainwindow.h"
 #import "environment.h"
+#import "launchoptions.h"
+#import "launchsheet.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 // ---------------------------------------------------------------- row view: icon, name, path, running dot
@@ -156,6 +158,16 @@
 
 // ---------------------------------------------------------------- actions
 - (void)launchSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate launchApp:a]; }
+- (void)launchWithSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [self showLaunchOptionsForApp:a]; }
+
+- (void)showLaunchOptionsForApp:(SRAppInfo *)app {
+  [self show];
+  BOOL running = [_delegate stateForApp:app] != SRAppStateStopped;
+  __weak id<SRLauncherDelegate> delegate = _delegate;
+  [SRLaunchSheet beginForApp:app running:running window:_window launch:^{
+    if (running) [delegate relaunchApp:app]; else [delegate launchApp:app];
+  }];
+}
 
 - (void)openPaths:(NSArray<NSString *> *)paths {
   NSMutableArray *problems = [NSMutableArray array];
@@ -206,7 +218,10 @@
 }
 
 - (void)showInFinder:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:a.path] ]]; }
-- (void)removeSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [SRLibrary.shared removePath:a.path]; }
+- (void)removeSelected:(id)sender {
+  SRAppInfo *a = [self selectedApp];
+  if (a) { [SRLaunchOptions removeOptionsForAppAtPath:a.path]; [SRLibrary.shared removePath:a.path]; }
+}
 - (void)quitSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate quitApp:a]; }
 - (void)logSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate showLogForApp:a]; }
 - (NSString *)containerOfApp:(SRAppInfo *)a {
@@ -236,8 +251,13 @@
   SRAppInfo *a = [self selectedApp];
   if (!a) return;
   SRAppState st = [_delegate stateForApp:a];
-  if (st != SRAppStateLaunching)
+  if (st != SRAppStateLaunching) {
     [menu addItemWithTitle:st == SRAppStateRunning ? @"Show" : @"Launch" action:@selector(launchSelected:) keyEquivalent:@""].target = self;
+    // with ⌥ held: the Launch With… sheet (Relaunch With… while the app runs)
+    NSMenuItem *with = [menu addItemWithTitle:st == SRAppStateRunning ? @"Relaunch With…" : @"Launch With…"
+                                       action:@selector(launchWithSelected:) keyEquivalent:@""];
+    with.target = self; with.alternate = YES; with.keyEquivalentModifierMask = NSEventModifierFlagOption;
+  }
   if (st != SRAppStateStopped) [menu addItemWithTitle:@"Quit App" action:@selector(quitSelected:) keyEquivalent:@""].target = self;
   [menu addItemWithTitle:@"Show Log" action:@selector(logSelected:) keyEquivalent:@""].target = self;
   [menu addItemWithTitle:@"Show Keychain Items" action:@selector(keychainSelected:) keyEquivalent:@""].target = self;
@@ -266,7 +286,13 @@
   SRAppInfo *a = SRLibrary.shared.apps[row];
   cell.imageView.image = a.icon;
   cell.textField.stringValue = a.name;
-  cell.subtitle.stringValue = a.bundleIdentifier.length ? [NSString stringWithFormat:@"%@ - %@", a.bundleIdentifier, a.path.stringByAbbreviatingWithTildeInPath] : a.path.stringByAbbreviatingWithTildeInPath;
+  NSString *sub = a.bundleIdentifier.length ? [NSString stringWithFormat:@"%@ - %@", a.bundleIdentifier, a.path.stringByAbbreviatingWithTildeInPath] : a.path.stringByAbbreviatingWithTildeInPath;
+  NSString *build = [SRLaunchOptions optionsForAppAtPath:a.path].runtimeBuild;   // its own runtime, if set
+  if (build) {
+    SRRuntime *rt = [SREnvironment installedRuntimeWithBuild:build];
+    sub = [NSString stringWithFormat:@"%@ · %@", rt ? [@"iOS " stringByAppendingString:rt.version] : [build stringByAppendingString:@" (not installed)"], sub];
+  }
+  cell.subtitle.stringValue = sub;
   [cell setState:[_delegate stateForApp:a]];
   return cell;
 }

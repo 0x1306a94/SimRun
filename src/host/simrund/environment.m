@@ -13,25 +13,81 @@ static NSString *ExecutableDir(void) {
 static BOOL InAppBundle(void) { return [NSBundle.mainBundle.bundlePath.pathExtension isEqualToString:@"app"]; }
 static NSString *RealHome(void) { struct passwd *pw = getpwuid(getuid()); return pw ? @(pw->pw_dir) : NSHomeDirectory(); }
 
+@implementation SRRuntime
++ (instancetype)runtimeAtRoot:(NSString *)root {
+  if (!root.length) return nil;
+  NSDictionary *sv = [NSDictionary dictionaryWithContentsOfFile:[root stringByAppendingPathComponent:@"System/Library/CoreServices/SystemVersion.plist"]];
+  if (![sv[@"ProductVersion"] isKindOfClass:NSString.class]) return nil;
+  SRRuntime *r = [SRRuntime new];
+  r->_root = root; r->_version = sv[@"ProductVersion"];
+  r->_build = [sv[@"ProductBuildVersion"] isKindOfClass:NSString.class] ? sv[@"ProductBuildVersion"] : @"";
+  r->_name = [NSString stringWithFormat:@"iOS %@ (%@)", r->_version, r->_build];
+  return r;
+}
+@end
+
+static NSString *const kRuntimeKey = @"SRRuntimeBuild";
+
 @implementation SREnvironment
 
-+ (NSString *)runtimeRoot {
-  NSString *o = NSProcessInfo.processInfo.environment[@"SIMRUN_RUNTIME_ROOT"];
-  if (o.length) return o;
+// Runtimes are disk images mounted under CoreSimulator/Volumes (Xcode 16+), or bundles in CoreSimulator/Profiles.
++ (NSArray<SRRuntime *> *)installedRuntimes {
   NSFileManager *fm = NSFileManager.defaultManager;
+  NSMutableArray<NSString *> *dirs = [NSMutableArray arrayWithObject:@"/Library/Developer/CoreSimulator/Profiles/Runtimes"];
   NSString *vols = @"/Library/Developer/CoreSimulator/Volumes";
-  NSString *best = nil, *bestVersion = nil;
-  for (NSString *v in [fm contentsOfDirectoryAtPath:vols error:nil]) {
-    if (![v hasPrefix:@"iOS_"]) continue;
-    NSString *rt = [vols stringByAppendingFormat:@"/%@/Library/Developer/CoreSimulator/Profiles/Runtimes", v];
-    for (NSString *r in [fm contentsOfDirectoryAtPath:rt error:nil]) {
+  for (NSString *v in [fm contentsOfDirectoryAtPath:vols error:nil])
+    if ([v hasPrefix:@"iOS_"]) [dirs addObject:[vols stringByAppendingFormat:@"/%@/Library/Developer/CoreSimulator/Profiles/Runtimes", v]];
+  NSMutableArray<SRRuntime *> *out = [NSMutableArray array];
+  NSMutableSet *builds = [NSMutableSet set];
+  for (NSString *dir in dirs)
+    for (NSString *r in [fm contentsOfDirectoryAtPath:dir error:nil]) {
       if (![r hasPrefix:@"iOS"] || ![r.pathExtension isEqualToString:@"simruntime"]) continue;
-      NSString *root = [rt stringByAppendingFormat:@"/%@/Contents/Resources/RuntimeRoot", r];
-      NSString *ver = [NSDictionary dictionaryWithContentsOfFile:[root stringByAppendingPathComponent:@"System/Library/CoreServices/SystemVersion.plist"]][@"ProductVersion"] ?: @"0";
-      if (!best || [ver compare:bestVersion options:NSNumericSearch] == NSOrderedDescending) { best = root; bestVersion = ver; }
+      SRRuntime *rt = [SRRuntime runtimeAtRoot:[dir stringByAppendingFormat:@"/%@/Contents/Resources/RuntimeRoot", r]];
+      if (rt && ![builds containsObject:rt.build]) { [builds addObject:rt.build]; [out addObject:rt]; }
     }
-  }
-  return best;
+  [out sortUsingComparator:^NSComparisonResult(SRRuntime *a, SRRuntime *b) {
+    NSComparisonResult c = [b.version compare:a.version options:NSNumericSearch];
+    return c != NSOrderedSame ? c : [b.build compare:a.build options:NSNumericSearch];
+  }];
+  return out;
+}
++ (SRRuntime *)installedRuntimeWithBuild:(NSString *)build {
+  for (SRRuntime *r in [self installedRuntimes]) if ([r.build isEqualToString:build]) return r;
+  return nil;
+}
+
++ (NSString *)preferredRuntimeBuild {
+  NSString *b = [NSUserDefaults.standardUserDefaults stringForKey:kRuntimeKey];
+  return b.length ? b : nil;
+}
++ (void)setPreferredRuntimeBuild:(NSString *)build {
+  if (build.length) [NSUserDefaults.standardUserDefaults setObject:build forKey:kRuntimeKey];
+  else [NSUserDefaults.standardUserDefaults removeObjectForKey:kRuntimeKey];
+}
+
++ (BOOL)runtimeRootFromEnvironment { return NSProcessInfo.processInfo.environment[@"SIMRUN_RUNTIME_ROOT"].length > 0; }
+
++ (NSString *)runtimeRoot {
+  static NSString *root; static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSString *o = NSProcessInfo.processInfo.environment[@"SIMRUN_RUNTIME_ROOT"];
+    if (o.length) { root = o.stringByStandardizingPath; return; }
+    NSString *pref = [self preferredRuntimeBuild];
+    root = (pref ? [self installedRuntimeWithBuild:pref] : nil).root ?: [self installedRuntimes].firstObject.root;
+  });
+  return root;
+}
+
++ (NSDictionary<NSString *, NSString *> *)runtimeVariablesForRoot:(NSString *)R {
+  if (!R) return @{};
+  SRRuntime *rt = [SRRuntime runtimeAtRoot:R];
+  return @{
+    @"DYLD_ROOT_PATH": R, @"IPHONE_SIMULATOR_ROOT": R, @"SIMULATOR_ROOT": R,
+    @"DYLD_SHARED_CACHE_DIR": [R stringByAppendingPathComponent:@"System/Library/Caches/com.apple.dyld"],
+    @"DYLD_FALLBACK_FRAMEWORK_PATH": [R stringByAppendingPathComponent:@"System/Library/Frameworks"],
+    @"DYLD_FALLBACK_LIBRARY_PATH": [R stringByAppendingPathComponent:@"usr/lib"],
+    @"SIMULATOR_RUNTIME_VERSION": rt.version ?: @"", @"SIMULATOR_RUNTIME_BUILD_VERSION": rt.build ?: @"",
+  };
 }
 
 + (NSString *)dataDirectory {
@@ -56,23 +112,17 @@ static NSString *RealHome(void) { struct passwd *pw = getpwuid(getuid()); return
   return c;
 }
 
-+ (NSDictionary<NSString *, NSString *> *)simulatorVariables {
++ (NSDictionary<NSString *, NSString *> *)simulatorVariables { return [self simulatorVariablesForRoot:[self runtimeRoot]]; }
++ (NSDictionary<NSString *, NSString *> *)simulatorVariablesForRoot:(NSString *)R {
   NSDictionary *env = NSProcessInfo.processInfo.environment;
-  NSString *R = [self runtimeRoot];
   if (!R) return @{};
   NSString *D = [self dataDirectory];
   for (NSString *sub in @[ @"tmp", @"Library/Preferences", @"Documents" ])
     [NSFileManager.defaultManager createDirectoryAtPath:[D stringByAppendingPathComponent:sub] withIntermediateDirectories:YES attributes:nil error:nil];
-  NSDictionary *sv = [NSDictionary dictionaryWithContentsOfFile:[R stringByAppendingPathComponent:@"System/Library/CoreServices/SystemVersion.plist"]];
-  return @{
-    @"DYLD_ROOT_PATH": R, @"IPHONE_SIMULATOR_ROOT": R, @"SIMULATOR_ROOT": R,
-    @"DYLD_SHARED_CACHE_DIR": [R stringByAppendingPathComponent:@"System/Library/Caches/com.apple.dyld"],
-    @"DYLD_FALLBACK_FRAMEWORK_PATH": [R stringByAppendingPathComponent:@"System/Library/Frameworks"],
-    @"DYLD_FALLBACK_LIBRARY_PATH": [R stringByAppendingPathComponent:@"usr/lib"],
+  NSMutableDictionary *vars = [@{
     @"HOME": D, @"CFFIXED_USER_HOME": D, @"TMPDIR": [D stringByAppendingString:@"/tmp/"],
     @"IPHONE_SHARED_RESOURCES_DIRECTORY": D, @"SIMULATOR_SHARED_RESOURCES_DIRECTORY": D,
     @"SIMULATOR_HOST_HOME": env[@"SIMRUN_HOST_HOME"] ?: RealHome(),
-    @"SIMULATOR_RUNTIME_VERSION": sv[@"ProductVersion"] ?: @"", @"SIMULATOR_RUNTIME_BUILD_VERSION": sv[@"ProductBuildVersion"] ?: @"",
     @"SIMULATOR_ARCHS": @"arm64",
     @"SIMULATOR_DEVICE_NAME": @"SimRun", @"SIMULATOR_MODEL_IDENTIFIER": @"iPhone19,4", @"SIMULATOR_PRODUCT_CLASS": @"V68",
     @"SIMULATOR_CAPABILITIES": @"/Library/Developer/CoreSimulator/Profiles/DeviceTypes/iPhone Duo.simdevicetype/Contents/Resources/capabilities.plist",
@@ -81,7 +131,9 @@ static NSString *RealHome(void) { struct passwd *pw = getpwuid(getuid()); return
     @"SIMULATOR_UDID": @"00000000-0000-0000-0000-000000000000", @"SIMULATOR_LEGACY_ASSET_SUFFIX": @"iphone",
     @"SIMULATOR_BOOT_TIME": [NSString stringWithFormat:@"%ld", (long)time(NULL)],
     @"XPC_FLAGS": @"0x0", @"LS_ENABLE_BUNDLE_LOCALIZATION_CACHING": @"1",
-  };
+  } mutableCopy];
+  [vars addEntriesFromDictionary:[self runtimeVariablesForRoot:R]];
+  return vars;
 }
 
 + (NSString *)hostInternationalSettings {

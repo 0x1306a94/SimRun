@@ -38,12 +38,14 @@ window, controlled with your mouse, trackpad and keyboard.
 ## What you need
 
 - A Mac with Apple silicon
-- Xcode, with an iOS Simulator runtime installed (SimRun uses the newest one it finds)
+- Xcode, with an iOS Simulator runtime installed (SimRun uses the newest one it finds; pick another in SimRun ▸ iOS
+  Runtime, or for one app with Launch With…)
 - System Integrity Protection (SIP) turned off. SimRun needs to load its own code into iOS apps, which macOS only
   allows with SIP off. Apple describes how to change this setting in
   [Disabling and Enabling System Integrity Protection](https://developer.apple.com/documentation/security/disabling-and-enabling-system-integrity-protection).
 
-SimRun is developed on macOS 27.2 with Xcode 27.1 and the iOS 27.1 runtime. Other versions may or may not work.
+SimRun is developed on macOS 27.2 with Xcode 27.1 and the iOS 27.1 runtime; the iOS 27.0 runtime works too. Other
+versions may or may not work.
 
 ## Build
 
