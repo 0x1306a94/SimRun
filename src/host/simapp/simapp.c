@@ -15,8 +15,8 @@
 extern char **environ;
 
 static int try_connect(const char *path) {
+  struct sockaddr_un a; if (simrund_socket_addr(path, &a)) exit(2);
   int s = socket(AF_UNIX, SOCK_STREAM, 0);
-  struct sockaddr_un a = { .sun_family = AF_UNIX }; strlcpy(a.sun_path, path, sizeof a.sun_path);
   if (connect(s, (struct sockaddr *)&a, sizeof a) == 0) return s;
   close(s); return -1;
 }

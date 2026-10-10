@@ -224,6 +224,15 @@ typedef NS_ENUM(NSInteger, SRResizeAxis) { SRResizeAxisNone, SRResizeAxisWidth, 
   SpringSetResponse(&_stripAlpha, 0.7, 1);
   [self layoutViews];
   [self applyState];
+  // SIMRUN_CHROME_DEMO=<seconds> (testing): reveal/hide the chrome on a timer, without a mouse
+  double demo = getenv("SIMRUN_CHROME_DEMO") ? atof(getenv("SIMRUN_CHROME_DEMO")) : 0;
+  if (demo > 0) {
+    __weak SRMirrorWindow *weakSelf = self;
+    [NSTimer scheduledTimerWithTimeInterval:demo repeats:YES block:^(NSTimer *t) {
+      SRMirrorWindow *w = weakSelf; if (!w) { [t invalidate]; return; }
+      [w setChromeVisible:!w.isExpanded];
+    }];
+  }
   return self;
 }
 

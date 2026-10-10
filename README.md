@@ -74,7 +74,9 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 | `SIMRUND_IDLE=secs` | Shared server exits after this long without apps (default 600, 0 = never); set when it starts |
 | `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
 | `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default 402×874 @3x) |
-| `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1` | Component tracing |
+| `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1` | Component tracing (`SIMFB_VERBOSE` also reports the frame-copy latency) |
+| `SIMFB_CHECK=1` | Frame diagnostics: stale pixels outside partial presents (app side), and buffers overwritten while on screen (server log) |
+| `SIMRUN_DEBUG_STALL=ms`, `SIMRUN_CHROME_DEMO=secs` | Testing: block SimRun's main thread for *ms* every 100 ms; toggle the window chrome on a timer (no mouse needed) |
 | `OS_ACTIVITY_DT_MODE=1` | Mirror os_log/NSLog to stderr |
 
 ## Docs
@@ -90,5 +92,5 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 
 No RunningBoard (backgrounded apps keep running), no on-screen keyboard (needs SpringBoard hosting), hardware keyboard
 is US-positional, first text-field focus stalls ~2–3 s, rotation input mapping, no audio, notifyd not provided,
-app extensions and embedded frameworks untested, possible tearing (the window shows the live framebuffer). UIKit apps ignore SIGTERM, so ending an app is SIGTERM
+app extensions and embedded frameworks untested. UIKit apps ignore SIGTERM, so ending an app is SIGTERM
 followed by SIGKILL after 1.5 s (no applicationWillTerminate).

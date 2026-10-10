@@ -5,6 +5,7 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <mach/mach_time.h>
 #include <pwd.h>
 #include "protocol.h"
 #import "mirrorwindow.h"
@@ -70,6 +71,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   dispatch_source_t _outSource; NSMutableString *_log; NSFileHandle *_logFile;
   NSWindow *_logWindow; NSTextView *_logView;
   CFAbsoluteTime _spawnTime;
+  uint32_t _shownSurfaceID, _shownChecksum; uint64_t _shownSince;   // SIMFB_CHECK diagnostics
 }
 
 - (instancetype)initWithTitle:(NSString *)title {
@@ -243,6 +245,42 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 - (NSSize)windowWillResize:(NSWindow *)w toSize:(NSSize)size { return [_window constrainFrameSize:size]; }
 - (NSRect)windowWillUseStandardFrame:(NSWindow *)w defaultFrame:(NSRect)frame { return [_window standardFrameIn:frame]; }
 
+// Frame ownership (protocol.h): once this frame has been on screen for two refresh intervals — WindowServer
+// composites a committed layer change at the next refresh — every older display buffer is off screen; tell the
+// sim side so it can reuse them.
+- (void)acknowledgeFrame:(uint32_t)seq replyPort:(mach_port_t)reply bits:(mach_msg_bits_t)bits {
+  if (!reply || MACH_MSGH_BITS_REMOTE(bits) != MACH_MSG_TYPE_PORT_SEND_ONCE) return;
+  NSInteger fps = _window.screen.maximumFramesPerSecond ?: 60;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 / fps * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    sr_frame_ack_msg_t a = { .h = { .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0), .msgh_size = sizeof a,
+                                    .msgh_remote_port = reply, .msgh_id = SR_MSG_FRAME_ACK }, .on_screen_seq = seq };
+    if (mach_msg(&a.h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof a, 0, 0, 0, 0) != KERN_SUCCESS) mach_port_deallocate(mach_task_self(), reply);
+  });
+}
+
+// SIMFB_CHECK=1 (diagnostic): the sim side sends each frame's checksum at present time. Just before the window moves
+// on to the next frame, re-checksum the surface it has been showing: a difference means the producer drew into that
+// buffer while it was still on screen (tearing/flicker).
+- (void)checkDisplayedFrame:(const sr_frame_msg_t *)f {
+  static int on = -1; if (on < 0) on = getenv("SIMFB_CHECK") != NULL;
+  if (!on || f->h.msgh_size < sizeof *f || !f->checksum) return;
+  static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
+  static uint64_t frames, overwritten;
+  if (_shownChecksum && _surfaces[@(_shownSurfaceID)]) {
+    IOSurfaceRef shown = (__bridge IOSurfaceRef)_surfaces[@(_shownSurfaceID)];
+    uint32_t now = sr_surface_checksum(shown);
+    double onScreenMs = (mach_absolute_time() - _shownSince) * tb.numer / tb.denom / 1e6;
+    frames++;
+    if (now != _shownChecksum) {
+      overwritten++;
+      fprintf(stderr, "[frame-check] surface %u changed while on screen (shown %.1f ms, next frame is surface %u)\n",
+              _shownSurfaceID, onScreenMs, f->surface_id);
+    }
+    if (frames % 60 == 0) fprintf(stderr, "[frame-check] %llu frames, %llu overwritten while on screen\n", frames, overwritten);
+  }
+  _shownSurfaceID = f->surface_id; _shownChecksum = f->checksum; _shownSince = mach_absolute_time();
+}
+
 - (void)drain {
   union { mach_msg_header_t h; sr_port_msg_t p; sr_frame_msg_t f; char buf[1024]; } m;
   while (mach_msg(&m.h, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof m, _port, 0, 0) == KERN_SUCCESS) {
@@ -271,6 +309,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
         break;
       }
       case SR_MSG_FRAME:
+        [self checkDisplayedFrame:&m.f];
         if (!_sawFrame) {
           _sawFrame = YES;
           // let CA commit this frame's contents before the window appears, so it never shows black
@@ -278,8 +317,14 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
           fprintf(stderr, "[simrund] %s (pid %d) first frame %.3f s after spawn (t=%.3f)\n", _title.UTF8String, _pid,
                   CFAbsoluteTimeGetCurrent() - _spawnTime, CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970);
         }
-        // Re-setting the same IOSurface makes CA pick up the new pixels (actions are disabled on this layer).
-        _surfaceLayer.contents = nil; _surfaceLayer.contents = (__bridge id)_surface;
+        {
+          // show exactly the display buffer this frame was copied into (protocol.h: frame ownership)
+          id named = m.h.msgh_size >= sizeof(sr_frame_msg_t) ? _surfaces[@(m.f.surface_id)] : nil;
+          if (named) _surface = (__bridge IOSurfaceRef)named;
+          // Re-setting the same IOSurface makes CA pick up the new pixels (actions are disabled on this layer).
+          _surfaceLayer.contents = nil; _surfaceLayer.contents = (__bridge id)_surface;
+          [self acknowledgeFrame:m.f.seq replyPort:m.h.msgh_remote_port bits:m.h.msgh_bits];
+        }
         break;
       default: mach_msg_destroy(&m.h);
     }

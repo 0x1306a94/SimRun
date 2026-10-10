@@ -29,6 +29,13 @@ static inline void simrund_socket_path(char *buf, size_t n) {
   if (o) { snprintf(buf, n, "%s", o); return; }
   snprintf(buf, n, "%s/Library/Developer/SimRun/simrund.sock", simrund_home());
 }
+// Unix socket paths are limited to sizeof(sun_path) - 1 (103) bytes; a longer SIMRUND_SOCKET would be silently
+// truncated by strlcpy (and the truncated file then left behind). Returns 0 if the path fits.
+static inline int simrund_socket_addr(const char *path, struct sockaddr_un *a) {
+  memset(a, 0, sizeof *a); a->sun_family = AF_UNIX;
+  if (strlen(path) >= sizeof a->sun_path) { fprintf(stderr, "simrun: socket path too long (max %zu bytes): %s\n", sizeof a->sun_path - 1, path); return -1; }
+  strlcpy(a->sun_path, path, sizeof a->sun_path); return 0;
+}
 static inline void simrund_log_path(char *buf, size_t n) {
   char dir[1024]; snprintf(dir, sizeof dir, "%s/Library/Logs/SimRun", simrund_home());
   mkdir(dir, 0755);

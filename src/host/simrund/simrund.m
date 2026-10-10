@@ -81,6 +81,9 @@ static void LOG(NSString *fmt, ...) {
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)n {
+  // SIMRUN_DEBUG_STALL=<ms> (testing): block the main thread for that long every 100 ms, as a busy UI would
+  double stall = getenv("SIMRUN_DEBUG_STALL") ? atof(getenv("SIMRUN_DEBUG_STALL")) : 0;
+  if (stall > 0) [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) { usleep((useconds_t)(stall * 1000)); }];
   signal(SIGTERM, SIG_IGN); signal(SIGPIPE, SIG_IGN);
   _sigSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
   dispatch_source_set_event_handler(_sigSource, ^{ [NSApp terminate:nil]; });
@@ -358,7 +361,7 @@ static void LOG(NSString *fmt, ...) {
   char path[1024]; simrund_socket_path(path, sizeof path);
   _socketPath = @(path);
   [NSFileManager.defaultManager createDirectoryAtPath:_socketPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
-  struct sockaddr_un a = { .sun_family = AF_UNIX }; strlcpy(a.sun_path, path, sizeof a.sun_path);
+  struct sockaddr_un a; if (simrund_socket_addr(path, &a)) exit(2);
   // a live server already listening? then we're redundant
   int probe = socket(AF_UNIX, SOCK_STREAM, 0);
   if (connect(probe, (struct sockaddr *)&a, sizeof a) == 0) { close(probe); LOG(@"another instance is serving %s", path); return NO; }
@@ -380,8 +383,8 @@ static void LOG(NSString *fmt, ...) {
 // GUI instance started while another one serves the socket: ask it to show its launcher and open our apps.
 - (void)forwardToRunningInstance {
   char path[1024]; simrund_socket_path(path, sizeof path);
+  struct sockaddr_un a; if (simrund_socket_addr(path, &a)) return;
   int s = socket(AF_UNIX, SOCK_STREAM, 0);
-  struct sockaddr_un a = { .sun_family = AF_UNIX }; strlcpy(a.sun_path, path, sizeof a.sun_path);
   if (connect(s, (struct sockaddr *)&a, sizeof a) == 0) {
     NSDictionary *msg = @{ @"action": @"show", @"open": _openAtLaunch };
     simrund_send(s, (__bridge CFDictionaryRef)msg, NULL, 0);

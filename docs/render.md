@@ -277,3 +277,22 @@ plus UIView/UILabel/UISwitch/UIProgressView layers, with UIKit linked but no UIA
    running the real sim SimFramebuffer against host `SimFramebufferServer.framework` (Swift). It would add a
    host-side dependency and a blitter for no gain, because frames are already IOSurfaces in-process, and the fake
    is about 250 lines.
+
+
+## Frame ownership (tearing/flicker fix)
+
+CA's render server cycles its swapchain buffers on a fixed rotation (3 buffers; a buffer is redrawn as little as
+~22 ms after it was presented) and does **not** wait for swap-completion callbacks before reusing one — delaying every
+completion by 50 ms left its 60 Hz present rate and buffer set unchanged. Showing those buffers zero-copy in the host
+window therefore tears/flickers whenever the window is more than ~2 frames behind: with SimRun's main thread blocked
+0 / 20 / 40 ms out of every 100 ms, 0 / 4 / 153 of ~650 frames were overwritten while on screen (`SIMFB_CHECK=1`).
+Heavy animations (Liquid Glass) and a busy main thread (e.g. a chatty app's log window) make that lag likely.
+
+Like CoreSimulator's SimFramebufferServer, the fake SimFramebuffer now copies each presented frame (GPU blit, ~1.7 ms
+latency, asynchronous to CA's display thread) into one of 4 display buffers it owns, and sends the host that buffer.
+Each SR_MSG_FRAME carries a send-once reply right; the host answers with SR_MSG_FRAME_ACK two refresh intervals after
+showing the frame ("frames older than N are off screen"), and a display buffer is only rewritten once it is older than
+the newest acknowledged frame (or after 250 ms without an ack). With no free buffer the frame is dropped rather than
+torn. Result: 0 overwritten frames at every stall level; at 40 ms stalls 121 frames were dropped instead.
+Also verified: CA's partial presents (dirty rects) leave every buffer fully valid (0 stale pixels outside the rect),
+and frames are complete at present time (unchanged 5 ms later).

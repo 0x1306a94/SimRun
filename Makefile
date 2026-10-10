@@ -21,7 +21,7 @@ APP   := $(BUILD)/SimRun.app
 CORE  := $(APP) $(BIN)/simapp
 PARTS := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput $(BIN)/rhost
-TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app \
+TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app \
          $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes
 
 .PHONY: all core tools tests clean $(APP)
@@ -78,7 +78,7 @@ $(LIB)/rshim.dylib: src/sim/rshim/rshim.m $(HDRS) | $(LIB)
 	@$(SIGN) $@ 2>/dev/null
 
 $(LIB)/SimFramebuffer: src/sim/simfb/simfb.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework IOSurface -framework CoreFoundation \
+	$(SIMCC) -dynamiclib $< -framework Foundation -framework IOSurface -framework CoreFoundation -framework CoreGraphics -framework Metal \
 	  -install_name @rpath/SimFramebuffer.framework/SimFramebuffer -o $@
 	@$(SIGN) $@ 2>/dev/null
 
@@ -103,6 +103,11 @@ $(APPS)/Hello.app: tests/apps/hello/main.m tests/apps/hello/Info.plist | $(APPS)
 $(APPS)/SUI.app: tests/apps/swiftui/SUI.swift tests/apps/swiftui/Info.plist | $(APPS)
 	@mkdir -p $@ && cp tests/apps/swiftui/Info.plist $@/
 	$(SIMSWIFT) -parse-as-library $< -o $@/SUI
+	@$(SIGN) $@ 2>/dev/null
+
+$(APPS)/Glass.app: tests/apps/glass/Glass.swift tests/apps/glass/Info.plist | $(APPS)
+	@mkdir -p $@ && cp tests/apps/glass/Info.plist $@/
+	xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios26.0-simulator -parse-as-library $< -o $@/Glass
 	@$(SIGN) $@ 2>/dev/null
 
 $(APPS)/HIDTest.app: tests/apps/hidtest/main.m tests/apps/hidtest/Info.plist | $(APPS)
