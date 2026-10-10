@@ -81,7 +81,6 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
 | `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
 | `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
-| `catalyst/` | Approach A: `sim2mac.sh` re-tags a Simulator .app as Mac Catalyst (runs on macOS's own UIKit instead) |
 | `docs/` | Write-ups (see below) |
 
 `make` builds everything into `build/` (`SimRun.app`, `bin/`, `lib/`, `apps/`, `tests/`); `make core` builds SimRun.app
@@ -121,7 +120,6 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 - `docs/dragdrop.md` — drag & drop within an app: the druid protocols, drag HID events, the in-process drag server
 - `docs/keychain.md` — the fake keychain: SecItem semantics, the plaintext store, access groups, the Keychain window
 - `docs/webkit.md` — WKWebView: BrowserEngineKit process launches, the extension entry point, the Launch Services wait
-- `docs/approach-a-catalyst.md` — the simpler Mac Catalyst re-tagging approach
 
 ## Known gaps
 
