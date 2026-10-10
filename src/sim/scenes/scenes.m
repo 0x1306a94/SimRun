@@ -84,6 +84,8 @@
 @end
 
 static void SRSetIvar(id obj, const char *name, id value);
+static BOOL SRSetIvarIfPresent(id obj, const char *name, id value);
+static void SRWorkspaceAsync(dispatch_block_t block);
 static id SRSynthMainDisplayConfiguration(void);
 
 // ---------------------------------------------------------------- config
@@ -199,7 +201,7 @@ static void SRCreateScene(void);
 // (portrait / display-native coordinates). Safe to call from any thread once UIApplicationMain has started.
 __attribute__((visibility("default"))) void SRScenesCreate(CGFloat w, CGFloat h) {
   gW = w; gH = h;
-  [[gWorkspace valueForKey:@"_queue"] performAsync:^{ SRCreateScene(); }];
+  SRWorkspaceAsync(^{ SRCreateScene(); });
 }
 
 static void SRCreateScene(void) {
@@ -226,7 +228,7 @@ static void SRCreateScene(void) {
 // Public helper for the integrator: change the scene's size / foreground / orientation (call on any thread).
 __attribute__((visibility("default")))
 void SRScenesUpdate(CGFloat w, CGFloat h, BOOL foreground, long orient) {
-  [[gWorkspace valueForKey:@"_queue"] performAsync:^{
+  SRWorkspaceAsync(^{
     id m = [gCurrentSettings mutableCopy];
     SRApplySettings(m, w, h, foreground, orient);
     id newSettings = [m copy];
@@ -236,13 +238,24 @@ void SRScenesUpdate(CGFloat w, CGFloat h, BOOL foreground, long orient) {
     [gScenesClient sceneID:gIdentity updateWithSettingsDiff:diff
          transitionContext:[NSClassFromString(@"UIApplicationSceneTransitionContext") new]
                 completion:^(id err) { if (err) LOG("updateScene err=%s", [[err description] UTF8String]); }];
-  }];
+  });
 }
 
 static void SRSetIvar(id obj, const char *name, id value) {
+  if (!SRSetIvarIfPresent(obj, name, value)) { LOG("missing ivar %s on %s", name, object_getClassName(obj)); abort(); }
+}
+static BOOL SRSetIvarIfPresent(id obj, const char *name, id value) {
   Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-  if (!iv) { LOG("missing ivar %s on %s", name, object_getClassName(obj)); abort(); }
-  object_setIvarWithStrongDefault(obj, iv, value);
+  if (iv) object_setIvarWithStrongDefault(obj, iv, value);
+  return iv != NULL;
+}
+
+// Runs `block` on the FBSWorkspace queue, where FrontBoardServices expects its scene calls: a BSServiceDispatchQueue
+// since iOS 26, a plain dispatch queue before (iOS 18).
+static void SRWorkspaceAsync(dispatch_block_t block) {
+  id q = [gWorkspace valueForKey:@"_queue"];
+  if ([q respondsToSelector:@selector(performAsync:)]) [q performAsync:block];
+  else dispatch_async(q, block);
 }
 
 // ---------------------------------------------------------------- FBSWorkspaceInitialize hook
@@ -255,7 +268,7 @@ static id my_FBSWorkspaceInitialize(id options) {
   // Give it a synthesized one (UIScreen +initialize calls its designated init directly, so patch afterwards).
   if (gNoRenderServer && !getenv("SCENES_NO_SYNTH_DISPLAY") && ![[UIScreen mainScreen] displayConfiguration])
     [[UIScreen mainScreen] _updateDisplayConfiguration:SRSynthMainDisplayConfiguration()];
-  id q = [ws valueForKey:@"_queue"];          // BSServiceDispatchQueue "com.apple.frontboardservices.workspace"
+  id q = [ws valueForKey:@"_queue"];          // "com.apple.frontboardservices.workspace" (SRWorkspaceAsync)
   id cq = [ws valueForKey:@"_callOutQueue"];  // UIKit's main-thread callout queue
   gHost = [SRFakeHost new];
   gConn = [SRFakeConnection new];
@@ -281,7 +294,7 @@ static id my_FBSWorkspaceInitialize(id options) {
   SRSetIvar(c, "_clientSettingsByIdentity", [NSMutableDictionary dictionary]);
   SRSetIvar(c, "_reconnectingScenes", [NSHashTable hashTableWithOptions:NSPointerFunctionsWeakMemory]);
   SRSetIvar(c, "_pendedSendBlocks", nil); // nil == handshake done (sends go straight to the remote target)
-  SRSetIvar(c, "_hostEvent_pendingEvents", [NSMutableArray array]);
+  SRSetIvarIfPresent(c, "_hostEvent_pendingEvents", [NSMutableArray array]);   // iOS 26+
   SRSetIvar(c, "_reportingLock_scenesByIdentity", [NSMutableDictionary dictionary]);
   SRSetIvar(c, "_handshakeLock_remoteTarget", gHost);
   *(BOOL *)((char *)(__bridge void *)c + ivar_getOffset(class_getInstanceVariable(object_getClass(c), "_activated"))) = YES;
@@ -291,7 +304,7 @@ static id my_FBSWorkspaceInitialize(id options) {
   LOG("local scenes source registered: %s", [[gScenesClient description] UTF8String]);
   const char *delay = getenv("SCENES_CREATE_DELAY"); // seconds; exercises SRScenesCreate() from the main queue
   if (delay) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(atof(delay) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ SRScenesCreate(gW, gH); });
-  else if (!getenv("SCENES_NO_AUTOCREATE")) [q performAsync:^{ SRCreateScene(); }];
+  else if (!getenv("SCENES_NO_AUTOCREATE")) SRWorkspaceAsync(^{ SRCreateScene(); });
   if (getenv("SCENES_DEMO_UPDATES")) { // exercise SRScenesUpdate: resize, rotate, background, foreground
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(600, 800, YES, UIInterfaceOrientationPortrait); });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(402, 874, YES, UIInterfaceOrientationLandscapeRight); });
@@ -363,13 +376,21 @@ static id SRSinkEndpoint(NSString *mach, NSString *service, NSString *instance) 
     });
     xpc_connection_resume(listener);
   });
-  id x = class_createInstance(NSClassFromString(@"BSXPCServiceConnectionEndpoint"), 0);
-  SRSetIvar(x, "_xpcEndpoint", (id)xpc_endpoint_create(listener));
-  SRSetIvar(x, "_targetDescription", [@"sink:" stringByAppendingString:mach]);
   id e = class_createInstance(NSClassFromString(@"BSServiceConnectionEndpoint"), 0);
   SRSetIvar(e, "_service", service);
   SRSetIvar(e, "_instance", instance);
-  SRSetIvar(e, "_underlyingEndpoint", x);
+  id xpcEndpoint = (id)xpc_endpoint_create(listener);
+  NSString *target = [@"sink:" stringByAppendingString:mach];
+  Class X = NSClassFromString(@"BSXPCServiceConnectionEndpoint");
+  if (X) {   // iOS 26+: the XPC endpoint lives in an underlying BSXPCServiceConnectionEndpoint
+    id x = class_createInstance(X, 0);
+    SRSetIvar(x, "_xpcEndpoint", xpcEndpoint);
+    SRSetIvar(x, "_targetDescription", target);
+    SRSetIvar(e, "_underlyingEndpoint", x);
+  } else {   // iOS 18: on the endpoint itself
+    SRSetIvar(e, "_endpoint", xpcEndpoint);
+    SRSetIvar(e, "_targetDescription", target);
+  }
   return e;
 }
 static IMP gOrigEndpointForMachName;

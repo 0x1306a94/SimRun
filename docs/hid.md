@@ -129,6 +129,14 @@ Notes:
     path the software keyboard or an IME commit takes. The fallback is the first responder's `UIKeyInput insertText:`.
     This path fires `editingChanged` but not `shouldChangeCharacters`.
 
+### iOS 18 runtime differences
+
+The keyboard focus chains (row 2 above) use iOS 18.6's older forms where the 27.1 ones are missing: the scene token is
+`+[BKSHIDEventDeferringToken tokenForString:]` of the scene's `identityToken.stringRepresentation` (what
+`FBSScene.ui_eventDeferringToken` returns on 27.1, and what iOS 18 UIKit gives its `BKSHIDEventDeliveryPolicyObserver`),
+`-[BKSHIDEventDeferringTarget _initWithPID:token:]`, `-[BKSHIDEventDeliveryChain initWithIdentity:compatibilityDisplay:path:]`
+and `-[BKSHIDEventObserver didUpdateDeferringChains:]` (no reply).
+
 ## 4. API (hid.h) and the viewer receiver
 
 ```c

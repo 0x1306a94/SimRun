@@ -187,6 +187,16 @@ With a render server the last three stay inactive automatically. `SRCreateScene`
   `+[FBSSceneSettingsDiff diffFromSettings:toSettings:]`; `[UIApplicationSceneSpecification specification]`;
   `UIApplicationSceneTransitionContext`.
 
+### iOS 18 runtime differences
+
+Written against iOS 27.1; the iOS 18.6 runtime differs in three places, handled at run time:
+- `FBSWorkspace._queue` is a plain dispatch queue (a `BSServiceDispatchQueue` with `-performAsync:` since iOS 26):
+  `SRWorkspaceAsync()` uses whichever it is.
+- `FBSWorkspaceScenesClient` has no `_hostEvent_pendingEvents` (nor `_hostEventLock`, `_invalidated`): set only if
+  present.
+- `BSServiceConnectionEndpoint` holds the XPC endpoint itself (`_endpoint`, `_targetDescription`); iOS 26+ puts it in an
+  underlying `BSXPCServiceConnectionEndpoint` (`_xpcEndpoint`). The HID sink endpoint is built either way.
+
 ## 6. Open problems / next steps
 - **Render server present.** This is not yet tested. UIKit then builds the main screen from
   `-[_UIScreenInitialDisplayConfigurationLoader initialDisplayContext]`:

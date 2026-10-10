@@ -44,8 +44,8 @@ window, controlled with your mouse, trackpad and keyboard.
   allows with SIP off. Apple describes how to change this setting in
   [Disabling and Enabling System Integrity Protection](https://developer.apple.com/documentation/security/disabling-and-enabling-system-integrity-protection).
 
-SimRun is developed on macOS 27.2 with Xcode 27.1 and the iOS 27.1 runtime; the iOS 27.0 runtime works too. Other
-versions may or may not work.
+SimRun is developed on macOS 27.2 with Xcode 27.1 and the iOS 27.1 runtime; the iOS 27.0 and 18.6 runtimes work too.
+Other versions may or may not work.
 
 ## Build
 

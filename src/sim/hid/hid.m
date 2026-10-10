@@ -509,14 +509,27 @@ __attribute__((used, section("__DATA,__interpose"))) static struct { void *n, *o
 - (id)initWithIdentity:(id)i compatibilityDisplay:(id)cd selectionPath:(id)sp path:(NSArray *)p modalities:(id)m constraints:(id)c
         containsSubset:(BOOL)sub containsEndOfChain:(BOOL)end finalStringTargetIndex:(long long)idx generation:(unsigned long long)gen;
 - (void)didUpdateDeferringChains:(NSArray *)chains withReply:(id)reply;
+// iOS 18 forms of the three above
+- (id)_initWithPID:(int)pid token:(id)t;
+- (id)initWithIdentity:(id)i compatibilityDisplay:(id)cd path:(NSArray *)p;
+- (void)didUpdateDeferringChains:(NSArray *)chains;
 - (id)_FBSScene;
 - (id)ui_eventDeferringToken;
+- (id)identityToken;
+- (NSString *)stringRepresentation;
++ (id)tokenForString:(NSString *)s;
 @end
 static unsigned long long gChainGeneration = 1;
 static id gLastFocusToken;
 static void SRHIDPushDeferringChains(void) {
   UIWindowScene *ws = SRHIDScene();
-  id token = [[ws _FBSScene] ui_eventDeferringToken];
+  id fbs = [ws _FBSScene];
+  id token;
+  if ([fbs respondsToSelector:@selector(ui_eventDeferringToken)]) token = [fbs ui_eventDeferringToken];
+  else {   // iOS 18 has no ui_eventDeferringToken; UIKit uses this same token (its scene identity token's string)
+    NSString *str = [[fbs identityToken] stringRepresentation];
+    token = str ? [NSClassFromString(@"BKSHIDEventDeferringToken") tokenForString:str] : nil;
+  }
   if (!token) { VLOG("no scene deferring token yet"); return; }
   if ([token isEqual:gLastFocusToken]) return;
   gLastFocusToken = token;
@@ -525,13 +538,20 @@ static void SRHIDPushDeferringChains(void) {
   NSMutableArray *chains = [NSMutableArray array];
   for (id env in @[[EnvC keyboardFocusEnvironment], [EnvC systemEnvironment]]) {
     id ident = [[NSClassFromString(@"BKSEventDeferringChainIdentity") alloc] initWithDisplay:disp environment:env];
-    id target = [[NSClassFromString(@"BKSHIDEventDeferringTarget") alloc] initWithPID:getpid() token:token];
-    id chain = [[NSClassFromString(@"BKSHIDEventDeliveryChain") alloc] initWithIdentity:ident compatibilityDisplay:nil selectionPath:nil
-        path:@[target] modalities:nil constraints:nil containsSubset:NO containsEndOfChain:YES finalStringTargetIndex:0 generation:gChainGeneration++];
+    id target = [NSClassFromString(@"BKSHIDEventDeferringTarget") alloc];
+    target = [target respondsToSelector:@selector(initWithPID:token:)] ? [target initWithPID:getpid() token:token] : [target _initWithPID:getpid() token:token];
+    id chain = [NSClassFromString(@"BKSHIDEventDeliveryChain") alloc];
+    SEL full = @selector(initWithIdentity:compatibilityDisplay:selectionPath:path:modalities:constraints:containsSubset:containsEndOfChain:finalStringTargetIndex:generation:);
+    if ([chain respondsToSelector:full])
+      chain = [chain initWithIdentity:ident compatibilityDisplay:nil selectionPath:nil path:@[target] modalities:nil constraints:nil
+                       containsSubset:NO containsEndOfChain:YES finalStringTargetIndex:0 generation:gChainGeneration++];
+    else chain = [chain initWithIdentity:ident compatibilityDisplay:nil path:@[target]];   // iOS 18
     if (chain) [chains addObject:chain];
   }
   LOG("keyboard focus: deferring chains -> scene token %s", [[token description] UTF8String]);
-  [[NSClassFromString(@"BKSHIDEventObserver") sharedInstance] didUpdateDeferringChains:chains withReply:nil];
+  id observer = [NSClassFromString(@"BKSHIDEventObserver") sharedInstance];
+  if ([observer respondsToSelector:@selector(didUpdateDeferringChains:withReply:)]) [observer didUpdateDeferringChains:chains withReply:nil];
+  else [observer didUpdateDeferringChains:chains];   // iOS 18
 }
 
 // ---------------------------------------------------------------- dictation livelock workaround

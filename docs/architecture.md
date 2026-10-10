@@ -103,4 +103,5 @@ is open is safe (the bundle is assembled in a staging directory and swapped in w
 (or `scripts/simrund.sh stop`) to pick up the new build.
 
 Requirements: Apple Silicon, SIP disabled, Xcode with an iOS Simulator runtime installed (see [Runtimes](#runtimes)).
-Apps must adopt the UIScene lifecycle. Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime; iOS 27.0 also works.
+Apps must adopt the UIScene lifecycle. Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime; iOS 27.0 and 18.6 also work (the Showcase and Glass test
+apps need iOS 26).
