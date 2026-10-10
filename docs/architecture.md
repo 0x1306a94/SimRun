@@ -66,7 +66,8 @@ environment). SimRun then starts a second `simns --serve` from that runtime the 
 same host services (IOSurface, Metal, pasteboard) in it, and gives the app a namespace there, so an app never talks to
 another runtime's daemons. Either way the server sets the runtime variables (`DYLD_ROOT_PATH`, `SIMULATOR_ROOT`,
 `SIMULATOR_RUNTIME_VERSION`, …) itself, replacing whatever runtime a client's environment pointed at. Extra simns stay
-until SimRun quits. All runtimes share the data directory (app containers, keychain, app groups, preferences); apps on
+until SimRun quits. An app whose executable needs a newer iOS than its runtime (the arm64 slice's minimum OS, which
+dyld enforces) isn't started: the launcher shows why, a `simapp` client prints it. All runtimes share the data directory (app containers, keychain, app groups, preferences); apps on
 two runtimes at once means two cfprefsd and containermanagerd instances over the same files.
 
 ## Data containers

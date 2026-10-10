@@ -518,6 +518,21 @@ static BOOL ProcessGone(pid_t pid) {
   return out;
 }
 
+// Why `r`'s executable can't run on `rt` (its minimum iOS is newer: dyld would refuse to load it and the app would just
+// exit), or nil.
+- (NSString *)runtimeProblemFor:(SRRequest *)r runtime:(SRRuntime *)rt {
+  NSString *exe = r.argv.firstObject;
+  if (!exe.absolutePath && r.cwd) exe = [r.cwd stringByAppendingPathComponent:exe];   // a client's path is relative to its cwd
+  NSString *min = [SRAppInfo minimumOSVersionOfExecutable:exe];
+  if (!min || [min compare:rt.version options:NSNumericSearch] != NSOrderedDescending) return nil;
+  NSString *name = r.title ?: r.argv.firstObject.lastPathComponent;
+  NSString *how = r.sock >= 0 || _mode == SRModeRun
+      ? @"Run it on a newer runtime with SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>, or choose one in SimRun ▸ iOS Runtime."
+      : @"Choose a newer runtime for it with Launch With… (hold Option in its menu in the launcher), or for SimRun in "
+         "SimRun ▸ iOS Runtime.";
+  return [NSString stringWithFormat:@"%@ requires iOS %@ or later, but it would run on %@. %@", name, min, rt.name, how];
+}
+
 - (void)launch:(SRRequest *)r {
   SRSession *s = [[SRSession alloc] initWithTitle:r.title ?: @"SimRun"];
   s.appPath = r.appPath;
@@ -528,7 +543,9 @@ static BOOL ProcessGone(pid_t pid) {
   s.onReady = ^(SRSession *session) { SRServer *me = weakSelf; [me->_launcher reloadState]; };
   NSString *err = nil;
   mach_port_t ns = MACH_PORT_NULL;
-  if (![SRRuntime runtimeAtRoot:r.runtimeRoot]) err = [NSString stringWithFormat:@"Not an iOS Simulator runtime: %@", r.runtimeRoot];
+  SRRuntime *rt = [SRRuntime runtimeAtRoot:r.runtimeRoot];
+  if (!rt) err = [NSString stringWithFormat:@"Not an iOS Simulator runtime: %@", r.runtimeRoot];
+  else if ((err = [self runtimeProblemFor:r runtime:rt])) {}
   else ns = [self newNamespaceIn:_simns[r.runtimeRoot.stringByStandardizingPath]];
   int fds[3] = { r.fd0, r.fd1, r.fd2 };
   BOOL ok = ns && [s spawnArgv:r.argv env:[self appEnvironmentFrom:r.env executable:r.argv.firstObject] cwd:r.cwd bootstrap:ns fds:fds error:&err];
