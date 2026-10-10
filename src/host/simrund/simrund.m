@@ -161,6 +161,16 @@ static void LOG(NSString *fmt, ...) {
   [file addItem:NSMenuItem.separatorItem];
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
 
+  NSMenu *edit = [[NSMenu alloc] initWithTitle:@"Edit"];   // in app windows, SRView sends these to the app
+  [edit addItemWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
+  [edit addItemWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"Z"];   // ⇧⌘Z
+  [edit addItem:NSMenuItem.separatorItem];
+  [edit addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
+  [edit addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+  [edit addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+  [edit addItemWithTitle:@"Delete" action:@selector(delete:) keyEquivalent:@""];
+  [edit addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+
   NSMenu *appCmds = [[NSMenu alloc] initWithTitle:@"App"];
   [appCmds addItemWithTitle:@"Relaunch" action:@selector(relaunchFrontApp:) keyEquivalent:@"r"].target = self;
   _quitAppItem = [appCmds addItemWithTitle:@"Quit App" action:@selector(quitFrontApp:) keyEquivalent:@""];
@@ -175,7 +185,7 @@ static void LOG(NSString *fmt, ...) {
   [win addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
   [win addItemWithTitle:@"Bring All to Front" action:@selector(arrangeInFront:) keyEquivalent:@""];
 
-  for (NSMenu *m in @[ appMenu, file, appCmds, win ]) { NSMenuItem *it = [NSMenuItem new]; it.submenu = m; [bar addItem:it]; }
+  for (NSMenu *m in @[ appMenu, file, edit, appCmds, win ]) { NSMenuItem *it = [NSMenuItem new]; it.submenu = m; [bar addItem:it]; }
   NSApp.mainMenu = bar; NSApp.windowsMenu = win;
   for (NSNotificationName n in @[ NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification ])
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(keyWindowChanged:) name:n object:nil];

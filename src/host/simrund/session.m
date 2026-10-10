@@ -75,6 +75,26 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 - (void)smartMagnifyWithEvent:(NSEvent *)e { [self send:SR_IN_SMART_MAGNIFY event:e]; }
 - (void)keyDown:(NSEvent *)e { [self send:SR_IN_KEY_DOWN event:e]; }
 - (void)keyUp:(NSEvent *)e { [self send:SR_IN_KEY_UP event:e]; }
+
+// Edit menu: its key equivalents (⌘C, ⌘V, ⌘Z…) are matched before -keyDown:, so forward them to the app as typed; a
+// click on the menu item sends the app the same shortcut (Mac virtual keycodes, as -keyDown: does).
+- (void)editKey:(uint16_t)code modifiers:(NSEventModifierFlags)mods {
+  NSEvent *e = NSApp.currentEvent;
+  if (e.type == NSEventTypeKeyDown && e.window == self.window) { [self keyDown:e]; return; }
+  for (int up = 0; up < 2; up++) {
+    sr_input_msg_t m = {0};
+    m.kind = up ? SR_IN_KEY_UP : SR_IN_KEY_DOWN; m.keycode = code;
+    m.modifiers = up ? 0 : (uint32_t)mods;   // released with the key, so the app isn't left with ⌘ held
+    [self post:&m];
+  }
+}
+- (void)undo:(id)s { [self editKey:0x06 modifiers:NSEventModifierFlagCommand]; }                                // Z
+- (void)redo:(id)s { [self editKey:0x06 modifiers:NSEventModifierFlagCommand | NSEventModifierFlagShift]; }
+- (void)cut:(id)s { [self editKey:0x07 modifiers:NSEventModifierFlagCommand]; }                                 // X
+- (void)copy:(id)s { [self editKey:0x08 modifiers:NSEventModifierFlagCommand]; }                                // C
+- (void)paste:(id)s { [self editKey:0x09 modifiers:NSEventModifierFlagCommand]; }                               // V
+- (void)delete:(id)s { [self editKey:0x33 modifiers:0]; }                                                       // ⌫
+- (void)selectAll:(id)s { [self editKey:0x00 modifiers:NSEventModifierFlagCommand]; }                           // A
 @end
 
 // ---------------------------------------------------------------- session
