@@ -39,17 +39,21 @@ $(BIN)/simrund: $(SIMRUND_SRC) $(wildcard src/host/simrund/*.h) $(HDRS) | $(BIN)
 	$(MACCC) -Isrc/host/simrund $(SIMRUND_SRC) -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal \
 	  -framework UniformTypeIdentifiers -o $@
 
-$(BUILD)/AppIcon.icns: tools/make_icon.swift | $(BIN)
-	$(MACSWIFT) tools/make_icon.swift -o $(BUILD)/make_icon && $(BUILD)/make_icon $@
+# App icon: the Icon Composer document compiled into Assets.car (Liquid Glass icon) and AppIcon.icns (fallback).
+ICON := $(BUILD)/icon
+$(ICON)/Assets.car: resources/AppIcon.icon/icon.json resources/AppIcon.icon/Assets
+	@mkdir -p $(ICON)
+	xcrun actool resources/AppIcon.icon --compile $(ICON) --platform macosx --minimum-deployment-target 14.0 --app-icon AppIcon \
+	  --output-partial-info-plist $(ICON)/partial.plist >/dev/null
 
 # SimRun.app: the server/launcher executable, helpers (simns, simapp) and the sim-side libraries.
 # Assembled in a staging bundle and swapped in with a rename, so a SimRun that is running from the old bundle keeps
 # its (unlinked) files instead of having them overwritten underneath it.
-$(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer resources/Info.plist $(BUILD)/AppIcon.icns
+$(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer resources/Info.plist $(ICON)/Assets.car
 	@rm -rf $(BUILD)/.SimRun.app.new $(BUILD)/.SimRun.app.old
 	@mkdir -p $(BUILD)/.SimRun.app.new/Contents/MacOS $(BUILD)/.SimRun.app.new/Contents/Helpers $(BUILD)/.SimRun.app.new/Contents/Resources/lib
 	@cp resources/Info.plist $(BUILD)/.SimRun.app.new/Contents/Info.plist
-	@cp $(BUILD)/AppIcon.icns $(BUILD)/.SimRun.app.new/Contents/Resources/
+	@cp $(ICON)/Assets.car $(ICON)/AppIcon.icns $(BUILD)/.SimRun.app.new/Contents/Resources/
 	@cp $(BIN)/simrund $(BUILD)/.SimRun.app.new/Contents/MacOS/SimRun
 	@cp $(BIN)/simns $(BIN)/simapp $(BUILD)/.SimRun.app.new/Contents/Helpers/
 	@cp $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/SimFramebuffer $(BUILD)/.SimRun.app.new/Contents/Resources/lib/

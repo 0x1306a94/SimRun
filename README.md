@@ -51,7 +51,7 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs |
 | `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, per-app window sessions, environment), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
-| `resources/` | SimRun.app's Info.plist |
+| `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `simfb/` |
 | `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |

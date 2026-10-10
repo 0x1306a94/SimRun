@@ -10,10 +10,11 @@
 	<key>CFBundleShortVersionString</key><string>0.1</string>
 	<key>CFBundleVersion</key><string>1</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
+	<key>CFBundleIconName</key><string>AppIcon</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
-	<key>NSHumanReadableCopyright</key><string>Runs iOS Simulator apps as macOS processes.</string>
+	<key>NSHumanReadableCopyright</key><string>Run iOS Simulator apps directly on your Mac.</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

@@ -15,6 +15,7 @@
   title.translatesAutoresizingMaskIntoConstraints = NO; title.lineBreakMode = NSLineBreakByTruncatingTail;
   NSTextField *sub = [NSTextField labelWithString:@""]; sub.font = [NSFont systemFontOfSize:11]; sub.textColor = NSColor.secondaryLabelColor;
   sub.translatesAutoresizingMaskIntoConstraints = NO; sub.lineBreakMode = NSLineBreakByTruncatingMiddle;
+  sub.allowsExpansionToolTips = YES;
   NSView *dot = [NSView new]; dot.wantsLayer = YES; dot.layer.cornerRadius = 4; dot.layer.backgroundColor = NSColor.systemGreenColor.CGColor;
   dot.translatesAutoresizingMaskIntoConstraints = NO; dot.toolTip = @"Running";
   NSProgressIndicator *spin = [NSProgressIndicator new];
@@ -73,7 +74,7 @@
 
 @implementation SRLauncher {
   __weak id<SRLauncherDelegate> _delegate;
-  NSWindow *_window; NSTableView *_table; NSTextField *_emptyHint; NSButton *_launchButton;
+  NSWindow *_window; NSTableView *_table; NSTextField *_emptyHint;
 }
 
 - (instancetype)initWithDelegate:(id<SRLauncherDelegate>)delegate {
@@ -112,26 +113,18 @@
 
   NSScrollView *scroll = [NSScrollView new];
   scroll.documentView = _table; scroll.hasVerticalScroller = YES; scroll.hasHorizontalScroller = NO; scroll.drawsBackground = NO;
+  scroll.automaticallyAdjustsContentInsets = NO;
+  scroll.contentInsets = NSEdgeInsetsMake(0, 0, 12, 0);
   scroll.translatesAutoresizingMaskIntoConstraints = NO;
 
   _emptyHint = [NSTextField wrappingLabelWithString:@"Drop iOS Simulator apps here\n\nBuild your app for an iOS Simulator destination in Xcode, then drag the .app from Build/Products/Debug-iphonesimulator onto this window."];
   _emptyHint.alignment = NSTextAlignmentCenter; _emptyHint.textColor = NSColor.secondaryLabelColor;
   _emptyHint.translatesAutoresizingMaskIntoConstraints = NO;
 
-  NSButton *add = [NSButton buttonWithTitle:@"Add App…" target:self action:@selector(addAppWithPanel)];
-  NSButton *xcode = [NSButton buttonWithTitle:@"Add Xcode Builds" target:self action:@selector(addXcodeBuilds)];
-  _launchButton = [NSButton buttonWithTitle:@"Launch" target:self action:@selector(launchSelected:)];
-  _launchButton.keyEquivalent = @"\r";
-  NSStackView *bar = [NSStackView stackViewWithViews:@[ add, xcode, [NSView new], _launchButton ]];
-  bar.translatesAutoresizingMaskIntoConstraints = NO;
-  [bar setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-
-  for (NSView *v in @[ scroll, _emptyHint, bar ]) [root addSubview:v];
+  for (NSView *v in @[ scroll, _emptyHint ]) [root addSubview:v];
   [NSLayoutConstraint activateConstraints:@[
     [scroll.topAnchor constraintEqualToAnchor:root.topAnchor], [scroll.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
-    [scroll.trailingAnchor constraintEqualToAnchor:root.trailingAnchor], [scroll.bottomAnchor constraintEqualToAnchor:bar.topAnchor constant:-10],
-    [bar.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:14], [bar.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-14],
-    [bar.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-12],
+    [scroll.trailingAnchor constraintEqualToAnchor:root.trailingAnchor], [scroll.bottomAnchor constraintEqualToAnchor:root.bottomAnchor],
     [_emptyHint.centerXAnchor constraintEqualToAnchor:scroll.centerXAnchor], [_emptyHint.centerYAnchor constraintEqualToAnchor:scroll.centerYAnchor],
     [_emptyHint.widthAnchor constraintEqualToAnchor:scroll.widthAnchor multiplier:0.75],
   ]];
@@ -152,15 +145,8 @@
   [_table reloadData];
   if (sel >= 0 && sel < _table.numberOfRows) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:sel] byExtendingSelection:NO];
   _emptyHint.hidden = SRLibrary.shared.apps.count > 0;
-  [self updateButtons];
 }
 - (void)reloadState { [self reload]; }
-- (void)updateButtons {
-  SRAppInfo *a = [self selectedApp];
-  SRAppState st = a ? [_delegate stateForApp:a] : SRAppStateStopped;
-  _launchButton.enabled = a != nil && st != SRAppStateLaunching;
-  _launchButton.title = st == SRAppStateRunning ? @"Show" : st == SRAppStateLaunching ? @"Launching…" : @"Launch";
-}
 - (SRAppInfo *)selectedApp {
   NSInteger r = _table.clickedRow >= 0 ? _table.clickedRow : _table.selectedRow;
   return r >= 0 && r < (NSInteger)SRLibrary.shared.apps.count ? SRLibrary.shared.apps[r] : nil;
@@ -244,11 +230,10 @@
   SRAppInfo *a = SRLibrary.shared.apps[row];
   cell.imageView.image = a.icon;
   cell.textField.stringValue = a.name;
-  cell.subtitle.stringValue = a.bundleIdentifier.length ? [NSString stringWithFormat:@"%@ — %@", a.bundleIdentifier, a.path.stringByAbbreviatingWithTildeInPath] : a.path.stringByAbbreviatingWithTildeInPath;
+  cell.subtitle.stringValue = a.bundleIdentifier.length ? [NSString stringWithFormat:@"%@ - %@", a.bundleIdentifier, a.path.stringByAbbreviatingWithTildeInPath] : a.path.stringByAbbreviatingWithTildeInPath;
   [cell setState:[_delegate stateForApp:a]];
   return cell;
 }
-- (void)tableViewSelectionDidChange:(NSNotification *)n { [self updateButtons]; }
 - (NSDragOperation)tableView:(NSTableView *)t validateDrop:(id<NSDraggingInfo>)info proposedRow:(NSInteger)row proposedDropOperation:(NSTableViewDropOperation)op {
   [t setDropRow:-1 dropOperation:NSTableViewDropOn];   // whole-table highlight
   NSArray<NSURL *> *urls = [info.draggingPasteboard readObjectsForClasses:@[ NSURL.class ] options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
