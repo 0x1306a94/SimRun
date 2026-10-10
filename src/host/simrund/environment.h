@@ -8,12 +8,14 @@
 + (NSString *)runtimeRoot;
 // Variables a sim process needs (DYLD_ROOT_PATH, HOME = the simulated device's data dir, SIMULATOR_*, ...).
 + (NSDictionary<NSString *, NSString *> *)simulatorVariables;
+// The simulated device's data directory (the apps' HOME): SIMRUN_DATA, else ~/Library/Developer/SimRun/data.
++ (NSString *)dataDirectory;
 // `base` ("KEY=VALUE" strings, e.g. this process's environment) with `overrides` applied.
 + (NSArray<NSString *> *)environment:(NSArray<NSString *> *)base withOverrides:(NSDictionary<NSString *, NSString *> *)overrides;
 + (NSArray<NSString *> *)processEnvironment;
 
 + (NSString *)simnsPath;                 // the simns helper
-+ (NSString *)libraryDirectory;          // rshim/glue/scenes/hid/pboard/drag dylibs + SimFramebuffer
++ (NSString *)libraryDirectory;          // rshim/glue/scenes/hid/pboard/drag/keychain dylibs + SimFramebuffer
 + (NSString *)injectedLibraries;         // SIMNS_INSERT value for apps
 + (NSString *)framebufferFramework;      // SIMULATOR_FRAMEBUFFER_FRAMEWORK value
 @end

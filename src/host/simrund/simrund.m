@@ -21,6 +21,7 @@
 #include "library.h"
 #include "launcher.h"
 #include "pasteboard.h"
+#include "keychainwindow.h"
 #include "simns_proto.h"
 #include "simrund_proto.h"
 #include "gpuhost.h"
@@ -161,9 +162,11 @@ static void LOG(NSString *fmt, ...) {
   [appCmds addItemWithTitle:@"Relaunch" action:@selector(relaunchFrontApp:) keyEquivalent:@"r"].target = self;
   [appCmds addItemWithTitle:@"Quit App" action:@selector(quitFrontApp:) keyEquivalent:@""].target = self;
   [appCmds addItemWithTitle:@"Show Log" action:@selector(showFrontAppLog:) keyEquivalent:@"l"].target = self;
+  [appCmds addItemWithTitle:@"Show Keychain Items" action:@selector(showFrontAppKeychain:) keyEquivalent:@""].target = self;
 
   NSMenu *win = [[NSMenu alloc] initWithTitle:@"Window"];
   [win addItemWithTitle:@"Launcher" action:@selector(showLauncher:) keyEquivalent:@"0"].target = self;
+  [win addItemWithTitle:@"Keychain" action:@selector(showKeychain:) keyEquivalent:@"K"].target = self;   // ⇧⌘K
   [win addItem:NSMenuItem.separatorItem];
   [win addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
   [win addItemWithTitle:@"Bring All to Front" action:@selector(arrangeInFront:) keyEquivalent:@""];
@@ -181,6 +184,7 @@ static void LOG(NSString *fmt, ...) {
   SEL a = item.action;
   if (a == @selector(relaunchFrontApp:)) return [self frontRequest].appPath != nil;
   if (a == @selector(quitFrontApp:) || a == @selector(showFrontAppLog:)) return [self frontRequest] != nil;
+  if (a == @selector(showFrontAppKeychain:)) return [self frontRequest].appPath != nil;
   return YES;
 }
 - (void)addApp:(id)s { _interactive = YES; [_launcher addAppWithPanel]; }
@@ -188,6 +192,11 @@ static void LOG(NSString *fmt, ...) {
 - (void)showLauncher:(id)s { _interactive = YES; [_launcher show]; }
 - (void)quitFrontApp:(id)s { [[self frontRequest].session terminate]; }
 - (void)showFrontAppLog:(id)s { [[self frontRequest].session showLog]; }
+- (void)showKeychain:(id)s { [SRKeychainWindow.shared showWithFilter:nil]; }
+- (void)showFrontAppKeychain:(id)s {
+  NSString *path = [self frontRequest].appPath;
+  if (path) [SRKeychainWindow.shared showWithFilter:[SRAppInfo infoWithPath:path].bundleIdentifier ?: @""];
+}
 - (void)relaunchFrontApp:(id)s {
   SRRequest *r = [self frontRequest]; if (!r.appPath) return;
   NSString *path = r.appPath;

@@ -1,5 +1,6 @@
 // launcher.m — see launcher.h.
 #import "launcher.h"
+#import "keychainwindow.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 // ---------------------------------------------------------------- row view: icon, name, path, running dot
@@ -207,6 +208,7 @@
 - (void)removeSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [SRLibrary.shared removePath:a.path]; }
 - (void)quitSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate quitApp:a]; }
 - (void)logSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate showLogForApp:a]; }
+- (void)keychainSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [SRKeychainWindow.shared showWithFilter:a.bundleIdentifier ?: @""]; }
 
 - (void)menuNeedsUpdate:(NSMenu *)menu {
   [menu removeAllItems];
@@ -217,6 +219,7 @@
     [menu addItemWithTitle:st == SRAppStateRunning ? @"Show" : @"Launch" action:@selector(launchSelected:) keyEquivalent:@""].target = self;
   if (st != SRAppStateStopped) [menu addItemWithTitle:@"Quit App" action:@selector(quitSelected:) keyEquivalent:@""].target = self;
   [menu addItemWithTitle:@"Show Log" action:@selector(logSelected:) keyEquivalent:@""].target = self;
+  [menu addItemWithTitle:@"Show Keychain Items" action:@selector(keychainSelected:) keyEquivalent:@""].target = self;
   [menu addItem:NSMenuItem.separatorItem];
   [menu addItemWithTitle:@"Show in Finder" action:@selector(showInFinder:) keyEquivalent:@""].target = self;
   [menu addItemWithTitle:@"Remove from SimRun" action:@selector(removeSelected:) keyEquivalent:@""].target = self;

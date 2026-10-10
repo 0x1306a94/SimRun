@@ -19,10 +19,10 @@ HDRS    := $(wildcard include/*.h)
 
 APP   := $(BUILD)/SimRun.app
 CORE  := $(APP) $(BIN)/simapp
-PARTS := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/SimFramebuffer
+PARTS := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput $(BIN)/rhost
 TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app \
-         $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes $(TBIN)/pbtest
+         $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes $(TBIN)/pbtest $(TBIN)/kctest
 
 .PHONY: all core tools tests clean $(APP)
 all: core tools tests
@@ -49,14 +49,14 @@ $(ICON)/Assets.car: resources/AppIcon.icon/icon.json resources/AppIcon.icon/Asse
 # SimRun.app: the server/launcher executable, helpers (simns, simapp) and the sim-side libraries.
 # Assembled in a staging bundle and swapped in with a rename, so a SimRun that is running from the old bundle keeps
 # its (unlinked) files instead of having them overwritten underneath it.
-$(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/SimFramebuffer resources/Info.plist $(ICON)/Assets.car
+$(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/SimFramebuffer resources/Info.plist $(ICON)/Assets.car
 	@rm -rf $(BUILD)/.SimRun.app.new $(BUILD)/.SimRun.app.old
 	@mkdir -p $(BUILD)/.SimRun.app.new/Contents/MacOS $(BUILD)/.SimRun.app.new/Contents/Helpers $(BUILD)/.SimRun.app.new/Contents/Resources/lib
 	@cp resources/Info.plist $(BUILD)/.SimRun.app.new/Contents/Info.plist
 	@cp $(ICON)/Assets.car $(ICON)/AppIcon.icns $(BUILD)/.SimRun.app.new/Contents/Resources/
 	@cp $(BIN)/simrund $(BUILD)/.SimRun.app.new/Contents/MacOS/SimRun
 	@cp $(BIN)/simns $(BIN)/simapp $(BUILD)/.SimRun.app.new/Contents/Helpers/
-	@cp $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/SimFramebuffer $(BUILD)/.SimRun.app.new/Contents/Resources/lib/
+	@cp $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/SimFramebuffer $(BUILD)/.SimRun.app.new/Contents/Resources/lib/
 	@$(SIGN) --deep $(BUILD)/.SimRun.app.new 2>/dev/null
 	@if [ -d $@ ]; then mv $@ $(BUILD)/.SimRun.app.old; fi
 	@mv $(BUILD)/.SimRun.app.new $@ && rm -rf $(BUILD)/.SimRun.app.old
@@ -106,6 +106,10 @@ $(LIB)/drag.dylib: src/sim/drag/drag.m $(HDRS) | $(LIB)
 	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -framework CoreGraphics -o $@
 	@$(SIGN) $@ 2>/dev/null
 
+$(LIB)/keychain.dylib: src/sim/keychain/keychain.m $(HDRS) | $(LIB)
+	$(SIMCC) -dynamiclib $< -framework Foundation -framework Security -o $@
+	@$(SIGN) $@ 2>/dev/null
+
 # ---------------------------------------------------------------- tests
 $(APPS)/Hello.app: tests/apps/hello/main.m tests/apps/hello/Info.plist | $(APPS)
 	@mkdir -p $@ && cp tests/apps/hello/Info.plist $@/
@@ -148,6 +152,9 @@ $(TBIN)/nwtest: tests/net/nwtest.m | $(TBIN)
 	@$(SIGN) $@ 2>/dev/null
 $(TBIN)/pbtest: tests/pboard/pbtest.m | $(TBIN)
 	$(SIMCC) $< -framework UIKit -o $@
+	@$(SIGN) $@ 2>/dev/null
+$(TBIN)/kctest: tests/keychain/kctest.m | $(TBIN)
+	$(SIMCC) $< -framework Foundation -framework Security -o $@
 	@$(SIGN) $@ 2>/dev/null
 $(TBIN)/fakeframes: tests/viewer/fakeframes.m $(HDRS) | $(TBIN)
 	$(SIMCC) $< -framework Foundation -framework IOSurface -framework CoreGraphics -o $@
