@@ -2,6 +2,7 @@
 /build/
 # local artifacts
 *.png
+!docs/images/*.png
 *.ips
 out/
 .DS_Store

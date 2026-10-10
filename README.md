@@ -1,132 +1,149 @@
 # SimRun
 
-Run unmodified **iOS-Simulator** app builds as plain macOS processes: the Simulator's own UIKit, SwiftUI and
-QuartzCore, without `launchd_sim`, `backboardd`, SpringBoard or Simulator.app. The system services those normally
-provide are reimplemented (mostly in-process), and the app appears in an ordinary Mac window with mouse/keyboard input.
+![A SwiftUI app running in its own window, next to SimRun's launcher and Keychain window](docs/images/screenshot.png)
+
+SimRun runs iPhone apps on your Mac, each in its own ordinary Mac window.
+
+It takes the app you already build for the iOS Simulator in Xcode, unchanged, and starts it directly. There is no simulated iPhone to boot, no home screen, no device frame: just your app, in a
+window, controlled with your mouse, trackpad and keyboard.
+
+> SimRun is an experimental research project. It's useful for day-to-day work on an app's UI, but it is not a
+> replacement for testing in the Simulator or on a real device.
+
+## Why not just use the Simulator, or Mac Catalyst?
+
+**Compared with the iOS Simulator**
+
+- **Nothing to boot.** The Simulator starts a whole virtual iPhone before your app can run. SimRun starts only your
+  app, so it's on screen in about half a second.
+- **Lighter.** None of the simulated phone's background system runs. Only your app and a few small helpers do.
+- **Apps are real windows.** Every app gets its own Mac window. Put several apps side by side, resize them, or
+  minimize them like any other window.
+- **Your trackpad works naturally.** Two-finger scrolling, pinch to zoom and rotate gestures turn into real
+  multi-touch input. No Option-dragging to fake a second finger.
+- **Fits into the terminal.** Launch an app from the command line and its output prints right there. When the app
+  exits, the command exits with the same status, which is handy in scripts.
+- **Easy to look inside.** One click opens an app's data folder in Finder or wipes it, and a Keychain window shows
+  everything apps have saved there, passwords included.
+
+**Compared with Mac Catalyst**
+
+- **No porting.** Catalyst means making a Mac version of your app: a new build target, Mac-specific code paths, and
+  APIs that behave differently. SimRun runs the iOS Simulator build you already have.
+- **Looks and behaves like the iPhone version.** Your app runs with the iPhone's own UIKit and SwiftUI, so layouts,
+  controls and Liquid Glass look the way they do on a phone, not the way they're adapted for the Mac.
+- **Works with apps you didn't write.** Any iOS Simulator build can be opened, including ones you received from
+  someone else, without access to the source.
+
+## What you need
+
+- A Mac with Apple silicon
+- Xcode, with an iOS Simulator runtime installed (SimRun uses the newest one it finds)
+- System Integrity Protection (SIP) turned off. SimRun needs to load its own code into iOS apps, which macOS only
+  allows with SIP off. Apple describes how to change this setting in
+  [Disabling and Enabling System Integrity Protection](https://developer.apple.com/documentation/security/disabling-and-enabling-system-integrity-protection).
+
+SimRun is developed on macOS 27.2 with Xcode 27.1 and the iOS 27.1 runtime. Other versions may or may not work.
+
+## Build
 
 ```bash
 make
-open build/SimRun.app                          # launcher: drop iOS Simulator .app bundles on it
-scripts/simapp.sh build/apps/Showcase.app     # a tour: touch, keyboard, container, pasteboard, keychain, drag & drop, web…
-scripts/simapp.sh build/apps/SUI.app           # or launch from the terminal (output + exit status in the terminal)
 ```
 
-**SimRun.app** is a regular Mac app: drop iOS Simulator `.app` bundles on its window or Dock icon (or use
-File ▸ Add App…, Add Xcode Builds, or Finder's Open With ▸ SimRun). The library is remembered; double-click or Launch
-to run an app — the row shows a spinner while it starts and a green dot once its window appears (no blank window).
-In an app window: ⌘R relaunch, ⌘L log (the app's stdout/stderr), ⌘Q or ⌘W quit the app, ⌘0 launcher, ⌥⌘Q quit
-everything (⌘Q elsewhere).
-⇧⌘K opens the Keychain window: what apps stored with the SecItem API, passwords in plaintext (docs/keychain.md).
+This builds `build/SimRun.app`, plus a few sample apps in `build/apps/`. You can rebuild while SimRun is open; quit
+and reopen SimRun to pick up the new version.
 
-Each app has its own **data container**, like an iOS sandbox container: its HOME (Documents, Library — preferences,
-caches, cookies, WebKit data — and tmp) is `~/Library/Developer/SimRun/data/Containers/Data/Application/<bundle id>/`
-(the executable's name for a bare binary). What is managed centrally stays in the shared data directory `data/`
-(`SIMULATOR_SHARED_RESOURCES_DIRECTORY`): the keychain, app group containers (`Containers/Shared/AppGroup/`, served by
-the runtime's containermanagerd to apps entitled to the group) and the shared daemons' state. In the launcher, an
-app's menu has App Container ▸ Show in Finder / Reset… (deletes the container; keychain items and app group
-containers are kept). Containers are a convention, not a sandbox: apps run unsandboxed as you. `scripts/simrun.sh`
-on its own (no SimRun server) still runs a binary with the shared directory as HOME.
+## Use
 
-All apps run inside one SimRun process (`simapp.sh` starts it headless if SimRun.app isn't open; headless it exits
-after 10 idle minutes).
-Each app gets its own window; its stdout/stderr go to your terminal, `simapp.sh` exits with the app's status, and
-Ctrl-C (or closing the window) ends the app. Launching into a running server takes ~0.6 s to first frame
-(vs ~1.1 s standalone). `scripts/simrund.sh status|stop|log` manages the server; `SIMAPP_STANDALONE=1` runs an app in
-its own private server instead.
+### With the SimRun app
 
-Requirements: Apple Silicon, SIP disabled, Xcode with an iOS Simulator runtime installed (the newest one is picked up
-automatically; override with `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>`). Apps must adopt the UIScene lifecycle.
-Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime.
-
-## How it works
-
-```
-simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit server: one window per app, input forwarding, and the
-  argv, env, stdio fds                   │            host-side "sim2host" services (com.apple.IOSurface.Remote via
-                                         │            IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation,
-                                         │            dev.simrun.pasteboard: the Mac's NSPasteboard)
-                                         ├─ build/bin/simns --serve   launchd_sim stand-in speaking sim libxpc's XPC-pipe protocol;
-                                         │     │                      one private namespace per app layered over a shared global one;
-                                         │     └─ trustd, cfprefsd…   real sim daemons launched on demand, shared by all apps
-                                         └─ each app (bootstrap port = its namespace), with DYLD_INSERT_LIBRARIES =
-                                              rshim.dylib    Metal shader-compiler XPC service spawning, bootstrap fallbacks,
-                                                             the Mac's language & region (locale, languages, 24-hour
-                                                             time, first weekday...) into the device's global preferences
-                                              glue.dylib     starts the in-process CA render server (CAWindowServer) and hosts the
-                                                             scene's layers on the display (SpringBoard's job)
-                                              scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene)
-                                              hid.dylib      mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:];
-                                                             trackpad scroll/pinch/rotate as real touches (docs/hid.md)
-                                              pboard.dylib   in-process pasteboard daemon (com.apple.pasteboard.pasted) backed
-                                                             by the Mac pasteboard via simrund (docs/pasteboard.md)
-                                              drag.dylib     in-process drag server (druid) for drag & drop within the app
-                                                             (docs/dragdrop.md)
-                                              keychain.dylib fake keychain: the SecItem API over a plaintext plist in the
-                                                             data directory, shown in SimRun's Keychain window
-                                                             (docs/keychain.md)
-                                              webkit.dylib   launches WKWebView's helper processes (WebContent, Networking,
-                                                             GPU appexes) as children of the app (docs/webkit.md)
-                                            SimFramebuffer   fake SimFramebuffer: the render server's display; presented
-                                                             IOSurfaces go to the app's window (include/protocol.h)
+```bash
+open build/SimRun.app
 ```
 
-## Layout
+SimRun opens a launcher window listing your apps. To add one, do any of the following:
 
-| Path | Contents |
-|---|---|
-| `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
-| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, per-app window sessions, environment, host pasteboard, Keychain window), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
-| `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
-| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
-| `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
-| `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
-| `docs/` | Write-ups (see below) |
+- Drag an iOS Simulator `.app` onto the launcher window or onto SimRun's Dock icon.
+- Choose **File ▸ Add App…**
+- Choose **File ▸ Add Xcode Simulator Builds** to add everything you've built for the Simulator in Xcode.
+- In Finder, right-click an app and choose **Open With ▸ SimRun**.
 
-`make` builds everything into `build/` (`SimRun.app`, `bin/`, `lib/`, `apps/`, `tests/`); `make core` builds SimRun.app
-and the client. Rebuilding while SimRun is open is safe (the bundle is swapped in atomically); quit and reopen SimRun
-(or `scripts/simrund.sh stop`) to pick up the new build.
+SimRun remembers the list. Double-click an app to launch it. While it starts, its row shows a spinner; once the
+window is up, the row shows a green dot.
 
-## Useful knobs
+To see what SimRun can do, try the built-in tour: add `build/apps/Showcase.app` and launch it.
 
-| Variable | Effect |
-|---|---|
-| `SIMNS_QUIET=1` | Hide simns's log (in the server log, `simrund.sh log`, for shared launches) of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
-| `SIMNS_DAEMONS=a,b` / `none` | Labels of real sim daemons simns may launch on demand |
-| `SIMAPP_EXTRA_INSERT=x.dylib` | Inject an extra sim dylib into the app |
-| `SIMAPP_STANDALONE=1` | Run the app in its own private `simrund --run` instead of the shared server |
-| `SIMRUND_IDLE=secs` | Shared server exits after this long without apps (default 600, 0 = never); set when it starts |
-| `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
-| `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default 402×874 @3x) |
-| `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1`, `PBOARD_VERBOSE=1`, `DRAG_VERBOSE=1`, `KEYCHAIN_VERBOSE=1`, `WEBKIT_VERBOSE=1` | Component tracing (`SIMFB_VERBOSE` also reports the frame-copy latency) |
-| `PBOARD_DISABLE=1` | No pasteboard service in the app (UIPasteboard fails as it did before pboard.dylib) |
-| `DRAG_DISABLE=1` | No drag server in the app (drags lift and then go nowhere) |
-| `KEYCHAIN_DISABLE=1` | SecItem calls go to the runtime's securityd again (which answers -34018, missing entitlement) |
-| `WEBKIT_DISABLE=1` | WebKit's helper processes aren't launched (web views stay blank) |
-| `LOCALE_DISABLE=1` | Don't copy the Mac's language & region settings into the device's global preferences (keep what is there, e.g. to test another locale) |
-| `SIMFB_CHECK=1` | Frame diagnostics: stale pixels outside partial presents (app side), and buffers overwritten while on screen (server log) |
-| `SIMRUN_DEBUG_STALL=ms`, `SIMRUN_CHROME_DEMO=secs` | Testing: block SimRun's main thread for *ms* every 100 ms; toggle the window chrome on a timer (no mouse needed) |
-| `OS_ACTIVITY_DT_MODE=1` | Mirror os_log/NSLog to stderr |
+How your Mac maps to an iPhone:
 
-## Docs
+- **Click and drag** is a tap and a finger drag.
+- **Two-finger scroll** on a trackpad is a swipe that keeps scrolling with momentum when you let go.
+- **Pinch** and **rotate** on a trackpad are two-finger pinch and rotate. A **two-finger double tap** is a double tap.
+- **Typing** goes to whichever text field has focus, as if a hardware keyboard were connected.
+- **Copy and paste** use your Mac's clipboard, so you can copy in an app and paste in any Mac app, and the other way
+  round.
 
-- `docs/research-log.md` — chronological findings from the investigation (paths in it refer to the original prototype layout)
-- `docs/simns.md` — how sim libxpc finds launchd, the XPC-pipe routines, service inventory, on-demand daemons (and how
-  they come back when they die)
-- `docs/render.md` — in-process render server, the SimFramebuffer API, sim2host GPU/IOSurface services
-- `docs/scenes.md` — how UIKit obtains a UIWindowScene and the in-process FrontBoard host
-- `docs/hid.md` — input injection, keyboard focus/deferring, event fields
-- `docs/pasteboard.md` — UIPasteboard ⇄ Mac pasteboard: the pasted protocol, UIKit's cache, the fake server
-- `docs/dragdrop.md` — drag & drop within an app: the druid protocols, drag HID events, the in-process drag server
-- `docs/keychain.md` — the fake keychain: SecItem semantics, the plaintext store, access groups, the Keychain window
-- `docs/webkit.md` — WKWebView: BrowserEngineKit process launches, the extension entry point, the Launch Services wait
+### From the terminal
 
-## Known gaps
+```bash
+scripts/simapp.sh build/apps/Showcase.app
+```
 
-No RunningBoard (backgrounded apps keep running), no on-screen keyboard (needs SpringBoard hosting), hardware keyboard
-is US-positional, first text-field focus stalls ~2–3 s, rotation input mapping, no audio, notifyd not provided,
-app extensions and embedded frameworks untested, no secure paste (`UIPasteControl`) or pasteboard pattern detection,
-no LaunchServices (UTType knows only the built-in core types), drag & drop only within an app, keychain items have no
-access control (stored in plaintext, never prompt for Face ID or a passcode).
-Web views run their helper processes unsandboxed; no `SFSafariViewController` / `ASWebAuthenticationSession`.
-UIKit apps ignore SIGTERM, so ending an app is SIGTERM followed by SIGKILL after 1.5 s (no applicationWillTerminate).
+The app opens in a window, and its output appears in your terminal. Press Ctrl-C or close the window to quit it.
+Anything after the app's path is passed to the app as launch arguments.
+
+If SimRun isn't open, this starts it in the background without the launcher. It quits by itself after 10 minutes
+with no apps running.
+
+## Tips
+
+- **Your app keeps its data between launches**, just like on a phone. To start fresh, right-click the app in the
+  launcher and choose **App Container ▸ Reset…**. **App Container ▸ Show in Finder** opens its Documents, Library
+  and tmp folders.
+- **Check what an app saved in the keychain** with **Window ▸ Keychain** (⇧⌘K). Right-click an app in the launcher
+  and choose **Show Keychain Items** to see only that app's items.
+- **Apps follow your Mac's language and region settings**: language, date and number formats, 24-hour time, and
+  the first day of the week.
+- **Try a different screen size** by setting it in points before launching from the terminal:
+
+  ```bash
+  SCENES_W=390 SCENES_H=844 scripts/simapp.sh path/to/MyApp.app
+  ```
+
+  The default is 402 × 874, the size of a current 6.3-inch iPhone Pro. Resizing a window only scales the picture;
+  it doesn't change the screen size the app sees.
+- **See your app's `NSLog` and `os_log` messages** in the terminal by adding `OS_ACTIVITY_DT_MODE=1` before
+  `scripts/simapp.sh`.
+- **Manage the background SimRun** with `scripts/simrund.sh status`, `scripts/simrund.sh stop` and
+  `scripts/simrund.sh log`. The log is the first place to look when an app fails to start.
+- **Run an app on its own**, isolated from other apps, with `SIMAPP_STANDALONE=1 scripts/simapp.sh …`.
+
+There are many more settings for troubleshooting and debugging. See [Configuration and reference](docs/reference.md).
+
+## Known limitations
+
+- **Only apps that use scenes.** Apps must use the scene-based life cycle (`UIScene`, or any SwiftUI `App`). Older
+  apps built only around an app delegate won't show a window.
+- **No on-screen keyboard.** Type with your Mac's keyboard. Keys are read by position as a US layout, so some
+  characters may come out differently on other keyboard layouts.
+- **The first time you tap into a text field, the app may freeze for 2–3 seconds.** It's fine after that.
+- **Portrait only.** There's no way to turn an app sideways yet, and apps aren't told about device orientation.
+- **No sound.**
+- **Background apps keep running.** Apps never get suspended the way they would on a phone.
+- **Drag and drop only works within one app**, not between apps or between an app and the Mac.
+- **The keychain isn't secure.** Everything is stored unencrypted, and nothing ever asks for Face ID or a passcode.
+- **Some web features are missing.** Web views work, but `SFSafariViewController` and
+  `ASWebAuthenticationSession` (used for "Sign in with…" flows) don't.
+- **Apps aren't sandboxed.** They run with your user account's full access to your files.
+- **Quitting is abrupt.** Apps are stopped without running their termination code.
+- **Untested:** app extensions (widgets, share extensions and so on) and apps that bundle their own frameworks.
+
+The [technical notes](docs/reference.md#known-gaps) have the details.
+
+## Learn more
+
+The [docs](docs/README.md) explain how SimRun works, how the project is organized, and how each part was built.
+
+## License
+
+SimRun is available under the [MIT License](LICENSE).

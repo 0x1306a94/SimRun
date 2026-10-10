@@ -1,0 +1,83 @@
+# Architecture
+
+SimRun runs unmodified **iOS-Simulator** app builds as plain macOS processes: the Simulator's own UIKit, SwiftUI and
+QuartzCore, without `launchd_sim`, `backboardd`, SpringBoard or Simulator.app. The system services those normally
+provide are reimplemented (mostly in-process), and the app appears in an ordinary Mac window with mouse/keyboard input.
+
+## How it works
+
+```
+simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit server: one window per app, input forwarding, and the
+  argv, env, stdio fds                   │            host-side "sim2host" services (com.apple.IOSurface.Remote via
+                                         │            IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation,
+                                         │            dev.simrun.pasteboard: the Mac's NSPasteboard)
+                                         ├─ build/bin/simns --serve   launchd_sim stand-in speaking sim libxpc's XPC-pipe protocol;
+                                         │     │                      one private namespace per app layered over a shared global one;
+                                         │     └─ trustd, cfprefsd…   real sim daemons launched on demand, shared by all apps
+                                         └─ each app (bootstrap port = its namespace), with DYLD_INSERT_LIBRARIES =
+                                              rshim.dylib    Metal shader-compiler XPC service spawning, bootstrap fallbacks,
+                                                             the Mac's language & region (locale, languages, 24-hour
+                                                             time, first weekday...) into the device's global preferences
+                                              glue.dylib     starts the in-process CA render server (CAWindowServer) and hosts the
+                                                             scene's layers on the display (SpringBoard's job)
+                                              scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene)
+                                              hid.dylib      mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:];
+                                                             trackpad scroll/pinch/rotate as real touches (hid.md)
+                                              pboard.dylib   in-process pasteboard daemon (com.apple.pasteboard.pasted) backed
+                                                             by the Mac pasteboard via simrund (pasteboard.md)
+                                              drag.dylib     in-process drag server (druid) for drag & drop within the app
+                                                             (dragdrop.md)
+                                              keychain.dylib fake keychain: the SecItem API over a plaintext plist in the
+                                                             data directory, shown in SimRun's Keychain window
+                                                             (keychain.md)
+                                              webkit.dylib   launches WKWebView's helper processes (WebContent, Networking,
+                                                             GPU appexes) as children of the app (webkit.md)
+                                            SimFramebuffer   fake SimFramebuffer: the render server's display; presented
+                                                             IOSurfaces go to the app's window (include/protocol.h)
+```
+
+All apps run inside one SimRun process. `simapp` (via `scripts/simapp.sh`) connects to it over a unix socket, passing
+the app's argv, environment and stdio file descriptors; if SimRun.app isn't open, it is started headless and exits
+after 10 idle minutes (`SIMRUND_IDLE`). Each app gets its own window; `simapp.sh` exits with the app's status, and
+Ctrl-C (or closing the window) ends the app. Launching into a running server takes ~0.6 s to first frame (vs ~1.1 s
+standalone, `SIMAPP_STANDALONE=1`, which runs the app in its own private `simrund --run`).
+
+The launcher remembers its library of apps. **File ▸ Add Xcode Simulator Builds** scans
+`~/Library/Developer/Xcode/DerivedData/*/Build/Products/*-iphonesimulator/` for `.app` bundles. An app is accepted
+if it has a top-level `Info.plist` with a `CFBundleExecutable` whose arm64 slice is built for the `IOSSIMULATOR`
+platform.
+
+## Data containers
+
+Each app has its own **data container**, like an iOS sandbox container: its HOME (Documents, Library — preferences,
+caches, cookies, WebKit data — and tmp) is `~/Library/Developer/SimRun/data/Containers/Data/Application/<bundle id>/`
+(the executable's name for a bare binary). What is managed centrally stays in the shared data directory `data/`
+(`SIMULATOR_SHARED_RESOURCES_DIRECTORY`): the keychain, app group containers (`Containers/Shared/AppGroup/`, served by
+the runtime's containermanagerd to apps entitled to the group) and the shared daemons' state. In the launcher, an
+app's menu has App Container ▸ Show in Finder / Reset… (deletes the container; keychain items and app group
+containers are kept). Containers are a convention, not a sandbox: apps run unsandboxed as you. `scripts/simrun.sh`
+on its own (no SimRun server) still runs a binary with the shared directory as HOME.
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
+| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, per-app window sessions, environment, host pasteboard, Keychain window), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
+| `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
+| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
+| `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
+| `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
+| `docs/` | These write-ups |
+
+## Building
+
+`make` builds everything into `build/` (`SimRun.app`, `bin/`, `lib/`, `apps/`, `tests/`); `make core` builds
+SimRun.app and the client, `make tests` the test apps and programs, `make tools` the tools. Rebuilding while SimRun
+is open is safe (the bundle is assembled in a staging directory and swapped in with a rename); quit and reopen SimRun
+(or `scripts/simrund.sh stop`) to pick up the new build.
+
+Requirements: Apple Silicon, SIP disabled, Xcode with an iOS Simulator runtime installed (the newest one is picked up
+automatically; override with `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>`). Apps must adopt the UIScene lifecycle.
+Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime.
