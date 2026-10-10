@@ -376,6 +376,23 @@ static BOOL ProcessGone(pid_t pid) {
 
 // The app's environment: the client's (or the launcher's), aimed at this server's simns and at the app's own data
 // container (HOME), with the shared data directory for what is managed centrally (keychain, app groups, daemons).
+// SCENES_W/SCENES_H/SCENES_SCALE size the app's scene (scenes.dylib); the display it renders into (simfb, the window)
+// is SIMULATOR_MAINSCREEN_* in pixels. Keep them the same, or a smaller scene draws into a corner of a 402x874 display.
+- (NSDictionary<NSString *, NSString *> *)displayVariablesForScene:(NSArray<NSString *> *)env {
+  NSMutableDictionary *vars = [NSMutableDictionary dictionary];
+  for (NSString *kv in env) {
+    NSRange eq = [kv rangeOfString:@"="];
+    if (eq.location != NSNotFound && [kv hasPrefix:@"SCENES_"]) vars[[kv substringToIndex:eq.location]] = [kv substringFromIndex:NSMaxRange(eq)];
+  }
+  if (!vars[@"SCENES_W"] && !vars[@"SCENES_H"] && !vars[@"SCENES_SCALE"]) return @{};
+  double w = vars[@"SCENES_W"] ? [vars[@"SCENES_W"] doubleValue] : 402, h = vars[@"SCENES_H"] ? [vars[@"SCENES_H"] doubleValue] : 874;
+  double scale = vars[@"SCENES_SCALE"] ? [vars[@"SCENES_SCALE"] doubleValue] : 3;   // scenes.dylib's defaults
+  if (w <= 0 || h <= 0 || scale <= 0) return @{};
+  return @{ @"SIMULATOR_MAINSCREEN_WIDTH": [NSString stringWithFormat:@"%.0f", round(w * scale)],
+            @"SIMULATOR_MAINSCREEN_HEIGHT": [NSString stringWithFormat:@"%.0f", round(h * scale)],
+            @"SIMULATOR_MAINSCREEN_SCALE": [NSString stringWithFormat:@"%f", scale] };
+}
+
 - (NSArray<NSString *> *)appEnvironmentFrom:(NSArray<NSString *> *)env executable:(NSString *)exe {
   NSString *data = [SREnvironment dataDirectory];
   NSString *home = [SREnvironment createContainerForIdentifier:[SREnvironment containerIdentifierForExecutable:exe]];
@@ -383,6 +400,7 @@ static BOOL ProcessGone(pid_t pid) {
     @"HOME": home, @"CFFIXED_USER_HOME": home, @"TMPDIR": [home stringByAppendingString:@"/tmp/"],
     @"SIMULATOR_SHARED_RESOURCES_DIRECTORY": data, @"IPHONE_SHARED_RESOURCES_DIRECTORY": data,
   }];
+  env = [SREnvironment environment:env withOverrides:[self displayVariablesForScene:env]];
   NSString *insert = nil;
   NSMutableArray *out = [NSMutableArray array];
   for (NSString *kv in env) {
