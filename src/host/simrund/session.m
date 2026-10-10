@@ -9,7 +9,6 @@
 #include <pwd.h>
 #include "protocol.h"
 #import "mirrorwindow.h"
-#import "environment.h"
 
 extern int posix_spawnattr_setspecialport_np(posix_spawnattr_t *, mach_port_t, int);
 extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, const char *);
@@ -109,16 +108,15 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   uint32_t _shownSurfaceID, _shownChecksum; uint64_t _shownSince;   // SIMFB_CHECK diagnostics
 }
 
-- (instancetype)initWithTitle:(NSString *)title {
+- (instancetype)initWithTitle:(NSString *)title screenSize:(NSSize)screenSize cornerRadius:(CGFloat)cornerRadius {
   if (!(self = [super init])) return nil;
   _title = [title copy];
   _surfaces = [NSMutableDictionary dictionary];
   // iPhone Mirroring–style window: just the device screen until the pointer nears its top edge
-  _view = [[SRView alloc] initWithFrame:NSMakeRect(0, 0, 402, 874)];
-  _view.pointSize = NSMakeSize(402, 874);
+  _view = [[SRView alloc] initWithFrame:(NSRect){ NSZeroPoint, screenSize }];
+  _view.pointSize = screenSize;
   _view.wantsLayer = YES; _view.layer.backgroundColor = NSColor.blackColor.CGColor;
-  CGFloat radius = SRDeviceCornerRadius([SREnvironment simulatorVariables][@"SIMULATOR_CAPABILITIES"]);
-  _window = [[SRMirrorWindow alloc] initWithScreenView:_view size:NSMakeSize(402, 874) cornerRadius:radius];
+  _window = [[SRMirrorWindow alloc] initWithScreenView:_view size:screenSize cornerRadius:cornerRadius];
   _window.title = title; _window.delegate = self;
   _surfaceLayer = [CALayer layer];
   _surfaceLayer.frame = _view.bounds; _surfaceLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;

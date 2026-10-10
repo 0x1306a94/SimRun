@@ -24,8 +24,9 @@
 //  * Only when there is no CARenderServer: +[CADisplay displays] -> @[] (skips a 5 s retry loop), synthesized main
 //    FBSDisplayConfiguration for UIScreen, remote CAContext -> local CAContext fallback.
 // Exported API (scenes.h): SRScenesCreate, SRScenesUpdate, SRScenesSetLayersCallback, SRScenesGetMainContextID.
-// Env: SCENES_W/SCENES_H/SCENES_SCALE (default 402x874@3), SCENES_NO_AUTOCREATE, SCENES_CREATE_DELAY=sec,
-//      SCENES_DEMO_UPDATES, SCENES_VERBOSE, SCENES_DISABLE, SCENES_NO_SINK, SCENES_NO_SYNTH_DISPLAY, SCENES_KEEP_CADISPLAY.
+// Env: SCENES_W/SCENES_H/SCENES_SCALE (default: the display, SIMULATOR_MAINSCREEN_*), SCENES_NO_AUTOCREATE,
+//      SCENES_CREATE_DELAY=sec, SCENES_DEMO_UPDATES, SCENES_VERBOSE, SCENES_DISABLE, SCENES_NO_SINK,
+//      SCENES_NO_SYNTH_DISPLAY, SCENES_KEEP_CADISPLAY.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -81,6 +82,17 @@
 - (void)setSafeAreaInsetsLandscapeLeft:(UIEdgeInsets)i;
 - (void)setSafeAreaInsetsLandscapeRight:(UIEdgeInsets)i;
 - (void)setPersistenceIdentifier:(NSString *)p;
+@end
+// UISApplicationSupportDisplayEdgeInfo (what SpringBoard tells apps about the display's edges) and its insets
+@interface NSObject (SRDisplayEdgeInfo)
++ (id)defaultDisplayEdgeInfo;
+- (id)safeAreaInsetsPortrait;
+- (id)homeAffordanceOverlayAllowance;
+- (double)topInset;
+- (double)leftInset;
+- (double)bottomInset;
+- (double)rightInset;
++ (BOOL)_hasHomeButton;
 @end
 
 static void SRSetIvar(id obj, const char *name, id value);
@@ -176,6 +188,38 @@ static void SRReportLayers(void) {
 @end
 
 // ---------------------------------------------------------------- scene settings
+// The safe area in each orientation, as SpringBoard would give it: UIKit's default display edge info for this device
+// (from MobileGestalt, i.e. the device type's capabilities.plist: status bar under the sensor housing, home indicator).
+// Without it (a home-button iPhone or an iPad, or a device this UIKit has no data for), from the kind of device.
+static UIEdgeInsets gInsetsPortrait, gInsetsUpsideDown, gInsetsLandscape;
+static void SRLoadSafeArea(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    Class E = NSClassFromString(@"UISApplicationSupportDisplayEdgeInfo");
+    id info = [E respondsToSelector:@selector(defaultDisplayEdgeInfo)] ? [E defaultDisplayEdgeInfo] : nil;
+    id p = [info respondsToSelector:@selector(safeAreaInsetsPortrait)] ? [info safeAreaInsetsPortrait] : nil;
+    id home = [info respondsToSelector:@selector(homeAffordanceOverlayAllowance)] ? [info homeAffordanceOverlayAllowance] : nil;
+    BOOL homeButton = [UIDevice respondsToSelector:@selector(_hasHomeButton)] && [UIDevice _hasHomeButton];
+    BOOL pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+    if ([p respondsToSelector:@selector(topInset)]) {
+      gInsetsPortrait = UIEdgeInsetsMake([p topInset], [p leftInset], [p bottomInset], [p rightInset]);
+      CGFloat bottom = [home isKindOfClass:NSNumber.class] ? [home doubleValue] : 21;
+      gInsetsLandscape = UIEdgeInsetsMake(0, gInsetsPortrait.top, bottom, gInsetsPortrait.top);
+    } else if (pad) {
+      gInsetsPortrait = gInsetsLandscape = UIEdgeInsetsMake(24, 0, homeButton ? 0 : 20, 0);
+    } else if (homeButton) {
+      gInsetsPortrait = UIEdgeInsetsMake(20, 0, 0, 0);   // in landscape an iPhone hides the status bar: none
+    } else {
+      gInsetsPortrait = UIEdgeInsetsMake(62, 0, 34, 0);
+      gInsetsLandscape = UIEdgeInsetsMake(0, 62, 21, 62);
+    }
+    gInsetsUpsideDown = pad ? gInsetsPortrait : UIEdgeInsetsMake(gInsetsPortrait.bottom, 0, gInsetsPortrait.top, 0);
+    if (getenv("SCENES_VERBOSE"))
+      LOG("safe area: portrait %s, landscape %s (%s)", NSStringFromUIEdgeInsets(gInsetsPortrait).UTF8String,
+          NSStringFromUIEdgeInsets(gInsetsLandscape).UTF8String, p ? "display edge info" : pad ? "iPad" : homeButton ? "home button" : "default");
+  });
+}
+
 static void SRApplySettings(id<SRMutableSceneSettings> s, CGFloat w, CGFloat h, BOOL foreground, UIInterfaceOrientation orient) {
   [s setFrame:CGRectMake(0, 0, w, h)];
   [s setLevel:1];
@@ -186,12 +230,13 @@ static void SRApplySettings(id<SRMutableSceneSettings> s, CGFloat w, CGFloat h, 
     [s setDeviceOrientation:orient];
     [s setUserInterfaceStyle:UIUserInterfaceStyleLight];
     [s setCanShowAlerts:YES];
-    [s setStatusBarHeight:62];
-    [s setDefaultStatusBarHeight:62 forOrientation:UIInterfaceOrientationPortrait];
-    [s setSafeAreaInsetsPortrait:UIEdgeInsetsMake(62, 0, 34, 0)];
-    [s setSafeAreaInsetsPortraitUpsideDown:UIEdgeInsetsMake(34, 0, 62, 0)];
-    [s setSafeAreaInsetsLandscapeLeft:UIEdgeInsetsMake(0, 62, 21, 62)];
-    [s setSafeAreaInsetsLandscapeRight:UIEdgeInsetsMake(0, 62, 21, 62)];
+    SRLoadSafeArea();
+    [s setStatusBarHeight:gInsetsPortrait.top];
+    [s setDefaultStatusBarHeight:gInsetsPortrait.top forOrientation:UIInterfaceOrientationPortrait];
+    [s setSafeAreaInsetsPortrait:gInsetsPortrait];
+    [s setSafeAreaInsetsPortraitUpsideDown:gInsetsUpsideDown];
+    [s setSafeAreaInsetsLandscapeLeft:gInsetsLandscape];
+    [s setSafeAreaInsetsLandscapeRight:gInsetsLandscape];
     [s setPersistenceIdentifier:gSceneID];
   }
 }
@@ -307,9 +352,9 @@ static id my_FBSWorkspaceInitialize(id options) {
   else if (!getenv("SCENES_NO_AUTOCREATE")) SRWorkspaceAsync(^{ SRCreateScene(); });
   if (getenv("SCENES_DEMO_UPDATES")) { // exercise SRScenesUpdate: resize, rotate, background, foreground
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(600, 800, YES, UIInterfaceOrientationPortrait); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(402, 874, YES, UIInterfaceOrientationLandscapeRight); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(402, 874, NO, UIInterfaceOrientationLandscapeRight); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(402, 874, YES, UIInterfaceOrientationPortrait); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(gW, gH, YES, UIInterfaceOrientationLandscapeRight); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(gW, gH, NO, UIInterfaceOrientationLandscapeRight); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ SRScenesUpdate(gW, gH, YES, UIInterfaceOrientationPortrait); });
   }
   return ws;
 }
@@ -467,6 +512,10 @@ __attribute__((constructor)) static void scenes_init(void) {
     if (c) gOrigConformsToType = method_setImplementation(c, (IMP)sr_conformsToType);
   }
   const char *e;
+  // the display's size (the device type's screen, in pixels), unless SCENES_* say otherwise
+  if ((e = getenv("SIMULATOR_MAINSCREEN_SCALE")) && atof(e) > 0) gScale = atof(e);
+  if ((e = getenv("SIMULATOR_MAINSCREEN_WIDTH")) && atof(e) > 0) gW = atof(e) / gScale;
+  if ((e = getenv("SIMULATOR_MAINSCREEN_HEIGHT")) && atof(e) > 0) gH = atof(e) / gScale;
   if ((e = getenv("SCENES_W"))) gW = atof(e);
   if ((e = getenv("SCENES_H"))) gH = atof(e);
   if ((e = getenv("SCENES_SCALE"))) gScale = atof(e);

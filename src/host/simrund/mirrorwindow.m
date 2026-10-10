@@ -31,7 +31,7 @@ static const CGFloat kMinScreenWidth = 180;      // smallest the device screen c
 CGFloat SRDeviceCornerRadius(NSString *capabilitiesPath) {
   NSDictionary *caps = capabilitiesPath ? [NSDictionary dictionaryWithContentsOfFile:capabilitiesPath] : nil;
   NSNumber *r = caps[@"capabilities"][@"DeviceCornerRadius"];
-  return [r isKindOfClass:NSNumber.class] && r.doubleValue > 0 ? r.doubleValue : 55;
+  return [r isKindOfClass:NSNumber.class] && r.doubleValue >= 0 ? r.doubleValue : 55;   // 0: square (home button)
 }
 
 // Continuous-corner ("squircle") rounded rect with per-corner radii — the iOS/SwiftUI .continuous corner curve.

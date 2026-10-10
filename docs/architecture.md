@@ -48,8 +48,8 @@ if it has a top-level `Info.plist` with a `CFBundleExecutable` whose arm64 slice
 platform.
 
 Holding ⌥ in an app's menu turns **Launch** into **Launch With…** (**Relaunch With…** while it runs; ⌥⌘R in an app
-window): a sheet, like a scheme's Run action in Xcode, with the app's launch options — its iOS runtime, arguments and
-environment variables, language & region, which SimRun services it gets, and diagnostics (os_log mirroring, component
+window): a sheet, like a scheme's Run action in Xcode, with the app's launch options — its iOS runtime and device,
+arguments and environment variables, language & region, which SimRun services it gets, and diagnostics (os_log mirroring, component
 tracing, frame checks; these are the variables in [reference.md](reference.md)). They are saved per app path
 (`SRLaunchOptions` in SimRun's user defaults) and used by every launch from the launcher; apps launched from the
 terminal get only what their environment says.
@@ -73,6 +73,23 @@ until SimRun quits. An app whose executable needs a newer iOS than its runtime (
 dyld enforces) isn't started: the launcher shows why, a `simapp` client prints it. All runtimes share the data directory (app containers, keychain, app groups, preferences); apps on
 two runtimes at once means two cfprefsd and containermanagerd instances over the same files.
 
+## Devices
+
+What device an app runs as comes from a CoreSimulator device type (a `.simdevicetype`, installed with Xcode). Its
+`capabilities.plist` is what libMobileGestalt answers from in a sim process, found through `SIMULATOR_CAPABILITIES`:
+the model, Dynamic Island, screen corner radius, home button, artwork traits for asset selection and so on. Without
+it, MobileGestalt falls back to its defaults (no Dynamic Island, among others). The device type also gives
+`SIMULATOR_MODEL_IDENTIFIER`, `SIMULATOR_PRODUCT_CLASS` and the screen, `SIMULATOR_MAINSCREEN_*`. That screen is the
+display the app renders into, its scene's size, and its window. scenes.dylib takes the safe area from UIKit's default
+display edge info for the device, or from its kind (home-button iPhone, iPad) when UIKit has none.
+
+The device types an app can use are the ones its runtime supports, as `simctl list runtimes` lists them (without
+simctl: the installed ones whose runtime version range includes the runtime). The default is `SIMRUN_DEVICE`
+(identifier or name) if the runtime supports it, else the newest supported iPhone with a 1206×2622 screen (a 6.3-inch
+Pro, preferably), else the newest supported iPhone. Launch With… ▸ Info picks another for one app. `simrun.sh` makes
+the same choice with `scripts/devicetype.py`, so a `simapp` client's environment carries its device; `scripts/devicetype.py
+<RuntimeRoot> --list` shows a runtime's device types.
+
 ## Data containers
 
 Each app has its own **data container**, like an iOS sandbox container: its HOME (Documents, Library — preferences,
@@ -89,7 +106,7 @@ on its own (no SimRun server) still runs a binary with the shared directory as H
 | Path | Contents |
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
-| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment and runtimes, host pasteboard, Keychain window), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
+| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment, runtimes and device types, host pasteboard, Keychain window), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
 | `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |

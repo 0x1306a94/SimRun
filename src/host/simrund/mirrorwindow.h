@@ -17,5 +17,6 @@
 - (NSRect)standardFrameIn:(NSRect)area;
 @end
 
-// The device screen corner radius from a device type's capabilities.plist (DeviceCornerRadius); 55 if unknown.
+// The device screen corner radius from a device type's capabilities.plist (DeviceCornerRadius; 0 for a home-button
+// iPhone); 55 if unknown.
 CGFloat SRDeviceCornerRadius(NSString *capabilitiesPath);

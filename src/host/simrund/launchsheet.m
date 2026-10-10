@@ -65,7 +65,7 @@ static NSGridView *Form(NSArray<NSArray<NSView *> *> *rows, NSInteger columns) {
   SRAppInfo *_app; SRLaunchOptions *_options; BOOL _running; void (^_launch)(void);
   NSWindow *_sheet, *_parent;
   NSArray<SRTabPill *> *_tabs; NSArray<NSView *> *_pages;
-  NSPopUpButton *_runtime, *_locale;
+  NSPopUpButton *_runtime, *_device, *_locale;
   NSMutableArray<NSButton *> *_switchBoxes;
   NSTableView *_argsTable, *_envTable;
 }
@@ -175,16 +175,21 @@ static NSView *Page(NSView *content) {
   _runtime = [NSPopUpButton new]; _runtime.target = self; _runtime.action = @selector(runtimeChanged:);
   NSTextField *note = Note(@"SimRun's own runtime is chosen in SimRun ▸ iOS Runtime. An app on another runtime gets that "
                             "runtime's system services; its data container stays the same.");
+  _device = [NSPopUpButton new]; _device.target = self; _device.action = @selector(deviceChanged:);
+  NSTextField *deviceNote = Note(@"The device types the runtime supports. The app gets that model's screen, safe areas and "
+                                  "hardware features (Dynamic Island, home button, ...).");
   NSString *dir = _app.path.stringByDeletingLastPathComponent.stringByAbbreviatingWithTildeInPath;
   NSGridView *g = Form(@[
     @[ Label(@"Runtime"), _runtime ], @[ NSGridCell.emptyContentView, note ],
+    @[ Label(@"Device"), _device ], @[ NSGridCell.emptyContentView, deviceNote ],
     @[ Label(@"Executable"), Value(_app.path.lastPathComponent) ],
     @[ Label(@"Bundle Identifier"), Value(_app.bundleIdentifier.length ? _app.bundleIdentifier : @"—") ],
     @[ Label(@"Location"), Value(dir) ],
   ], 2);
-  [g rowAtIndex:1].topPadding = -4;
-  [g rowAtIndex:2].topPadding = 12;
+  [g rowAtIndex:1].topPadding = [g rowAtIndex:3].topPadding = -4;
+  [g rowAtIndex:2].topPadding = [g rowAtIndex:4].topPadding = 12;
   [_runtime.widthAnchor constraintEqualToConstant:kFieldWidth].active = YES;
+  [_device.widthAnchor constraintEqualToConstant:kFieldWidth].active = YES;
   return Page(g);
 }
 
@@ -339,15 +344,56 @@ static NSView *Page(NSView *content) {
     selected.representedObject = want;
   }
   if (selected) [_runtime selectItem:selected]; else [_runtime selectItemAtIndex:0];
+  [self refreshDevices];
   [_locale selectItemAtIndex:[_options.switches containsObject:@"LOCALE_DISABLE"] ? 1 : 0];
   for (NSButton *b in _switchBoxes) b.state = [_options.switches containsObject:b.identifier] != (b.tag != 0) ? NSControlStateValueOn : NSControlStateValueOff;
   [_argsTable reloadData]; [_envTable reloadData];
 }
 
+// The runtime the app would run on: its own, or SimRun's; nil if its own isn't installed.
+- (SRRuntime *)selectedRuntime {
+  return _options.runtimeBuild ? [SREnvironment installedRuntimeWithBuild:_options.runtimeBuild] : [SRRuntime runtimeAtRoot:SREnvironment.runtimeRoot];
+}
+
+// The Device menu: the selected runtime's default device type, then the others it supports, iPhones and iPads apart.
+- (void)refreshDevices {
+  [_device removeAllItems];
+  SRRuntime *rt = [self selectedRuntime];
+  NSArray<SRDeviceType *> *types = [SREnvironment deviceTypesForRuntime:rt];
+  SRDeviceType *def = [SREnvironment defaultDeviceTypeForRuntime:rt];
+  [_device addItemWithTitle:def ? [NSString stringWithFormat:@"Default — %@", def.name] : @"Default"];
+  NSString *want = _options.deviceType, *family = nil;
+  NSMenuItem *selected = nil;
+  for (SRDeviceType *d in types) {
+    if (![d.family isEqualToString:family]) { [_device.menu addItem:NSMenuItem.separatorItem]; family = d.family; }
+    NSMenuItem *it = [_device.menu addItemWithTitle:d.name action:nil keyEquivalent:@""];
+    it.representedObject = d.identifier;
+    it.toolTip = [NSString stringWithFormat:@"%@ — %.0f×%.0f points @%gx", d.modelIdentifier ?: d.identifier,
+                  d.screenWidth / d.screenScale, d.screenHeight / d.screenScale, d.screenScale];
+    if ([d.identifier isEqualToString:want]) selected = it;
+  }
+  if (want && !selected) {   // saved, but the runtime doesn't support it (or it is no longer installed)
+    NSString *name = [want componentsSeparatedByString:@"SimDeviceType."].lastObject;
+    name = [name stringByReplacingOccurrencesOfString:@"-" withString:@" "];
+    [_device.menu addItem:NSMenuItem.separatorItem];
+    selected = [_device.menu addItemWithTitle:rt ? [NSString stringWithFormat:@"%@ (Not Supported by %@)", name, rt.name]
+                                                 : [NSString stringWithFormat:@"%@ (Not Available)", name]
+                                       action:nil keyEquivalent:@""];
+    selected.representedObject = want;
+  }
+  if (selected) [_device selectItem:selected]; else [_device selectItemAtIndex:0];
+}
+
 - (void)selectTab:(NSButton *)sender {
   for (NSUInteger i = 0; i < _tabs.count; i++) { _tabs[i].selected = (NSInteger)i == sender.tag; _pages[i].hidden = (NSInteger)i != sender.tag; }
 }
-- (void)runtimeChanged:(NSPopUpButton *)p { _options.runtimeBuild = p.selectedItem.representedObject; }
+- (void)runtimeChanged:(NSPopUpButton *)p {
+  _options.runtimeBuild = p.selectedItem.representedObject;
+  // a device type the new runtime doesn't support: back to its default
+  if (_options.deviceType && ![SREnvironment deviceTypeWithIdentifier:_options.deviceType runtime:[self selectedRuntime]]) _options.deviceType = nil;
+  [self refreshDevices];
+}
+- (void)deviceChanged:(NSPopUpButton *)p { _options.deviceType = p.selectedItem.representedObject; }
 - (void)localeChanged:(NSPopUpButton *)p {
   if (p.indexOfSelectedItem == 1) [_options.switches addObject:@"LOCALE_DISABLE"]; else [_options.switches removeObject:@"LOCALE_DISABLE"];
 }

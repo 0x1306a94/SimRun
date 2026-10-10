@@ -8,6 +8,7 @@
 | `scripts/simrund.sh status \| stop \| log` | Show whether the server is running, stop it, or follow its log (`~/Library/Logs/SimRun/simrund.log`) |
 | `scripts/simrun.sh <sim-binary> [args…]` | Run any sim binary with the environment launchd_sim would set, without the SimRun server (HOME = the shared data directory) |
 | `scripts/capture.sh <pgrep -f pattern> <out.png> [window title]` | Screenshot a process's largest (or titled) window |
+| `scripts/devicetype.py <RuntimeRoot> [--list]` | The device type `simrun.sh` simulates on that runtime, as variables; `--list`: the ones it supports (default marked `*`) |
 | `scripts/crash.py <procname> [n]` | Print the latest crash report backtrace for that process |
 
 ## Environment variables
@@ -15,6 +16,7 @@
 | Variable | Effect |
 |---|---|
 | `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>` | Use this iOS Simulator runtime instead of the one chosen in SimRun ▸ iOS Runtime (default: the newest installed). For SimRun (and `simrun.sh`): its own runtime; in a `simapp` client's environment: that app's runtime |
+| `SIMRUN_DEVICE=<identifier or name>` | Simulate this device type (e.g. `"iPhone SE (3rd generation)"`) when the runtime supports it, instead of the runtime's default ([architecture.md](architecture.md#devices)). For SimRun: the default for launcher launches; for `simrun.sh` / `simapp.sh`: that app's device. `scripts/devicetype.py <RuntimeRoot> --list` lists them |
 | `SIMRUN_DATA=dir` | Shared data directory (default `~/Library/Developer/SimRun/data`) |
 | `SIMNS_QUIET=1` | Hide simns's log (in the server log, `simrund.sh log`, for shared launches) of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
 | `SIMNS_DAEMONS=a,b` / `none` | Labels of real sim daemons simns may launch on demand |
@@ -22,7 +24,7 @@
 | `SIMAPP_STANDALONE=1` | Run the app in its own private `simrund --run` instead of the shared server |
 | `SIMRUND_IDLE=secs` | Shared server exits after this long without apps (default 600, 0 = never); set when it starts |
 | `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
-| `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default 402×874 @3x); SimRun sizes the display (`SIMULATOR_MAINSCREEN_*`) and window to match |
+| `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default: the device type's screen); SimRun sizes the display (`SIMULATOR_MAINSCREEN_*`) and window to match |
 | `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1`, `PBOARD_VERBOSE=1`, `DRAG_VERBOSE=1`, `KEYCHAIN_VERBOSE=1`, `WEBKIT_VERBOSE=1` | Component tracing (`SIMFB_VERBOSE` also reports the frame-copy latency) |
 | `PBOARD_DISABLE=1` | No pasteboard service in the app (UIPasteboard fails as it did before pboard.dylib) |
 | `DRAG_DISABLE=1` | No drag server in the app (drags lift and then go nowhere) |

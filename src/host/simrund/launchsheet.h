@@ -1,6 +1,6 @@
 // launchsheet.h — the Launch With… sheet: an app's launch options (launchoptions.h) in four tabs, like a scheme's Run
-// action in Xcode: Info (runtime), Arguments (arguments, environment variables), Options (language & region, SimRun
-// services) and Diagnostics (logging, tracing).
+// action in Xcode: Info (runtime, device), Arguments (arguments, environment variables), Options (language & region,
+// SimRun services) and Diagnostics (logging, tracing).
 #pragma once
 #import <Cocoa/Cocoa.h>
 #import "library.h"

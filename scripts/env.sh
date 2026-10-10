@@ -1,7 +1,8 @@
 # env.sh — locate the iOS Simulator runtime root and export it as $R.
 # Override with SIMRUN_RUNTIME_ROOT=<.../RuntimeRoot>; otherwise the runtime chosen in SimRun ▸ iOS Runtime, else the
 # newest installed iOS runtime is used (as SimRun itself does: src/host/simrund/environment.m). Runtimes are the ones
-# CoreSimulator lists (`simctl list runtimes`), wherever they are mounted; without simctl, the usual places.
+# CoreSimulator lists (`simctl list runtimes`), wherever they are mounted; without simctl, the usual places. simctl's
+# answer stays in $SIMCTL_RUNTIMES (unset with SIMRUN_RUNTIME_ROOT) for scripts/devicetype.py.
 if [[ -n "$SIMRUN_RUNTIME_ROOT" ]]; then
   R="$SIMRUN_RUNTIME_ROOT"
 else
@@ -26,6 +27,7 @@ else
   R=""
   [[ -n "$_want" ]] && R=$(print -r -- "$_list" | awk -v b="$_want" '$2 == b { sub(/^[^ ]+ [^ ]+ /, ""); print; exit }')
   [[ -z "$R" ]] && R=$(print -r -- "$_list" | tail -1 | sed -E 's/^[^ ]+ [^ ]+ //')
+  SIMCTL_RUNTIMES="$_json"
   unset _roots _json _i _p _r _sv _list _want
 fi
 if [[ ! -d "$R" ]]; then echo "simrun: no iOS Simulator runtime found (set SIMRUN_RUNTIME_ROOT)" >&2; return 1 2>/dev/null || exit 1; fi

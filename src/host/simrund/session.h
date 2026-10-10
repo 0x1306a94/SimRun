@@ -18,7 +18,9 @@ typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 @property (readonly) NSWindow *window;
 
 // Creates the window and the session port (what the app finds in mach_ports_lookup()[0]: frames + its input port).
-- (instancetype)initWithTitle:(NSString *)title;
+// `screenSize` (points) and `cornerRadius` are the simulated device's screen; the window follows the size of the frames
+// the app presents.
+- (instancetype)initWithTitle:(NSString *)title screenSize:(NSSize)screenSize cornerRadius:(CGFloat)cornerRadius;
 // Spawns `argv[0]` with `env`, bootstrap port `bootstrap` (a simns namespace), stdio `fds` (-1 = inherit), working dir `cwd`.
 - (BOOL)spawnArgv:(NSArray<NSString *> *)argv env:(NSArray<NSString *> *)env cwd:(NSString *)cwd
         bootstrap:(mach_port_t)bootstrap fds:(const int[3])fds error:(NSString **)error;

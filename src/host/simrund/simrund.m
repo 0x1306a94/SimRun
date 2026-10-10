@@ -20,6 +20,7 @@
 #include <libproc.h>
 #include <sys/proc.h>
 #include "session.h"
+#include "mirrorwindow.h"
 #include "environment.h"
 #include "library.h"
 #include "launcher.h"
@@ -347,7 +348,7 @@ static BOOL ProcessGone(pid_t pid) {
 - (void)launchApp:(SRAppInfo *)app {
   SRRequest *running = [self requestForApp:app];
   if (running) { [running.session bringToFront]; return; }   // no-op while it is still launching
-  // the app's launch options (Launch With…): its runtime, arguments, environment
+  // the app's launch options (Launch With…): its runtime, device, arguments, environment
   SRLaunchOptions *o = [SRLaunchOptions optionsForAppAtPath:app.path];
   NSString *root = SREnvironment.runtimeRoot;
   if (o.runtimeBuild && ![o.runtimeBuild isEqualToString:[SRRuntime runtimeAtRoot:root].build]) {
@@ -360,10 +361,19 @@ static BOOL ProcessGone(pid_t pid) {
       return;
     }
   }
+  SRDeviceType *device = nil;
+  if (o.deviceType && !(device = [SREnvironment deviceTypeWithIdentifier:o.deviceType runtime:[SRRuntime runtimeAtRoot:root]])) {
+    NSAlert *al = [NSAlert new]; al.messageText = [NSString stringWithFormat:@"Couldn't launch %@", app.name];
+    al.informativeText = [NSString stringWithFormat:@"It is set to run as device type %@, which %@ doesn't support. Choose another "
+                                                     "device with Launch With… (hold Option in the app's menu in the launcher).",
+                                                     o.deviceType, [SRRuntime runtimeAtRoot:root].name ?: @"its runtime"];
+    [al runModal];
+    return;
+  }
   SRRequest *r = [SRRequest new];
   r.argv = [@[ app.executablePath ] arrayByAddingObjectsFromArray:o.launchArguments];
   r.cwd = app.path; r.title = app.name; r.appPath = app.path; r.runtimeRoot = root;
-  NSMutableDictionary *vars = [[SREnvironment simulatorVariablesForRoot:root] mutableCopy];
+  NSMutableDictionary *vars = [[SREnvironment simulatorVariablesForRoot:root deviceType:device] mutableCopy];
   vars[@"SIMNS_INSERT"] = [SREnvironment injectedLibraries];
   vars[@"SIMULATOR_FRAMEBUFFER_FRAMEWORK"] = [SREnvironment framebufferFramework];
   vars[@"SIMRUN_TITLE"] = app.name;
@@ -478,17 +488,21 @@ static BOOL ProcessGone(pid_t pid) {
 
 // The app's environment: the client's (or the launcher's), aimed at this server's simns and at the app's own data
 // container (HOME), with the shared data directory for what is managed centrally (keychain, app groups, daemons).
-// SCENES_W/SCENES_H/SCENES_SCALE size the app's scene (scenes.dylib); the display it renders into (simfb, the window)
-// is SIMULATOR_MAINSCREEN_* in pixels. Keep them the same, or a smaller scene draws into a corner of a 402x874 display.
+// The display the app renders into (simfb, the window) is SIMULATOR_MAINSCREEN_* in pixels (the device type's screen);
+// its scene (scenes.dylib) is that size unless SCENES_W/SCENES_H/SCENES_SCALE say otherwise. Then the display follows
+// the scene, or a smaller scene would draw into a corner of a bigger display.
 - (NSDictionary<NSString *, NSString *> *)displayVariablesForScene:(NSArray<NSString *> *)env {
   NSMutableDictionary *vars = [NSMutableDictionary dictionary];
   for (NSString *kv in env) {
     NSRange eq = [kv rangeOfString:@"="];
-    if (eq.location != NSNotFound && [kv hasPrefix:@"SCENES_"]) vars[[kv substringToIndex:eq.location]] = [kv substringFromIndex:NSMaxRange(eq)];
+    if (eq.location != NSNotFound && ([kv hasPrefix:@"SCENES_"] || [kv hasPrefix:@"SIMULATOR_MAINSCREEN_"]))
+      vars[[kv substringToIndex:eq.location]] = [kv substringFromIndex:NSMaxRange(eq)];
   }
   if (!vars[@"SCENES_W"] && !vars[@"SCENES_H"] && !vars[@"SCENES_SCALE"]) return @{};
-  double w = vars[@"SCENES_W"] ? [vars[@"SCENES_W"] doubleValue] : 402, h = vars[@"SCENES_H"] ? [vars[@"SCENES_H"] doubleValue] : 874;
-  double scale = vars[@"SCENES_SCALE"] ? [vars[@"SCENES_SCALE"] doubleValue] : 3;   // scenes.dylib's defaults
+  double dscale = [vars[@"SIMULATOR_MAINSCREEN_SCALE"] doubleValue] ?: 3;   // the display's, as scenes.dylib defaults to
+  double dw = ([vars[@"SIMULATOR_MAINSCREEN_WIDTH"] doubleValue] ?: 1206) / dscale, dh = ([vars[@"SIMULATOR_MAINSCREEN_HEIGHT"] doubleValue] ?: 2622) / dscale;
+  double w = vars[@"SCENES_W"] ? [vars[@"SCENES_W"] doubleValue] : dw, h = vars[@"SCENES_H"] ? [vars[@"SCENES_H"] doubleValue] : dh;
+  double scale = vars[@"SCENES_SCALE"] ? [vars[@"SCENES_SCALE"] doubleValue] : dscale;
   if (w <= 0 || h <= 0 || scale <= 0) return @{};
   return @{ @"SIMULATOR_MAINSCREEN_WIDTH": [NSString stringWithFormat:@"%.0f", round(w * scale)],
             @"SIMULATOR_MAINSCREEN_HEIGHT": [NSString stringWithFormat:@"%.0f", round(h * scale)],
@@ -534,8 +548,21 @@ static BOOL ProcessGone(pid_t pid) {
   return [NSString stringWithFormat:@"%@ requires iOS %@ or later, but it would run on %@. %@", name, min, rt.name, how];
 }
 
+// The screen `env` gives the app (SIMULATOR_MAINSCREEN_*), in points, for the app's window.
+static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
+  double w = env[@"SIMULATOR_MAINSCREEN_WIDTH"].doubleValue, h = env[@"SIMULATOR_MAINSCREEN_HEIGHT"].doubleValue;
+  double scale = env[@"SIMULATOR_MAINSCREEN_SCALE"].doubleValue;
+  return w > 0 && h > 0 && scale > 0 ? NSMakeSize(round(w / scale), round(h / scale)) : NSMakeSize(402, 874);
+}
+
 - (void)launch:(SRRequest *)r {
-  SRSession *s = [[SRSession alloc] initWithTitle:r.title ?: @"SimRun"];
+  NSMutableDictionary<NSString *, NSString *> *vars = [NSMutableDictionary dictionary];
+  for (NSString *kv in [SREnvironment environment:r.env withOverrides:[self displayVariablesForScene:r.env]]) {
+    NSRange eq = [kv rangeOfString:@"="];
+    if (eq.location != NSNotFound && [kv hasPrefix:@"SIMULATOR_"]) vars[[kv substringToIndex:eq.location]] = [kv substringFromIndex:NSMaxRange(eq)];
+  }
+  SRSession *s = [[SRSession alloc] initWithTitle:r.title ?: @"SimRun" screenSize:ScreenSize(vars)
+                                     cornerRadius:SRDeviceCornerRadius(vars[@"SIMULATOR_CAPABILITIES"])];
   s.appPath = r.appPath;
   r.session = s;
   [_active addObject:r];

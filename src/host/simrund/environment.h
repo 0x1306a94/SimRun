@@ -10,6 +10,21 @@
 + (instancetype)runtimeAtRoot:(NSString *)root;          // nil if it has no SystemVersion.plist
 @end
 
+// A simulated device model: a CoreSimulator device type (.simdevicetype). Its capabilities.plist is what libMobileGestalt
+// answers from in every sim process (SIMULATOR_CAPABILITIES: Dynamic Island, corner radius, home button, artwork
+// traits, ...); its screen is the display SimRun gives the app.
+@interface SRDeviceType : NSObject
+@property (readonly) NSString *identifier, *name, *family;   // "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "iPhone 17 Pro", "iPhone"
+@property (readonly) NSString *bundlePath, *capabilitiesPath;
+@property (readonly) NSString *modelIdentifier, *productClass, *minRuntimeVersion;   // "iPhone18,1", "V53", "26.0"
+@property (readonly) NSUInteger screenWidth, screenHeight;   // main screen, pixels (portrait)
+@property (readonly) double screenScale, screenPitch, cornerRadius;
++ (instancetype)deviceTypeAtPath:(NSString *)bundlePath;   // nil if it isn't a device type SimRun can use
+// SIMULATOR_CAPABILITIES, SIMULATOR_MODEL_IDENTIFIER, SIMULATOR_PRODUCT_CLASS, SIMULATOR_MAINSCREEN_* and the device
+// type's own environment (profile.plist).
+- (NSDictionary<NSString *, NSString *> *)variables;
+@end
+
 @interface SREnvironment : NSObject
 // The installed iOS Simulator runtimes, newest first, as CoreSimulator lists them (`simctl list runtimes`; cached for
 // 30 s, reloadInstalledRuntimes forgets that); the one with this build version, or nil.
@@ -25,10 +40,19 @@
 + (BOOL)runtimeRootFromEnvironment;   // SIMRUN_RUNTIME_ROOT chose it
 // The variables that select a runtime (DYLD_ROOT_PATH, SIMULATOR_ROOT, SIMULATOR_RUNTIME_VERSION, ...).
 + (NSDictionary<NSString *, NSString *> *)runtimeVariablesForRoot:(NSString *)root;
+// The device types `runtime` supports, as CoreSimulator lists them (newest first, iPhones before iPads); without simctl,
+// the installed ones whose runtime version range includes it.
++ (NSArray<SRDeviceType *> *)deviceTypesForRuntime:(SRRuntime *)runtime;
+// The one of those with this identifier (or name), or nil.
++ (SRDeviceType *)deviceTypeWithIdentifier:(NSString *)identifier runtime:(SRRuntime *)runtime;
+// What an app runs as unless it is set to another one (Launch With…): SIMRUN_DEVICE (identifier or name) if `runtime`
+// supports it, else the newest supported iPhone with a 1206x2622 screen (a 6.3-inch Pro, preferably), else the newest
+// supported iPhone, else the first supported device type; nil if there is none.
++ (SRDeviceType *)defaultDeviceTypeForRuntime:(SRRuntime *)runtime;
 // Variables a sim process needs (DYLD_ROOT_PATH, HOME = the simulated device's data dir, SIMULATOR_*, ...), for
-// `root` or this process's runtime.
+// `root` or this process's runtime, simulating `deviceType` (nil: the runtime's default device type).
++ (NSDictionary<NSString *, NSString *> *)simulatorVariablesForRoot:(NSString *)root deviceType:(SRDeviceType *)deviceType;
 + (NSDictionary<NSString *, NSString *> *)simulatorVariablesForRoot:(NSString *)root;
-+ (NSDictionary<NSString *, NSString *> *)simulatorVariables;
 // The simulated device's shared data directory (the daemons' HOME, SIMULATOR_SHARED_RESOURCES_DIRECTORY for apps):
 // SIMRUN_DATA, else ~/Library/Developer/SimRun/data. Holds what is managed centrally: the keychain, device-wide
 // preferences, app group containers, daemon state.

@@ -2,7 +2,7 @@
 #import "launchoptions.h"
 #import "library.h"
 
-static NSString *const kOptionsKey = @"SRLaunchOptions";   // { app path: { runtime, arguments, environment, switches } }
+static NSString *const kOptionsKey = @"SRLaunchOptions";   // { app path: { runtime, device, arguments, environment, switches } }
 
 @implementation SRLaunchItem
 @end
@@ -48,6 +48,7 @@ static NSArray<NSString *> *ShellWords(NSString *s) {
   NSDictionary *d = [self allSaved][path];
   if (![d isKindOfClass:NSDictionary.class]) return o;
   if ([d[@"runtime"] isKindOfClass:NSString.class]) o.runtimeBuild = d[@"runtime"];
+  if ([d[@"device"] isKindOfClass:NSString.class]) o.deviceType = d[@"device"];
   for (NSString *key in @[ @"arguments", @"environment" ]) {
     NSArray *items = [d[key] isKindOfClass:NSArray.class] ? d[key] : @[];
     for (NSDictionary *it in items) {
@@ -74,6 +75,7 @@ static NSArray<NSString *> *ShellWords(NSString *s) {
 - (void)saveForAppAtPath:(NSString *)path {
   NSMutableDictionary *d = [NSMutableDictionary dictionary];
   if (_runtimeBuild) d[@"runtime"] = _runtimeBuild;
+  if (_deviceType) d[@"device"] = _deviceType;
   NSMutableArray *args = [NSMutableArray array], *env = [NSMutableArray array];
   for (SRLaunchItem *i in _arguments) if (i.value.length) [args addObject:@{ @"enabled": @(i.enabled), @"value": i.value }];
   for (SRLaunchItem *i in _environment)

@@ -112,14 +112,16 @@ with no apps running.
   and choose **Show Keychain Items** to see only that app's items.
 - **Apps follow your Mac's language and region settings**: language, date and number formats, 24-hour time, and
   the first day of the week.
-- **Try a different screen size** by setting it in points before launching from the terminal:
+- **Run as a different iPhone or iPad**: hold ⌥ in the app's menu, choose **Launch With…** and pick a **Device**. You
+  can choose any device type the app's runtime supports. The app gets that model's screen size, safe areas and
+  features such as the Dynamic Island. From the terminal, set `SIMRUN_DEVICE`:
 
   ```bash
-  SCENES_W=390 SCENES_H=844 scripts/simapp.sh path/to/MyApp.app
+  SIMRUN_DEVICE="iPhone SE (3rd generation)" scripts/simapp.sh path/to/MyApp.app
   ```
 
-  The default is 402 × 874, the size of a current 6.3-inch iPhone Pro. Resizing a window only scales the picture;
-  it doesn't change the screen size the app sees.
+  The default is the runtime's 6.3-inch iPhone Pro (402 × 874), or its newest iPhone if it has none. Resizing a
+  window only scales the picture; it doesn't change the screen size the app sees.
 - **See your app's `NSLog` and `os_log` messages** in the terminal by adding `OS_ACTIVITY_DT_MODE=1` before
   `scripts/simapp.sh`.
 - **Manage the background SimRun** with `scripts/simrund.sh status`, `scripts/simrund.sh stop` and

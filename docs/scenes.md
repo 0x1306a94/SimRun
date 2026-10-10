@@ -2,7 +2,8 @@
 
 Status: **working.** A scene-based sim UIKit app launched with `simrun.sh` (no launchd_sim, no backboardd, no
 SpringBoard, no runningboardd) gets `application:didFinishLaunchingWithOptions:`, then
-`scene:willConnectToSession:options:` with a `UIWindowScene` of the size we choose (default 402x874 pt @3x). It
+`scene:willConnectToSession:options:` with a `UIWindowScene` of the size we choose (default: the display's,
+`SIMULATOR_MAINSCREEN_*`, e.g. 402x874 pt @3x). It
 then becomes foreground-active and the main run loop keeps going. Resize, rotation and foreground/background
 transitions also work. Tested in null-bootstrap mode and under `launchd/simns`; also tested with the SwiftUI
 `../sim2mac/SUI.app`.
@@ -219,8 +220,11 @@ Written against iOS 27.1; the iOS 18.6 runtime differs in three places, handled 
 - **Orientation.** Rotation works through settings. `deviceOrientation` and the accelerometer (BKSAccelerometer
   needs notifyd + backboard.hid.services) are not wired. `supportedInterfaceOrientations` from the app arrives only
   in client settings (`SRFakeHost`). Nothing acts on it.
-- **Status bar / safe area.** The values are hard-coded for a 402x874 notch-less layout (top 62, bottom 34). They
-  should come from the device profile.
+- **Status bar / safe area.** Portrait insets come from `+[UISApplicationSupportDisplayEdgeInfo defaultDisplayEdgeInfo]`,
+  which UIKit computes for the device MobileGestalt describes (62/34 for a 6.3-inch Pro, 68/34 for the Air, 47/34
+  for the 16e). Landscape uses the portrait top on both sides and the home-affordance allowance (21) at the bottom.
+  When UIKit has no edge info: a home-button iPhone gets 20/0 (nothing in landscape), an iPad 24/20 (24/0 with a
+  home button), and anything else 62/34. The status bar height is the portrait top inset.
 - **Input.** The HID sink only keeps BKS from asserting or exiting. Real touch/key delivery and event deferring
   belong to the HID workstream, which should replace the sink with a real `BKHIDEventDeliveryManager` service.
 - **lldb caveat.** Under lldb (debugserver), the inferior inherits the *host* bootstrap port, so lookups fail
