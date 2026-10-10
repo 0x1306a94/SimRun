@@ -181,11 +181,42 @@ The first draw aborts in `CA::OGL::MetalContext::create_fragment_shader`: "Unabl
 Connection init failed at lookup with error 141". Sim Metal calls `xpc_connection_create("com.apple.MTLCompilerService")`.
 That is a *bundled* XPC service (`$R/System/Library/Frameworks/Metal.framework/XPCServices/MTLCompilerService.xpc`, a
 sim binary) which launchd_sim normally spawns.
-rshim spawns it lazily, once per app. It is posix_spawned with rshim injected, `RSHIM_ROLE=xpcservice`,
-`XPC_FLAGS=0x2`, and its `TASK_BOOTSTRAP_PORT` set to a handshake port. In the child, rshim's `xpc_main()`
-replacement turns the service's handler into an anonymous listener and sends the listener port back through that
-special port. The child exits when the parent dies. The app's connection is created from that endpoint. Both sides
-are sim processes, so no sim2host flag is involved.
+rshim spawns it lazily, on the app's first connection. It is posix_spawned with rshim injected, `RSHIM_ROLE=xpcservice`,
+`XPC_FLAGS=0x2`, the bundle's `XPCService.EnvironmentVariables` (`MallocNanoZone=1`), and its `TASK_BOOTSTRAP_PORT`
+set to a handshake port. In the child, rshim's `xpc_main()` replacement turns the service's handler into an anonymous
+listener and sends the listener port back through that special port. The child exits when the parent dies. The app's
+connection is created from that endpoint. Both sides are sim processes, so no sim2host flag is involved.
+
+Every runtime uses it. Even on 27.1, CA compiles shaders from AIR the first time: a fresh app makes two connections,
+both before its first frame. After that the results are in the app's Metal cache
+(`<container>/Library/Caches/<bundle id>/com.apple.metal/`), and later launches don't connect at all. So test changes
+here with that directory removed. A warm cache hides compiler problems.
+
+**One process for all connections, but serialized.** The bundle's Info.plist says `XPCService._MultipleInstances = true`.
+launchd_sim then starts one compiler process per connection: a booted 26.5 device shows several MTLCompilerService
+children of launchd_sim, with `XPC_SERVICE_NAME=com.apple.MTLCompilerService`, `XPC_FLAGS=8009`, `MallocNanoZone=1`
+and nothing injected. The service isn't written for two connections in one process. When rshim's process served both of
+CA's connections at once (each peer on its own workloop thread), the iOS 26.5 (23F77) compiler crashed every time with
+a cold cache: EXC_BAD_ACCESS in LLVM, at a different spot each time (`PredicateInfoBuilder::buildPredicateInfo`,
+`EarlyCSEPass::run`, `air::ErrorHandler::reset`), always under `MTLCompilerObject::buildSpecializedFunctionRequest` ->
+`airspc::Specializer::specialize`. The app then aborted in `create_fragment_shader` (exit status 6). 18.6 and 27.1
+survived the same race. It wasn't the environment: pointing the compiler at CoreSimulator's dyld cache for 26.5 (see
+below) didn't help. rshim's `xpc_main()` now puts every peer on one serial queue, so requests run one at a time, as in
+a single-connection process. A process per connection would also work, but each extra compiler costs another sim
+process launch before the first frame.
+
+**Relaunched after it dies.** launchd_sim starts a crashed service again on the next connection. rshim used to spawn
+the compiler only once and kept handing out its dead listener. Every reconnect then failed with "Connection init
+failed at send right creation with error 9 - Bad file descriptor", and CA aborted on the next shader ("The process is
+unavailable because the compiler is no longer active"). Now a proc-exit source (or a dead-name check of the listener)
+clears it, and the next `xpc_connection_create` spawns a new one. rshim also stops waiting for the handshake as soon
+as the child dies, instead of blocking the caller for 20 s.
+
+Environment difference noticed on the way, not the cause: 18.6 and 26.5 ship no dyld shared cache in the runtime.
+CoreSimulator builds one for them under
+`/Library/Developer/CoreSimulator/Caches/dyld/<host build>/com.apple.CoreSimulator.SimRuntime.iOS-26-5.23F77/`, and
+launchd_sim's children get `DYLD_SHARED_CACHE_DIR` pointing there. SimRun points it at `$R/System/Library/Caches/com.apple.dyld`,
+which only 27.1 has, so on older runtimes SimRun's processes load every dylib from disk.
 
 ## 5. Problems hit and solutions (chronological)
 
@@ -201,6 +232,7 @@ are sim processes, so no sim2host flag is involved.
 | tearing / clipped content in PNGs | handler ran async while CA was already drawing the next frame | frame handler runs synchronously inside `SwapSubmit` when `q == NULL` |
 | `+[CADisplay mainDisplay]` nil | CADisplay needs `kCADisplayDeviceName`, and main = name prefix "LCD" | Name = "LCD", DeviceName = "LCD", UID = "PurpleMain" |
 | `bootstrap_check_in/look_up` only called when bootstrap_port is valid | null-bootstrap mode | standalone: rshim interposes the CARenderServer name and gives a dead-name `bootstrap_port`; under simns: real check-in (rshim steps aside) |
+| iOS 26.5: every app aborts in `create_fragment_shader` ("compiler is no longer active", "send right creation with error 9") | the 26.5 MTLCompilerService crashes in LLVM when two connections compile at once in one process (launchd_sim gives each its own, `_MultipleInstances`); rshim then never relaunched it | serialize the service's peers; relaunch the compiler after it dies (4.3) |
 
 ## 6. API for the integrator
 
