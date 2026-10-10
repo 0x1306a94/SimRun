@@ -287,11 +287,6 @@
   cell.imageView.image = a.icon;
   cell.textField.stringValue = a.name;
   NSString *sub = a.bundleIdentifier.length ? [NSString stringWithFormat:@"%@ - %@", a.bundleIdentifier, a.path.stringByAbbreviatingWithTildeInPath] : a.path.stringByAbbreviatingWithTildeInPath;
-  NSString *build = [SRLaunchOptions optionsForAppAtPath:a.path].runtimeBuild;   // its own runtime, if set
-  if (build) {
-    SRRuntime *rt = [SREnvironment installedRuntimeWithBuild:build];
-    sub = [NSString stringWithFormat:@"%@ · %@", rt ? [@"iOS " stringByAppendingString:rt.version] : [build stringByAppendingString:@" (not installed)"], sub];
-  }
   cell.subtitle.stringValue = sub;
   [cell setState:[_delegate stateForApp:a]];
   return cell;

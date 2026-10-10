@@ -258,7 +258,7 @@ static void LOG(NSString *fmt, ...) {
   [menu removeAllItems];
   NSArray<SRRuntime *> *installed = SREnvironment.installedRuntimes;
   NSString *pref = SREnvironment.preferredRuntimeBuild;
-  NSMenuItem *newest = [menu addItemWithTitle:installed.count ? [NSString stringWithFormat:@"Newest Installed (%@)", installed[0].name] : @"Newest Installed"
+  NSMenuItem *newest = [menu addItemWithTitle:installed.count ? [NSString stringWithFormat:@"Newest Installed — %@", installed[0].name] : @"Newest Installed"
                                        action:@selector(chooseRuntime:) keyEquivalent:@""];
   newest.target = self; newest.state = pref ? NSControlStateValueOff : NSControlStateValueOn;
   [menu addItem:NSMenuItem.separatorItem];
