@@ -21,7 +21,7 @@ APP   := $(BUILD)/SimRun.app
 CORE  := $(APP) $(BIN)/simapp
 PARTS := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput $(BIN)/rhost
-TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app \
+TESTS := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/Showcase.app \
          $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest
 
 .PHONY: all core tools tests clean $(APP)
@@ -143,6 +143,16 @@ $(APPS)/DragTest.app: tests/apps/dragtest/main.m tests/apps/dragtest/Info.plist 
 $(APPS)/WebTest.app: tests/apps/webtest/main.m tests/apps/webtest/Info.plist | $(APPS)
 	@mkdir -p $@ && cp tests/apps/webtest/Info.plist $@/
 	$(SIMCC) $< -framework UIKit -framework WebKit -framework QuartzCore -o $@/WebTest
+	@$(SIGN) $@ 2>/dev/null
+
+# Showcase: a SwiftUI tour of what works under SimRun, with its own Icon Composer icon compiled into Assets.car.
+SHOWCASE_SRC := $(wildcard tests/apps/showcase/*.swift)
+SHOWCASE_ICON := tests/apps/showcase/AppIcon.icon/icon.json $(wildcard tests/apps/showcase/AppIcon.icon/Assets/*)
+$(APPS)/Showcase.app: $(SHOWCASE_SRC) $(SHOWCASE_ICON) tests/apps/showcase/Info.plist | $(APPS)
+	@mkdir -p $@ && cp tests/apps/showcase/Info.plist $@/
+	xcrun actool tests/apps/showcase/AppIcon.icon --compile $@ --platform iphonesimulator --minimum-deployment-target 26.0 \
+	  --app-icon AppIcon --output-partial-info-plist $(BUILD)/showcase-icon.plist >/dev/null
+	xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios26.0-simulator -parse-as-library -O $(SHOWCASE_SRC) -o $@/Showcase
 	@$(SIGN) $@ 2>/dev/null
 
 CATEST_FW := -framework Foundation -framework QuartzCore -framework IOSurface -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers
