@@ -17,10 +17,20 @@ void SRHIDTouch(int phase, float x, float y);
 // with the changed finger flagged, as backboardd does. E.g. pinch = two fingers began, moved..., ended.
 void SRHIDTouchFinger(int finger, int phase, float x, float y);
 
-// Scroll wheel / trackpad scroll at (x, y), deltas in scene points (content follows: dy > 0 scrolls content down, as
-// with macOS natural scrolling). Emulated with a dedicated virtual finger (index 9) that is lifted 120 ms after the
-// last delta, without fling.
+// Mouse wheel at (x, y), deltas in scene points (content follows: dy > 0 scrolls content down, as with macOS natural
+// scrolling). Emulated with a dedicated virtual finger (index 9) that is lifted 120 ms after the last delta, without
+// fling.
 void SRHIDScroll(float x, float y, float dx, float dy);
+// Trackpad scroll: the same finger, driven by the gesture's phases (NSEventPhase values): down on mayBegin/began, moved
+// by the deltas, lifted on ended (UIKit flings from the release velocity) or cancelled. momentumPhase != 0 events are
+// dropped (UIKit decelerates by itself after the lift). Zero phases = mouse wheel (SRHIDScroll). timestamp: the host
+// event's NSEvent.timestamp (0 = now), so velocities follow the gesture.
+void SRHIDTrackpadScroll(float x, float y, float dx, float dy, int phase, int momentumPhase, double timestamp);
+// Trackpad magnify/rotate (type SR_GESTURE_MAGNIFY/ROTATE, protocol.h): two fingers (indices 7, 8) on either side of
+// (x, y), spread by the accumulated magnification and turned by the accumulated rotation (degrees, counterclockwise).
+void SRHIDTrackpadGesture(int type, float x, float y, float magnification, float rotationDegrees, int phase);
+// A double tap at (x, y) (trackpad smart magnify).
+void SRHIDDoubleTap(float x, float y);
 
 // Hardware keyboard key by USB HID usage (page 7, Keyboard/Keypad), e.g. 0x04 'a', 0x28 Return, 0x2A Backspace,
 // 0x4F..0x52 arrows, 0xE0..0xE7 modifiers (send those as separate down/up events, like a real keyboard).

@@ -48,16 +48,31 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 - (void)mouseDown:(NSEvent *)e { [self send:SR_IN_TOUCH_BEGAN event:e]; }
 - (void)mouseDragged:(NSEvent *)e { [self send:SR_IN_TOUCH_MOVED event:e]; }
 - (void)mouseUp:(NSEvent *)e { [self send:SR_IN_TOUCH_ENDED event:e]; }
+// Trackpad gestures become touches in the app (hid.dylib): a two-finger scroll is one finger dragging the content
+// (phases drive touch down/up; macOS momentum is dropped, UIKit flings from the lift velocity), magnify/rotate are a
+// two-finger pinch/rotation around the cursor, and a smart magnify is a double tap.
 - (void)scrollWheel:(NSEvent *)e {
   NSPoint p = [self simPoint:e];
   sr_input_msg_t m = {0};
   m.kind = SR_IN_SCROLL; m.x = p.x; m.y = p.y;
   CGFloat s = self.scale;   // content follows the fingers at any window size
-  float d[2] = { (float)(e.scrollingDeltaX / s), (float)(e.scrollingDeltaY / s) };
-  if (!e.hasPreciseScrollingDeltas) { d[0] *= 10; d[1] *= 10; }
-  memcpy(m.text, d, sizeof d);
+  sr_scroll_payload_t d = { (float)(e.scrollingDeltaX / s), (float)(e.scrollingDeltaY / s), (uint32_t)e.phase, (uint32_t)e.momentumPhase,
+                            e.timestamp };
+  if (!e.hasPreciseScrollingDeltas) { d.dx *= 10; d.dy *= 10; }
+  memcpy(m.text, &d, sizeof d);
   [self post:&m];
 }
+- (void)sendGesture:(uint32_t)type event:(NSEvent *)e magnification:(CGFloat)mag rotation:(CGFloat)rot {
+  NSPoint p = [self simPoint:e];
+  sr_input_msg_t m = {0};
+  m.kind = SR_IN_GESTURE; m.x = p.x; m.y = p.y;
+  sr_gesture_payload_t g = { (float)mag, (float)rot, (uint32_t)e.phase, type };
+  memcpy(m.text, &g, sizeof g);
+  [self post:&m];
+}
+- (void)magnifyWithEvent:(NSEvent *)e { [self sendGesture:SR_GESTURE_MAGNIFY event:e magnification:e.magnification rotation:0]; }
+- (void)rotateWithEvent:(NSEvent *)e { [self sendGesture:SR_GESTURE_ROTATE event:e magnification:0 rotation:e.rotation]; }
+- (void)smartMagnifyWithEvent:(NSEvent *)e { [self send:SR_IN_SMART_MAGNIFY event:e]; }
 - (void)keyDown:(NSEvent *)e { [self send:SR_IN_KEY_DOWN event:e]; }
 - (void)keyUp:(NSEvent *)e { [self send:SR_IN_KEY_UP event:e]; }
 @end

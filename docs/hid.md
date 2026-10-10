@@ -9,6 +9,8 @@ SpringBoard. All of the following were verified:
 - `pressesBegan`/UIKey, UIKeyCommand (arrow keys, cmd-K).
 - SwiftUI: Stepper, TextField, NavigationLink push, interactive edge-swipe back.
 - Landscape scenes.
+- Trackpad gestures as touches: two-finger scroll (drag + UIKit's own fling), magnify/rotate (two-finger pinch and
+  rotation), smart magnify (double tap). See §4a.
 
 It works in a plain null-bootstrap process (`run.sh` with `HID_PLAIN=1`) and on the full stack (`../simapp.sh`), end to
 end from the AppKit viewer.
@@ -131,11 +133,14 @@ Notes:
 
 ```c
 void SRHIDTouch(int phase, float x, float y);                    // finger 0; SRHID_TOUCH_BEGAN/MOVED/ENDED/CANCELLED = 1..4
-void SRHIDTouchFinger(int finger, int phase, float x, float y);  // multitouch, finger 0..9 (9 is used by SRHIDScroll)
+void SRHIDTouchFinger(int finger, int phase, float x, float y);  // multitouch, finger 0..9 (9: scroll, 7-8: pinch)
 bool SRHIDDetachTouches(SRHIDDetachedTouchHandler h, void *ctx); // drag began: cancel the app's touches, send their
                                                                  // moves/lift to h (drag.dylib, docs/dragdrop.md)
 void SRHIDDragEvent(uint32_t session, int locus, float x, float y, bool touching); // a drag HID event
-void SRHIDScroll(float x, float y, float dx, float dy);          // wheel/trackpad, emulated (see §6)
+void SRHIDScroll(float x, float y, float dx, float dy);          // mouse wheel, emulated drag without fling (§4a)
+void SRHIDTrackpadScroll(float x, float y, float dx, float dy, int phase, int momentumPhase, double ts); // §4a
+void SRHIDTrackpadGesture(int type, float x, float y, float magnification, float degrees, int phase);   // §4a
+void SRHIDDoubleTap(float x, float y);
 void SRHIDKeyUsage(uint32_t hidUsage, bool down);                // USB HID page 7
 void SRHIDKeyMac(uint16_t macKeyCode, bool down, uint32_t macModifierFlags);
 void SRHIDReleaseModifiers(void);
@@ -152,13 +157,72 @@ void SRHIDStartReceiver(void);                                   // automatic in
     positional.
   - `SR_IN_TEXT` → `SRHIDText`
   - `SR_IN_RESIZE` → `SRScenesUpdate(x, y, YES, portrait)` via dlsym, if scenes.dylib is loaded
-  - kind 8 (proposed `SR_IN_SCROLL`, below) → `SRHIDScroll`
+  - `SR_IN_SCROLL` (`sr_scroll_payload_t`: deltas, NSEvent phase/momentumPhase, timestamp) → `SRHIDTrackpadScroll`
+  - `SR_IN_GESTURE` (`sr_gesture_payload_t`: magnify or rotate delta + phase) → `SRHIDTrackpadGesture`
+  - `SR_IN_SMART_MAGNIFY` → `SRHIDDoubleTap`
 - No viewer change is needed for touches or keys; this was tested. Disable the receiver with `HID_NO_RECEIVER=1`.
 - **Testing hooks:**
-  - `HID_SCRIPT="wait S; tap X Y; tapid ACCESSIBILITY_ID; drag X0 Y0 X1 Y1 [steps] [secs]; pinch CX CY R0 R1; wheel X Y DY [n]; text STR; key USAGE; mac KEYCODE [FLAGS]; scene W H ORIENT; where ID; dump"`
+  - `HID_SCRIPT="wait S; tap X Y; tapid ACCESSIBILITY_ID; drag X0 Y0 X1 Y1 [steps] [secs]; pinch CX CY R0 R1; wheel X Y DY [n]; tpscroll X Y DY [n]; tpmag X Y TOTAL [DEGREES]; dtap X Y; text STR; key USAGE; mac KEYCODE [FLAGS]; scene W H ORIENT; where ID; dump"`
     runs after the first scene activation.
   - `HID_DEMO=1` runs the HIDTest script.
   - `HID_VERBOSE=1` logs every injected event.
+
+## 4a. Trackpad gestures → touches
+
+### What the real systems do (investigated in IDA, Xcode 27.1 / iOS 27.1)
+- **Simulator does not turn trackpad scrolls into touches.** In SimulatorKit, `SimDigitizerInputView` passes a
+  `scrollWheel:` (momentum events dropped) to `SimDeviceLegacyHIDClient.simDigitizerInputView(_:scrollEvent:)`, which
+  only sends Digital Crown / dial messages. In the new DeviceKit (DeviceHub.app) a scroll either pans the zoomed device
+  canvas (`DeviceCanvas`) or goes out as `HIDScroll.send(point:phase:momentum:target:)`, whose `CoreDevice.ScrollTarget`
+  has two cases only: `digitalCrown` and `dial`. Only the pointer-capture mode (`CaptureViewController`) forwards Mac
+  mouse/trackpad events as pointer HID (`IndigoHIDMessageForScrollEventFromHIDEventRef`: pointer event type 17 with a
+  scroll child, type 6, carrying phase and momentum), which on iPadOS becomes a UIScrollEvent.
+- **UIKit's own trackpad mapping (iPadOS):** a scroll HID event (type 6, with a child pointer event whose
+  BKSHIDEventPointerAttributes say what device it came from) becomes a `UIScrollEvent` (`UIEventTypeScroll` = 10,
+  `-[UIEventEnvironment UIKitEventForHIDEvent:]`). `-[UIScrollEvent _setHIDEvent:]` maps the IOHIDEvent phase to
+  UIScrollPhase: mayBegin(0x80)→1, began(1)→2, changed(2)→3, ended(4)→4, cancelled(8)→5. Momentum is not used: after
+  the end UIKit decelerates itself (`-[UIScrollEvent _simulateMomentumWithDelta:inView:]`, UIScrollView's physics).
+- **How that reaches UIPanGestureRecognizer** (`-[UIPanGestureRecognizer _scrollingChangedWithEvent:]`): only
+  recognizers whose `allowedScrollTypesMask` allows it get scroll events (default 0; UIScrollView's pan allows all).
+  - began: the cursor becomes the starting centroid, and the timestamp is recorded.
+  - changed (`_processScrollPhaseChanged:`): the accelerated, natural-direction delta moves a virtual centroid through
+    `_centroidMovedTo:atTime:affectingTranslation:`, the same path finger centroids take. The recognizer goes to
+    `.began` once `_shouldTryToBeginWithEvent:` passes (hysteresis).
+  - ended: `.ended`, but the velocity samples are dropped if more than 0.13 s passed since the last change
+    (`DurationBetweenScrollChangeAndEndEventsToResetVelocity`), so a pause before lifting gives no fling.
+  - cancelled: the recognizer fails.
+  - `numberOfTouches` is 0 throughout, and no UITouch exists.
+
+### What SimRun does
+iPhone apps get real touches instead: every recognizer works (custom pans, SwiftUI `DragGesture`, sheets), as with a
+finger on the glass, not just those that opt into scroll events.
+- **Scroll** (`SRHIDTrackpadScroll`, virtual finger 9): the NSEvent phases drive the finger, mirroring UIKit's phase
+  handling above.
+  - mayBegin: touch down at the cursor. Resting two fingers stops a deceleration, like touching the screen.
+  - began/changed: move by the deltas (scene points, content follows the fingers).
+  - ended: lift. UIKit computes the release velocity from the moves and flings with its own deceleration.
+  - cancelled (fingers rested but never scrolled): touch cancelled, so nothing gets tapped.
+  - momentum events: dropped, as UIKit does.
+
+  Samples carry the host event timestamps (NSEvent.timestamp is mach-based uptime), so the fling speed and the
+  pause-then-lift behavior follow the gesture, not the delivery jitter. Mouse wheels (no phases) keep the old
+  emulation: lift 120 ms after the last tick, without fling.
+- **Magnify / rotate** (`SRHIDTrackpadGesture`, fingers 7 and 8): the fingers sit 50 pt either side of the cursor on
+  a 45° diagonal, spread by the accumulated magnification and turned by the accumulated rotation. They are never
+  level, because UIRotationGestureRecognizer's angle wraps at ±180°. The two host streams can overlap: the fingers go
+  down with the first and lift with the last.
+- **Smart magnify** → a double tap at the cursor.
+- Verified with `HID_SCRIPT` in HIDTest:
+  - `tpscroll` ends with `didEndDragging decelerate=1` and a natural deceleration.
+  - A touch during the fling stops it.
+  - `wheel` still gives `decelerate=0`.
+  - `tpmag … 0.8 30` gives pinch scale 1.67 and rotation −23° (UIKit is clockwise-positive).
+  - `dtap` fires a 2-tap recognizer.
+- Limitations:
+  - The finger lands on whatever is under the cursor. A button there highlights while you rest or scroll, then gets
+    cancelled, exactly as with a real finger.
+  - A long scroll can carry the virtual finger past the screen edge.
+  - Both pinch fingers must land in the view that should get the gesture: each touch is hit-tested.
 
 ## 5. Merge instructions (for the integrator)
 
@@ -183,25 +247,11 @@ void SRHIDStartReceiver(void);                                   // automatic in
   - rshim, glue and scenes are injected into MTLCompilerService too; it is worth checking that they behave.
   - Better long term: strip `DYLD_INSERT_LIBRARIES` from the environment in an injected `posix_spawn` hook, or have
     simns pass it only to the app.
-- **Proposed protocol extension** (viewer/protocol.h + viewer.m are not mine, so they are not edited):
-  - `SR_IN_SCROLL = 8`: x,y = cursor in scene points, and `float dx, dy` memcpy'd into `text[0..7]`. In
-    `-scrollWheel:`, send `e.scrollingDeltaX/Y` (natural direction; drop `e.momentumPhase` events or keep them for
-    momentum). hid.dylib already handles kind 8.
-  - Optionally `-magnifyWithEvent:` → two-finger pinch via `SRHIDTouchFinger` (would need a new message kind).
-
 ## 6. Open issues
 
-- **Multitouch from the host:** fully supported by the API (`SRHIDTouchFinger`, verified with a pinch). The viewer only
-  produces one finger. Mapping trackpad magnify/rotate gestures to two synthetic fingers around the cursor is easy
-  once the viewer forwards them.
-- **Scroll wheel / trackpad:** iPhone-idiom UIKit has no pointer, so `SRHIDScroll` emulates scrolling with a dedicated
-  virtual finger. The finger follows the accumulated deltas and lifts 120 ms after the last delta, after a few
-  near-still samples so UIScrollView does not fling. Verified: 25 ticks of 10 pt scroll 240 pt with `decelerate=0`.
-  - Limitations: content is grabbed at the cursor, so a button under it can get highlighted or cancelled, and
-    horizontal plus vertical is a single drag.
-  - A real UIScrollEvent path would use pointer events (IOHIDEvent pointer with scroll child +
-    BKSHIDEventPointerAttributes, `_UIEventHIDGetChildScrollEvent` → UIScrollEvent). That is iPad / pointer-only and
-    not done.
+- **Trackpad scroll as a UIScrollEvent:** the iPadOS mapping in §4a could be fed instead of touches. It would
+  need a scroll IOHIDEvent with a child pointer event and BKSHIDEventPointerAttributes. Only opted-in recognizers would
+  react, and nothing would be grabbed under the cursor. Not done: touches match what the iPhone apps expect.
 - **Pointer / hover:** not implemented. Hover (UIHoverGestureRecognizer, iPad pointer effects) needs digitizer
   range-without-touch or pointer events with BKSHIDEventPointerAttributes, plus an iPad device profile.
 - **Text input / IME:**
@@ -235,8 +285,10 @@ void SRHIDStartReceiver(void);                                   // automatic in
 
 ## Files
 - `hid.m` → `hid.dylib`, with `hid.h` (the API).
-- `app.m` → `HIDTest.app`: a UIButton, UITextField with delegate logging, UISwitch, a 100-row UITableView, tap and
-  pinch recognizers, touches/presses logging and UIKeyCommands. All of its logs carry the "[app]" prefix.
+- `app.m` → `HIDTest.app`: a UIButton, UITextField with delegate logging, UISwitch, a 100-row UITableView, tap,
+  double-tap, pinch and rotation recognizers, touches/presses logging and UIKeyCommands. All of its logs carry the
+  "[app]" prefix. The Table | Zoom switch swaps the table for a pannable, pinch-zoomable tile map (0.33–4×, double tap
+  zooms in or back out), for trying trackpad scroll, pinch and smart zoom (logs "ZOOM ...").
 - `build.sh`, `run.sh` (scripted demo, full stack or `HID_PLAIN`), `sample_output.txt`, `last_run.png`.
 - `hostinput.swift` (→ `hostinput`): a host-side event synthesizer for the viewer window. `viewer_demo.sh` and
   `viewer_*.png` are the end-to-end proof.

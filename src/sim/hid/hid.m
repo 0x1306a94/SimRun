@@ -117,7 +117,10 @@ static uint32_t gNextIdentity = 2;
 static SRHIDDetachedTouchHandler gDetachedHandler;   // a drag owns the detached fingers
 static void *gDetachedCtx;
 
-static void SRHIDTouchFingerMain(int finger, int phase, float x, float y) {
+static void SRHIDTouchFingerMain(int finger, int phase, float x, float y);
+// ts: mach_absolute_time() of the sample (0 = now). UIKit derives touch velocities (fling speed) from these.
+static uint64_t gLastTouchTime;
+static void SRHIDTouchFingerAt(int finger, int phase, float x, float y, uint64_t ts) {
   if (finger < 0 || finger >= SRHID_MAX_FINGERS) return;
   SRFinger *f = &gFingers[finger];
   if (f->detached && phase != SRHID_TOUCH_BEGAN) {   // taken by a drag: UIKit already saw this touch cancelled
@@ -139,7 +142,12 @@ static void SRHIDTouchFingerMain(int finger, int phase, float x, float y) {
     f->x = x; f->y = y;
   }
   bool ending = phase == SRHID_TOUCH_ENDED || phase == SRHID_TOUCH_CANCELLED;
-  uint64_t ts = mach_absolute_time();
+  uint64_t now = mach_absolute_time();
+  static mach_timebase_info_data_t tb;
+  if (!tb.denom) mach_timebase_info(&tb);
+  if (!ts || ts > now || (now - ts) * tb.numer / tb.denom > 250 * NSEC_PER_MSEC) ts = now;   // missing or implausible
+  if (ts < gLastTouchTime) ts = gLastTouchTime;   // digitizer time never runs backwards
+  gLastTouchTime = ts;
   uint32_t changedMask = phase == SRHID_TOUCH_MOVED ? kMaskPosition : (kMaskRange | kMaskTouch | kMaskIdentity);
   if (phase == SRHID_TOUCH_CANCELLED) changedMask |= kMaskCancel;
   // Hand (parent) event: position of the changed finger, touch/range = any finger still touching after this event.
@@ -167,6 +175,7 @@ static void SRHIDTouchFingerMain(int finger, int phase, float x, float y) {
   CFRelease(hand);
   if (ending) f->down = false;
 }
+static void SRHIDTouchFingerMain(int finger, int phase, float x, float y) { SRHIDTouchFingerAt(finger, phase, x, y, 0); }
 
 void SRHIDTouchFinger(int finger, int phase, float x, float y) { SRHIDOnMain(^{ SRHIDTouchFingerMain(finger, phase, x, y); }); }
 
@@ -224,17 +233,42 @@ void SRHIDDragEvent(uint32_t sessionID, int locus, float x, float y, bool touchi
 }
 void SRHIDTouch(int phase, float x, float y) { SRHIDTouchFinger(0, phase, x, y); }
 
-// ---------------------------------------------------------------- scroll wheel / trackpad (emulated)
-// iPhone UIKit has no pointer: a wheel/trackpad scroll is emulated as a drag of a dedicated virtual finger
-// (SRHID_SCROLL_FINGER) that starts at the cursor, follows the accumulated deltas, and lifts after 120 ms without
-// scroll input (holding still first, so UIScrollView does not fling). Content follows the fingers: dy > 0 moves the
-// content down (= macOS "natural" scrolling deltas, i.e. NSEvent.scrollingDeltaY as delivered with natural scrolling).
+// ---------------------------------------------------------------- trackpad scroll / mouse wheel -> a finger
+// iPhone UIKit has no pointer: on the device, scrolling is a finger dragging the content, so a scroll becomes a
+// dedicated virtual finger (SRHID_SCROLL_FINGER) put down at the cursor that follows the accumulated deltas. Content
+// follows the finger: dy > 0 moves the content down (macOS natural-scrolling deltas, NSEvent.scrollingDeltaY).
+//
+// Trackpad scrolls carry gesture phases, which drive the finger the way a real one moves on glass:
+//   mayBegin (fingers rest on the trackpad)  touch down: stops a running deceleration, like touching the screen
+//   began / changed                          touch down if needed, then move
+//   ended                                    lift. UIKit takes the release velocity from the last moves and flings
+//   cancelled (rested, never scrolled)       touch cancelled, so no tap reaches the view under the cursor
+//   momentum (after the lift)                dropped: UIKit decelerates with its own physics, exactly as after a real
+//                                            flick (rubber-banding, paging, tap-to-stop). Following macOS's momentum
+//                                            with the finger would hold the content instead.
+// The samples keep the host's event timestamps so the fling velocity matches the gesture, not the delivery jitter.
+// Mouse wheels (no phases) are emulated: the finger lifts 120 ms after the last tick, held still first so UIScrollView
+// does not fling.
 #define SRHID_SCROLL_FINGER 9
+enum { kPhaseBegan = 1, kPhaseStationary = 2, kPhaseChanged = 4, kPhaseEnded = 8, kPhaseCancelled = 16, kPhaseMayBegin = 32 };
 static float gScrollX, gScrollY;
 static uint64_t gScrollSerial;
-static void SRHIDScrollMain(float x, float y, float dx, float dy) {
+static bool gScrollPhased;   // the scroll finger belongs to a trackpad gesture (not to wheel emulation)
+
+static uint64_t SRHIDMachTimeFromUptime(double seconds) {   // NSEvent.timestamp -> mach_absolute_time units
+  static mach_timebase_info_data_t tb;
+  if (!tb.denom) mach_timebase_info(&tb);
+  return seconds > 0 ? (uint64_t)(seconds * 1e9 * tb.denom / tb.numer) : 0;
+}
+
+static void SRHIDWheelMain(float x, float y, float dx, float dy) {
   SRFinger *f = &gFingers[SRHID_SCROLL_FINGER];
-  if (!f->down) { gScrollX = x; gScrollY = y; SRHIDTouchFingerMain(SRHID_SCROLL_FINGER, SRHID_TOUCH_BEGAN, x, y); if (!f->down) return; }
+  if (f->down && gScrollPhased) return;   // a trackpad gesture owns the finger
+  if (!f->down) {
+    gScrollX = x; gScrollY = y; gScrollPhased = false;
+    SRHIDTouchFingerMain(SRHID_SCROLL_FINGER, SRHID_TOUCH_BEGAN, x, y);
+    if (!f->down) return;
+  }
   gScrollX += dx; gScrollY += dy;
   SRHIDTouchFingerMain(SRHID_SCROLL_FINGER, SRHID_TOUCH_MOVED, gScrollX, gScrollY);
   uint64_t serial = ++gScrollSerial;
@@ -249,7 +283,98 @@ static void SRHIDScrollMain(float x, float y, float dx, float dy) {
       });
   });
 }
-void SRHIDScroll(float x, float y, float dx, float dy) { SRHIDOnMain(^{ SRHIDScrollMain(x, y, dx, dy); }); }
+
+static void SRHIDTrackpadScrollMain(float x, float y, float dx, float dy, int phase, int momentumPhase, double timestamp) {
+  if (!phase && !momentumPhase) { SRHIDWheelMain(x, y, dx, dy); return; }
+  if (momentumPhase) return;   // the finger is already up: UIKit's own deceleration takes it from here
+  SRFinger *f = &gFingers[SRHID_SCROLL_FINGER];
+  uint64_t ts = SRHIDMachTimeFromUptime(timestamp);
+  VLOG("trackpad scroll phase=%d d=(%.1f,%.1f) event age %.1f ms", phase, dx, dy,
+       ts ? (double)(mach_absolute_time() - ts) / SRHIDMachTimeFromUptime(1e-3) : 0.0);
+  if (f->down && !gScrollPhased) {   // a wheel emulation is still settling: end it
+    ++gScrollSerial;
+    SRHIDTouchFingerAt(SRHID_SCROLL_FINGER, SRHID_TOUCH_ENDED, gScrollX, gScrollY, ts);
+  }
+  if (phase & (kPhaseMayBegin | kPhaseBegan | kPhaseChanged)) {
+    if (!f->down) {
+      gScrollX = x; gScrollY = y; gScrollPhased = true;
+      SRHIDTouchFingerAt(SRHID_SCROLL_FINGER, SRHID_TOUCH_BEGAN, x, y, ts);
+      if (!f->down) return;
+    }
+    if (dx || dy) {
+      gScrollX += dx; gScrollY += dy;
+      SRHIDTouchFingerAt(SRHID_SCROLL_FINGER, SRHID_TOUCH_MOVED, gScrollX, gScrollY, ts);
+    }
+  } else if (phase & (kPhaseEnded | kPhaseCancelled)) {
+    if (!f->down) return;
+    if (dx || dy) { gScrollX += dx; gScrollY += dy; SRHIDTouchFingerAt(SRHID_SCROLL_FINGER, SRHID_TOUCH_MOVED, gScrollX, gScrollY, ts); }
+    SRHIDTouchFingerAt(SRHID_SCROLL_FINGER, phase & kPhaseCancelled ? SRHID_TOUCH_CANCELLED : SRHID_TOUCH_ENDED, gScrollX, gScrollY, ts);
+  }
+  // Safety net: if the gesture's end never arrives (window closed mid-gesture...), cancel the touch after 5 s without
+  // input. Cancel, not lift: fingers resting on the trackpad must not turn into a tap on what is under the cursor.
+  uint64_t serial = ++gScrollSerial;
+  if (f->down)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+      if (serial == gScrollSerial && gFingers[SRHID_SCROLL_FINGER].down)
+        SRHIDTouchFingerMain(SRHID_SCROLL_FINGER, SRHID_TOUCH_CANCELLED, gScrollX, gScrollY);
+    });
+}
+void SRHIDScroll(float x, float y, float dx, float dy) { SRHIDOnMain(^{ SRHIDWheelMain(x, y, dx, dy); }); }
+void SRHIDTrackpadScroll(float x, float y, float dx, float dy, int phase, int momentumPhase, double timestamp) {
+  SRHIDOnMain(^{ SRHIDTrackpadScrollMain(x, y, dx, dy, phase, momentumPhase, timestamp); });
+}
+
+// ---------------------------------------------------------------- trackpad magnify / rotate -> two fingers
+// A trackpad pinch or rotation becomes two fingers on either side of the cursor (SRHID_PINCH_FINGER, +1), spread by
+// the accumulated magnification and turned by the accumulated rotation, so UIPinchGestureRecognizer's scale tracks the
+// trackpad's and UIRotationGestureRecognizer's rotation follows the fingers. Magnify and rotate are separate host
+// gesture streams that can overlap: the fingers go down when the first starts and lift when the last ends. Both
+// fingers must land in the view that should get the gesture (UIKit hit-tests each touch), hence a modest spread.
+#define SRHID_PINCH_FINGER 7
+static const float kPinchRadius = 50;   // scene points from the cursor to each finger at scale 1
+// The fingers start on a diagonal (thumb lower left, index upper right), never level: UIRotationGestureRecognizer's
+// angle wraps at ±180° between two exactly horizontal fingers, which reads as a full turn on the first move.
+static const float kPinchBaseDegrees = 45;
+static struct { uint32_t streams; float cx, cy, scale, degrees; } gPinch;
+static void SRHIDPinchPlace(int phase) {
+  float r = fminf(fmaxf(kPinchRadius * gPinch.scale, 8), 600), a = (kPinchBaseDegrees + gPinch.degrees) * (float)M_PI / 180;
+  for (int i = 0; i < 2; i++) {
+    float sign = i ? 1 : -1;   // counterclockwise on screen (y down): (r, 0) -> (r cos a, -r sin a)
+    SRHIDTouchFingerMain(SRHID_PINCH_FINGER + i, phase, gPinch.cx + sign * r * cosf(a), gPinch.cy - sign * r * sinf(a));
+  }
+}
+static void SRHIDTrackpadGestureMain(int type, float x, float y, float magnification, float degrees, int phase) {
+  uint32_t bit = type == SR_GESTURE_ROTATE ? 2 : 1;
+  if (phase & (kPhaseBegan | kPhaseChanged)) {
+    if (!gPinch.streams) {
+      if (gFingers[SRHID_PINCH_FINGER].down || gFingers[SRHID_PINCH_FINGER + 1].down) return;
+      gPinch.cx = x; gPinch.cy = y; gPinch.scale = 1; gPinch.degrees = 0;
+      SRHIDPinchPlace(SRHID_TOUCH_BEGAN);
+    }
+    gPinch.streams |= bit;
+    if (magnification || degrees) {
+      gPinch.scale = fmaxf(gPinch.scale + magnification, 0.05f); gPinch.degrees += degrees;
+      SRHIDPinchPlace(SRHID_TOUCH_MOVED);
+    }
+  } else if ((phase & (kPhaseEnded | kPhaseCancelled)) && (gPinch.streams & bit)) {
+    gPinch.streams &= ~bit;
+    if (!gPinch.streams) SRHIDPinchPlace(phase & kPhaseCancelled ? SRHID_TOUCH_CANCELLED : SRHID_TOUCH_ENDED);
+  }
+}
+void SRHIDTrackpadGesture(int type, float x, float y, float magnification, float rotationDegrees, int phase) {
+  SRHIDOnMain(^{ SRHIDTrackpadGestureMain(type, x, y, magnification, rotationDegrees, phase); });
+}
+
+// Trackpad smart magnify (two-finger double tap) -> a double tap at the cursor, iOS's zoom gesture.
+void SRHIDDoubleTap(float x, float y) {
+  SRHIDOnMain(^{
+    if (gFingers[0].down) return;
+    for (int k = 0; k < 4; k++)
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)k * 60 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        SRHIDTouchFingerMain(0, k & 1 ? SRHID_TOUCH_ENDED : SRHID_TOUCH_BEGAN, x, y);
+      });
+  });
+}
 
 // ---------------------------------------------------------------- keyboard
 static void SRHIDKeyUsageMain(uint32_t usage, bool down) {
@@ -447,9 +572,17 @@ static void SRHIDHandleInput(const sr_input_msg_t *m) {
     case SR_IN_KEY_DOWN:
     case SR_IN_KEY_UP: SRHIDKeyMac((uint16_t)m->keycode, m->kind == SR_IN_KEY_DOWN, m->modifiers); break;
     case SR_IN_TEXT: { char t[sizeof m->text + 1]; memcpy(t, m->text, sizeof m->text); t[sizeof m->text] = 0; SRHIDText(t); break; }
-    case 8 /* proposed SR_IN_SCROLL: x,y = cursor (scene pt); dx,dy = two floats in text[0..7] */: {
-      float d[2]; memcpy(d, m->text, sizeof d); SRHIDScroll(m->x, m->y, d[0], d[1]); break;
+    case SR_IN_SCROLL: {
+      sr_scroll_payload_t d; memcpy(&d, m->text, sizeof d);
+      SRHIDTrackpadScroll(m->x, m->y, d.dx, d.dy, (int)d.phase, (int)d.momentumPhase, d.timestamp);
+      break;
     }
+    case SR_IN_GESTURE: {
+      sr_gesture_payload_t g; memcpy(&g, m->text, sizeof g);
+      SRHIDTrackpadGesture((int)g.type, m->x, m->y, g.magnification, g.rotation, (int)g.phase);
+      break;
+    }
+    case SR_IN_SMART_MAGNIFY: SRHIDDoubleTap(m->x, m->y); break;
     case SR_IN_RESIZE: {
       // scenes.dylib (if loaded): resize the scene to the host view size in points
       void (*upd)(double, double, BOOL, long) = dlsym(RTLD_DEFAULT, "SRScenesUpdate");
@@ -494,6 +627,8 @@ void SRHIDStartReceiver(void) {
 // ---------------------------------------------------------------- scripted input (testing)
 // HID_SCRIPT="wait 1; tap 201 105; drag 201 700 201 300 [steps] [seconds]; text hello; key 0x28; mac 0x7d [mods]; view <accessibilityId>"
 //   tap X Y | drag X0 Y0 X1 Y1 [steps=20] [secs=0.3] | pinch CX CY R0 R1 | text STRING | key USAGE | mac KEYCODE [MODS] | wait SECS
+//   wheel X Y DY [N] | tpscroll X Y DY [N] (trackpad scroll with phases) | tpmag X Y TOTAL [DEGREES] (trackpad magnify/rotate)
+//   dtap X Y (double tap)
 //   tapid ID (tap the center of the view with that accessibilityIdentifier)
 static UIView *SRHIDFindView(UIView *v, NSString *ident) {
   if ([v.accessibilityIdentifier isEqualToString:ident]) return v;
@@ -545,6 +680,27 @@ static void SRHIDRunScript(NSArray<NSString *> *cmds, NSUInteger i) {
     for (int k = 0; k < n; k++)
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)k * 16 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ SRHIDScroll(x, y, 0, dy); });
     next = n * 0.016 + 0.5;
+  } else if ([op isEqual:@"tpscroll"]) {   // tpscroll X Y DY [N]: trackpad scroll, began + N changes of DY points 8 ms apart + ended
+    float x = ARG(1), y = ARG(2), dy = ARG(3); int n = a.count > 4 ? (int)ARG(4) : 10;
+    for (int k = 0; k <= n + 1; k++)
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)k * 8 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        int phase = k == 0 ? kPhaseBegan : k <= n ? kPhaseChanged : kPhaseEnded;
+        SRHIDTrackpadScroll(x, y, 0, k == 0 || k > n ? 0 : dy, phase, 0, 0);
+      });
+    next = (n + 2) * 0.008 + 1.5;
+  } else if ([op isEqual:@"tpmag"]) {   // tpmag X Y TOTAL [DEGREES]: trackpad magnify (and rotate) by TOTAL over 20 steps
+    float x = ARG(1), y = ARG(2), total = ARG(3), deg = ARG(4); int n = 20;
+    for (int k = 0; k <= n + 1; k++)
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)k * 16 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        int phase = k == 0 ? kPhaseBegan : k <= n ? kPhaseChanged : kPhaseEnded;
+        bool step = k > 0 && k <= n;
+        SRHIDTrackpadGesture(SR_GESTURE_MAGNIFY, x, y, step ? total / n : 0, 0, phase);
+        if (deg) SRHIDTrackpadGesture(SR_GESTURE_ROTATE, x, y, 0, step ? deg / n : 0, phase);
+      });
+    next = (n + 2) * 0.016 + 0.5;
+  } else if ([op isEqual:@"dtap"]) {   // dtap X Y: double tap (trackpad smart magnify)
+    SRHIDDoubleTap(ARG(1), ARG(2));
+    next = 0.6;
   } else if ([op isEqual:@"text"]) {
     NSString *t = [[a subarrayWithRange:NSMakeRange(1, a.count - 1)] componentsJoinedByString:@" "];
     SRHIDText(t.UTF8String);
@@ -586,7 +742,8 @@ static NSString *const kDemoScript =
    "key 0x28; wait 0.5; "                                              // Return -> textFieldShouldReturn
    "mac 0x7d; wait 0.2; mac 0x28 0x100000; wait 0.3; "                 // down arrow + cmd-K key commands
    "pinch 201 600 40 120; wait 0.5; "                                 // two-finger pinch (multitouch)
-   "wheel 201 700 -10 25";                                             // emulated scroll wheel (no fling)
+   "wheel 201 700 -10 25; wait 1; "                                    // emulated scroll wheel (no fling)
+   "tpscroll 201 700 -12 12";                                          // trackpad scroll: lift with velocity (fling)
 
 __attribute__((constructor)) static void hid_init(void) {
   gVerbose = getenv("HID_VERBOSE") != NULL;

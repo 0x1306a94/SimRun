@@ -35,5 +35,17 @@ static inline uint32_t sr_surface_checksum(IOSurfaceRef s) {
   IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
   return hash;
 }
-enum { SR_IN_TOUCH_BEGAN = 1, SR_IN_TOUCH_MOVED, SR_IN_TOUCH_ENDED, SR_IN_KEY_DOWN, SR_IN_KEY_UP, SR_IN_TEXT, SR_IN_RESIZE, SR_IN_SCROLL };  // SR_IN_SCROLL: x,y cursor; float dx,dy in text[0..7]
+enum { SR_IN_TOUCH_BEGAN = 1, SR_IN_TOUCH_MOVED, SR_IN_TOUCH_ENDED, SR_IN_KEY_DOWN, SR_IN_KEY_UP, SR_IN_TEXT, SR_IN_RESIZE,
+       SR_IN_SCROLL,        // x,y cursor; sr_scroll_payload_t in text
+       SR_IN_GESTURE,       // trackpad magnify/rotate: x,y cursor; sr_gesture_payload_t in text
+       SR_IN_SMART_MAGNIFY  // trackpad two-finger double tap: x,y cursor
+};
 typedef struct { mach_msg_header_t h; uint32_t kind; float x, y; uint32_t keycode, modifiers; char text[64]; } sr_input_msg_t;
+// Phases are NSEventPhase values (0 none, 1 began, 2 stationary, 4 changed, 8 ended, 16 cancelled, 32 mayBegin).
+// dx,dy: scene points, content-follows-fingers direction (NSEvent.scrollingDelta with natural scrolling). A sender that
+// only fills dx,dy (zero phases) gets mouse-wheel behavior. timestamp: NSEvent.timestamp (seconds of system uptime), 0 = now.
+typedef struct { float dx, dy; uint32_t phase, momentumPhase; double timestamp; } sr_scroll_payload_t;
+// type: which trackpad gesture stream (magnify and rotate run side by side, each with its own phases).
+// magnification: NSEvent.magnification delta (scale += m); rotation: NSEvent.rotation delta in degrees, counterclockwise.
+enum { SR_GESTURE_MAGNIFY = 1, SR_GESTURE_ROTATE = 2 };
+typedef struct { float magnification, rotation; uint32_t phase, type; } sr_gesture_payload_t;

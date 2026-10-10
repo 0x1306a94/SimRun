@@ -44,7 +44,8 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
                                               glue.dylib     starts the in-process CA render server (CAWindowServer) and hosts the
                                                              scene's layers on the display (SpringBoard's job)
                                               scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene)
-                                              hid.dylib      mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:]
+                                              hid.dylib      mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:];
+                                                             trackpad scroll/pinch/rotate as real touches (docs/hid.md)
                                               pboard.dylib   in-process pasteboard daemon (com.apple.pasteboard.pasted) backed
                                                              by the Mac pasteboard via simrund (docs/pasteboard.md)
                                               drag.dylib     in-process drag server (druid) for drag & drop within the app
