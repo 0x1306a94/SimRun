@@ -94,7 +94,7 @@ static NSString *RealHome(void) { struct passwd *pw = getpwuid(getuid()); return
 + (NSString *)injectedLibraries {
   NSString *d = [self libraryDirectory];
   NSMutableArray *libs = [NSMutableArray array];
-  for (NSString *n in @[ @"rshim.dylib", @"glue.dylib", @"scenes.dylib", @"hid.dylib", @"pboard.dylib", @"drag.dylib", @"keychain.dylib" ]) [libs addObject:[d stringByAppendingPathComponent:n]];
+  for (NSString *n in @[ @"rshim.dylib", @"glue.dylib", @"scenes.dylib", @"hid.dylib", @"pboard.dylib", @"drag.dylib", @"keychain.dylib", @"webkit.dylib" ]) [libs addObject:[d stringByAppendingPathComponent:n]];
   NSString *extra = NSProcessInfo.processInfo.environment[@"SIMAPP_EXTRA_INSERT"];
   if (extra.length) [libs addObject:extra];
   return [libs componentsJoinedByString:@":"];

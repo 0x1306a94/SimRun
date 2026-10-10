@@ -50,6 +50,8 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
                                               keychain.dylib fake keychain: the SecItem API over a plaintext plist in the
                                                              data directory, shown in SimRun's Keychain window
                                                              (docs/keychain.md)
+                                              webkit.dylib   launches WKWebView's helper processes (WebContent, Networking,
+                                                             GPU appexes) as children of the app (docs/webkit.md)
                                             SimFramebuffer   fake SimFramebuffer: the render server's display; presented
                                                              IOSurfaces go to the app's window (include/protocol.h)
 ```
@@ -61,10 +63,10 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
 | `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, per-app window sessions, environment, host pasteboard, Keychain window), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
-| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `simfb/` |
+| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
 | `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`, `keychain/kctest`) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`, `keychain/kctest`) |
 | `catalyst/` | Approach A: `sim2mac.sh` re-tags a Simulator .app as Mac Catalyst (runs on macOS's own UIKit instead) |
 | `docs/` | Write-ups (see below) |
 
@@ -83,10 +85,11 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 | `SIMRUND_IDLE=secs` | Shared server exits after this long without apps (default 600, 0 = never); set when it starts |
 | `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
 | `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default 402×874 @3x) |
-| `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1`, `PBOARD_VERBOSE=1`, `DRAG_VERBOSE=1`, `KEYCHAIN_VERBOSE=1` | Component tracing (`SIMFB_VERBOSE` also reports the frame-copy latency) |
+| `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1`, `PBOARD_VERBOSE=1`, `DRAG_VERBOSE=1`, `KEYCHAIN_VERBOSE=1`, `WEBKIT_VERBOSE=1` | Component tracing (`SIMFB_VERBOSE` also reports the frame-copy latency) |
 | `PBOARD_DISABLE=1` | No pasteboard service in the app (UIPasteboard fails as it did before pboard.dylib) |
 | `DRAG_DISABLE=1` | No drag server in the app (drags lift and then go nowhere) |
 | `KEYCHAIN_DISABLE=1` | SecItem calls go to the runtime's securityd again (which answers -34018, missing entitlement) |
+| `WEBKIT_DISABLE=1` | WebKit's helper processes aren't launched (web views stay blank) |
 | `SIMFB_CHECK=1` | Frame diagnostics: stale pixels outside partial presents (app side), and buffers overwritten while on screen (server log) |
 | `SIMRUN_DEBUG_STALL=ms`, `SIMRUN_CHROME_DEMO=secs` | Testing: block SimRun's main thread for *ms* every 100 ms; toggle the window chrome on a timer (no mouse needed) |
 | `OS_ACTIVITY_DT_MODE=1` | Mirror os_log/NSLog to stderr |
@@ -101,6 +104,7 @@ and the client. Rebuilding while SimRun is open is safe (the bundle is swapped i
 - `docs/pasteboard.md` — UIPasteboard ⇄ Mac pasteboard: the pasted protocol, UIKit's cache, the fake server
 - `docs/dragdrop.md` — drag & drop within an app: the druid protocols, drag HID events, the in-process drag server
 - `docs/keychain.md` — the fake keychain: SecItem semantics, the plaintext store, access groups, the Keychain window
+- `docs/webkit.md` — WKWebView: BrowserEngineKit process launches, the extension entry point, the Launch Services wait
 - `docs/approach-a-catalyst.md` — the simpler Mac Catalyst re-tagging approach
 
 ## Known gaps
@@ -110,4 +114,5 @@ is US-positional, first text-field focus stalls ~2–3 s, rotation input mapping
 app extensions and embedded frameworks untested, no secure paste (`UIPasteControl`) or pasteboard pattern detection,
 no LaunchServices (UTType knows only the built-in core types), drag & drop only within an app, keychain items have no
 access control (stored in plaintext, never prompt for Face ID or a passcode).
+Web views run their helper processes unsandboxed; no `SFSafariViewController` / `ASWebAuthenticationSession`.
 UIKit apps ignore SIGTERM, so ending an app is SIGTERM followed by SIGKILL after 1.5 s (no applicationWillTerminate).
