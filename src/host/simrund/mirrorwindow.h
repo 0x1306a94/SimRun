@@ -7,10 +7,14 @@
 @interface SRMirrorWindow : NSWindow
 // `screenView` shows the device screen; `cornerRadius` is the device's screen corner radius in points.
 - (instancetype)initWithScreenView:(NSView *)screenView size:(NSSize)size cornerRadius:(CGFloat)cornerRadius;
-@property (nonatomic) NSSize screenSize;               // device screen size in points (keeps the screen's top-left)
-@property (readonly) NSRect screenFrame;               // device screen in screen coordinates
+@property (nonatomic) NSSize screenSize;               // device screen size in points (keeps the screen's top-left and scale)
+@property (readonly) NSRect screenFrame;               // the (scaled) device screen in screen coordinates
 - (void)setScreenTopLeft:(NSPoint)topLeft;             // positions the (collapsed) window
 @property (nonatomic, readonly, getter=isExpanded) BOOL expanded;
+// Resizing keeps the screen's aspect ratio; the window delegate forwards -windowWillResize:toSize: and
+// -windowWillUseStandardFrame:defaultFrame: here.
+- (NSSize)constrainFrameSize:(NSSize)proposed;
+- (NSRect)standardFrameIn:(NSRect)area;
 @end
 
 // The device screen corner radius from a device type's capabilities.plist (DeviceCornerRadius); 55 if unknown.

@@ -11,6 +11,8 @@
 //   - The title strip (traffic lights) fades in/out (springs 0.7 s / 0.14 s) and slides down by T when hidden.
 //   - Hover: above the screen or within 10 pt of its top shows the chrome; moving onto the content (or away) hides it;
 //     the margins keep it shown.
+//   - Resizable, locked to the device screen's aspect ratio: the screen (and its corner radius) scales, the margins and
+//     title strip don't. The app keeps rendering at its own size; the screen view maps input back to device points.
 #import "mirrorwindow.h"
 #import <QuartzCore/QuartzCore.h>
 
@@ -24,6 +26,7 @@ static const CGFloat kStrip = 38;                // title strip height (iPhone M
 static const CGFloat kTopRadius = 20;            // chrome top corners
 static const CGFloat kStatusBarZone = 10;        // hovering this close to the top of the screen shows the chrome
 static const CGFloat kLightsInset = 9, kLightsSpacing = 9;
+static const CGFloat kMinScreenWidth = 180;      // smallest the device screen can be resized to
 
 CGFloat SRDeviceCornerRadius(NSString *capabilitiesPath) {
   NSDictionary *caps = capabilitiesPath ? [NSDictionary dictionaryWithContentsOfFile:capabilitiesPath] : nil;
@@ -131,10 +134,15 @@ static BOOL SpringStep(SRSpring *s, CGFloat dt) {   // returns YES while moving
 
 // ---------------------------------------------------------------- root view: hover tracking
 typedef NS_ENUM(NSInteger, SRHover) { SRHoverNone, SRHoverTitleBar, SRHoverStatusBar, SRHoverContent, SRHoverChrome };
+typedef NS_ENUM(NSInteger, SRResizeAxis) { SRResizeAxisNone, SRResizeAxisWidth, SRResizeAxisHeight, SRResizeAxisBoth };
 
 @interface SRMirrorWindow ()
 - (void)hoverAt:(NSPoint)p;
 - (void)hoverExited;
+- (void)layoutViews;
+- (void)applyState;
+- (void)resetWindowShape;
+- (void)resetResizeAxis;
 @end
 
 @interface SRMirrorRootView : SRDragView
@@ -150,6 +158,13 @@ typedef NS_ENUM(NSInteger, SRHover) { SRHoverNone, SRHoverTitleBar, SRHoverStatu
 - (void)mouseEntered:(NSEvent *)e { [self.mirror hoverAt:[self convertPoint:e.locationInWindow fromView:nil]]; }
 - (void)mouseMoved:(NSEvent *)e { [self.mirror hoverAt:[self convertPoint:e.locationInWindow fromView:nil]]; }
 - (void)mouseExited:(NSEvent *)e { [self.mirror hoverExited]; }
+- (void)resizeSubviewsWithOldSize:(NSSize)old {   // window resized: scale the screen
+  [super resizeSubviewsWithOldSize:old];
+  [self.mirror layoutViews];
+  [self.mirror applyState];
+}
+- (void)viewWillStartLiveResize { [super viewWillStartLiveResize]; [self.mirror resetResizeAxis]; }
+- (void)viewDidEndLiveResize { [super viewDidEndLiveResize]; [self.mirror resetWindowShape]; }
 - (NSView *)hitTest:(NSPoint)p {
   NSView *v = [super hitTest:p];
   return [v isKindOfClass:NSVisualEffectView.class] ? self : v;   // the material is a drag surface
@@ -165,14 +180,16 @@ typedef NS_ENUM(NSInteger, SRHover) { SRHoverNone, SRHoverTitleBar, SRHoverStatu
   SRTrafficLights *_lights;
   NSView *_screen;
   NSSize _size;            // device screen size (points)
-  CGFloat _radius;         // device screen corner radius c
+  CGFloat _radius;         // device screen corner radius c, at 1:1 (scales with the screen)
   SRSpring _shape, _stripAlpha;
   SRHover _hover;
+  SRResizeAxis _resizeAxis;   // what drives the size during this live resize
   CADisplayLink *_link; CFTimeInterval _lastTick;
 }
 
 - (instancetype)initWithScreenView:(NSView *)screenView size:(NSSize)size cornerRadius:(CGFloat)cornerRadius {
-  NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView;
+  NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable |
+                            NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView;
   NSRect frame = NSMakeRect(0, 0, size.width + 2 * kMargin, size.height + kStrip + kMargin);
   if (!(self = [super initWithContentRect:frame styleMask:style backing:NSBackingStoreBuffered defer:NO])) return nil;
   _size = size; _radius = cornerRadius;
@@ -182,6 +199,7 @@ typedef NS_ENUM(NSInteger, SRHover) { SRHoverNone, SRHoverTitleBar, SRHoverStatu
   self.backgroundColor = NSColor.clearColor;
   self.hasShadow = YES;
   self.releasedWhenClosed = NO;
+  self.collectionBehavior |= NSWindowCollectionBehaviorFullScreenNone;   // the zoom button zooms (to fit the screen)
   // SimRun draws its own title strip; the system one would sit over it (and over the screen while hidden)
   [self standardWindowButton:NSWindowCloseButton].superview.superview.hidden = YES;
 
@@ -214,27 +232,71 @@ typedef NS_ENUM(NSInteger, SRHover) { SRHoverNone, SRHoverTitleBar, SRHoverStatu
 - (BOOL)canBecomeMainWindow { return YES; }
 
 // ---------------------------------------------------------------- geometry
-- (NSRect)screenFrame { return NSMakeRect(NSMinX(self.frame) + kMargin, NSMinY(self.frame) + kMargin, _size.width, _size.height); }
+// The frame is always the scaled screen plus the chrome around it.
+static NSSize FrameSize(NSSize screen, CGFloat scale) {
+  return NSMakeSize(screen.width * scale + 2 * kMargin, screen.height * scale + kStrip + kMargin);
+}
+- (CGFloat)scale { return (NSWidth(self.frame) - 2 * kMargin) / _size.width; }
+- (NSRect)screenFrame {
+  return NSMakeRect(NSMinX(self.frame) + kMargin, NSMinY(self.frame) + kMargin,
+                    NSWidth(self.frame) - 2 * kMargin, NSHeight(self.frame) - kStrip - kMargin);
+}
 - (BOOL)isExpanded { return _shape.target > 0.5; }
 - (NSSize)screenSize { return _size; }
-- (void)setScreenSize:(NSSize)size {
+- (void)setScreenSize:(NSSize)size {   // keeps the current scale
   if (NSEqualSizes(size, _size)) return;
+  CGFloat scale = self.scale;
   NSPoint topLeft = NSMakePoint(NSMinX(self.frame), NSMaxY(self.frame));   // keep the screen's top-left
   _size = size;
-  NSRect f = NSMakeRect(topLeft.x, topLeft.y - (size.height + kStrip + kMargin), size.width + 2 * kMargin, size.height + kStrip + kMargin);
-  [self setFrame:f display:YES];
+  NSSize fs = FrameSize(size, scale);
+  [self setFrame:NSMakeRect(topLeft.x, topLeft.y - fs.height, fs.width, fs.height) display:YES];
   [self layoutViews];
   [self applyState];
 }
 - (void)setScreenTopLeft:(NSPoint)topLeft { [self setFrameTopLeftPoint:NSMakePoint(topLeft.x - kMargin, topLeft.y + kStrip)]; }
 
+- (CGFloat)maxScaleIn:(NSRect)area {
+  return MIN((NSWidth(area) - 2 * kMargin) / _size.width, (NSHeight(area) - kStrip - kMargin) / _size.height);
+}
+- (void)resetResizeAxis { _resizeAxis = SRResizeAxisNone; }
+- (NSSize)constrainFrameSize:(NSSize)proposed {
+  // A side edge proposes the current size on the other axis: follow the axis it moves. A corner proposes both from
+  // the pointer; follow the point on the aspect-ratio line nearest the pointer. Decided once per live resize —
+  // re-deciding per event flips between axes on a diagonal drag (the constrained size never matches the pointer).
+  NSSize cur = self.frame.size;
+  SRResizeAxis axis = _resizeAxis;
+  if (axis == SRResizeAxisNone) {
+    BOOL w = proposed.width != cur.width, h = proposed.height != cur.height;
+    axis = w && h ? SRResizeAxisBoth : h ? SRResizeAxisHeight : SRResizeAxisWidth;
+    if (self.inLiveResize && (w || h)) _resizeAxis = axis;
+  }
+  CGFloat W = _size.width, H = _size.height, pw = proposed.width - 2 * kMargin, ph = proposed.height - kStrip - kMargin;
+  CGFloat s = axis == SRResizeAxisWidth ? pw / W : axis == SRResizeAxisHeight ? ph / H : (W * pw + H * ph) / (W * W + H * H);
+  NSScreen *screen = self.screen ?: NSScreen.mainScreen;
+  CGFloat lo = kMinScreenWidth / _size.width, hi = MAX(lo, [self maxScaleIn:screen.visibleFrame]);
+  return FrameSize(_size, MAX(lo, MIN(hi, s)));
+}
+- (NSRect)standardFrameIn:(NSRect)area {
+  NSSize fs = FrameSize(_size, MAX(kMinScreenWidth / _size.width, [self maxScaleIn:area]));
+  // stay where the window is, as far as the area allows
+  CGFloat x = MAX(NSMinX(area), MIN(NSMinX(self.frame), NSMaxX(area) - fs.width));
+  CGFloat top = MIN(NSMaxY(area), MAX(NSMaxY(self.frame), NSMinY(area) + fs.height));
+  return NSMakeRect(x, top - fs.height, fs.width, fs.height);
+}
+
 - (void)layoutViews {
-  _screen.frame = NSMakeRect(kMargin, kMargin, _size.width, _size.height);
+  NSRect b = _root.bounds;
+  CGFloat radius = self.screenRadius;
+  _screen.frame = NSMakeRect(kMargin, kMargin, NSWidth(b) - 2 * kMargin, NSHeight(b) - kStrip - kMargin);
+  _screen.layer.cornerRadius = radius;
   _hairline.frame = _screen.frame;
+  if (_hairline.radius != radius) { _hairline.radius = radius; _hairline.needsDisplay = YES; }
   NSSize ls = _lights.frame.size;
   [_lights setFrameOrigin:NSMakePoint(kLightsInset, (kStrip - ls.height) / 2)];
   [_strip setFrameSize:NSMakeSize(NSWidth(_root.bounds), kStrip)];
 }
+
+- (CGFloat)screenRadius { return _radius * (NSWidth(_root.bounds) - 2 * kMargin) / _size.width; }
 
 static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
@@ -244,7 +306,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
   NSRect b = _root.bounds;
   // insets (top, sides, bottom) and radii interpolate between "just the screen" and "the whole frame"
   CGFloat top = Lerp(kStrip, 0, p), side = Lerp(kMargin, 0, p);
-  CGFloat rTop = Lerp(_radius, kTopRadius, p), rBottom = Lerp(_radius, _radius + kMargin, p);
+  CGFloat r = self.screenRadius, rTop = Lerp(r, kTopRadius, p), rBottom = Lerp(r, r + kMargin, p);
   CGRect shape = CGRectMake(side, top, NSWidth(b) - 2 * side, NSHeight(b) - top - side);   // top-left origin
   CGPathRef path = CreateContinuousRect(shape, rTop, rTop, rBottom, rBottom, NSHeight(b));
   if ([self respondsToSelector:@selector(_setCornerPath:)]) [self _setCornerPath:path];
@@ -275,9 +337,12 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
   [self applyState];
   if (!a && !b) {
     [_link invalidate]; _link = nil;
-    if ([self respondsToSelector:@selector(_setNeedsToResetDragMargins:)]) [self _setNeedsToResetDragMargins:YES];
-    [self invalidateShadow];
+    [self resetWindowShape];
   }
+}
+- (void)resetWindowShape {
+  if ([self respondsToSelector:@selector(_setNeedsToResetDragMargins:)]) [self _setNeedsToResetDragMargins:YES];
+  [self invalidateShadow];
 }
 
 // ---------------------------------------------------------------- hover

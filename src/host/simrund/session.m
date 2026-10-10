@@ -16,6 +16,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 // ---------------------------------------------------------------- content view: forwards mouse/keyboard to the app
 @interface SRView : NSView
 @property mach_port_t inputPort;
+@property NSSize pointSize;   // the app's screen in points; the view may be scaled (window resized)
 @end
 @implementation SRView
 - (BOOL)acceptsFirstResponder { return YES; }
@@ -27,10 +28,16 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   m->h.msgh_remote_port = self.inputPort; m->h.msgh_id = SR_MSG_INPUT;
   mach_msg(&m->h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof *m, 0, 0, 0, 0);
 }
-- (void)send:(uint32_t)kind event:(NSEvent *)e {
+- (CGFloat)scale { return NSWidth(self.bounds) / self.pointSize.width; }   // view points per sim point
+- (NSPoint)simPoint:(NSEvent *)e {   // points in sim UI coordinate space
   NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+  CGFloat s = self.scale;
+  return NSMakePoint(p.x / s, p.y / s);
+}
+- (void)send:(uint32_t)kind event:(NSEvent *)e {
+  NSPoint p = [self simPoint:e];
   sr_input_msg_t m = {0};
-  m.kind = kind; m.x = p.x; m.y = p.y;   // points in sim UI coordinate space (view is 1:1 with sim points)
+  m.kind = kind; m.x = p.x; m.y = p.y;
   if (kind == SR_IN_KEY_DOWN || kind == SR_IN_KEY_UP) {
     m.keycode = e.keyCode; m.modifiers = (uint32_t)e.modifierFlags;
     strlcpy(m.text, e.characters.UTF8String ?: "", sizeof m.text);
@@ -41,10 +48,11 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 - (void)mouseDragged:(NSEvent *)e { [self send:SR_IN_TOUCH_MOVED event:e]; }
 - (void)mouseUp:(NSEvent *)e { [self send:SR_IN_TOUCH_ENDED event:e]; }
 - (void)scrollWheel:(NSEvent *)e {
-  NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+  NSPoint p = [self simPoint:e];
   sr_input_msg_t m = {0};
   m.kind = SR_IN_SCROLL; m.x = p.x; m.y = p.y;
-  float d[2] = { (float)e.scrollingDeltaX, (float)e.scrollingDeltaY };
+  CGFloat s = self.scale;   // content follows the fingers at any window size
+  float d[2] = { (float)(e.scrollingDeltaX / s), (float)(e.scrollingDeltaY / s) };
   if (!e.hasPreciseScrollingDeltas) { d[0] *= 10; d[1] *= 10; }
   memcpy(m.text, d, sizeof d);
   [self post:&m];
@@ -70,6 +78,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   _surfaces = [NSMutableDictionary dictionary];
   // iPhone Mirroring–style window: just the device screen until the pointer nears its top edge
   _view = [[SRView alloc] initWithFrame:NSMakeRect(0, 0, 402, 874)];
+  _view.pointSize = NSMakeSize(402, 874);
   _view.wantsLayer = YES; _view.layer.backgroundColor = NSColor.blackColor.CGColor;
   CGFloat radius = SRDeviceCornerRadius([SREnvironment simulatorVariables][@"SIMULATOR_CAPABILITIES"]);
   _window = [[SRMirrorWindow alloc] initWithScreenView:_view size:NSMakeSize(402, 874) cornerRadius:radius];
@@ -231,6 +240,8 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   });
 }
 - (void)windowWillClose:(NSNotification *)n { [self terminate]; }
+- (NSSize)windowWillResize:(NSWindow *)w toSize:(NSSize)size { return [_window constrainFrameSize:size]; }
+- (NSRect)windowWillUseStandardFrame:(NSWindow *)w defaultFrame:(NSRect)frame { return [_window standardFrameIn:frame]; }
 
 - (void)drain {
   union { mach_msg_header_t h; sr_port_msg_t p; sr_frame_msg_t f; char buf[1024]; } m;
@@ -253,6 +264,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
         NSSize content = NSMakeSize(m.p.w / sc, m.p.h_px / sc);
         if (!NSEqualSizes(content, _contentSize)) {
           _contentSize = content;
+          _view.pointSize = content;
           _window.screenSize = content;   // keeps the screen's top-left
           _surfaceLayer.contentsScale = sc;
         }
