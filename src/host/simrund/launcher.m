@@ -1,84 +1,81 @@
 // launcher.m — see launcher.h.
 #import "launcher.h"
+#import "appdetail.h"
 #import "keychainwindow.h"
 #import "environment.h"
 #import "launchoptions.h"
 #import "launchsheet.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-// ---------------------------------------------------------------- row view: icon, name, path, running dot
+static NSString *const kSelectionKey = @"SRLauncherSelectedApp";   // the selected app's path, kept across launches
+static NSToolbarItemIdentifier const kAddItem = @"add", kRunItem = @"run", kStopItem = @"stop", kOptionsItem = @"options",
+                                     kLogItem = @"log", kMoreItem = @"more";
+
+static NSImage *Symbol(NSString *name, NSString *description) {
+  return [NSImage imageWithSystemSymbolName:name accessibilityDescription:description];
+}
+
+// ---------------------------------------------------------------- sidebar row: icon, name, bundle ID, running dot
 @interface SRAppCell : NSTableCellView
 @property NSTextField *subtitle; @property NSView *runningDot; @property NSProgressIndicator *spinner; @property NSView *status;
-- (void)setState:(SRAppState)state;
+- (void)setLaunching:(BOOL)launching running:(BOOL)running;
 @end
 @implementation SRAppCell
 - (instancetype)initWithFrame:(NSRect)f {
   if (!(self = [super initWithFrame:f])) return nil;
   NSImageView *iv = [NSImageView new]; iv.imageScaling = NSImageScaleProportionallyUpOrDown; iv.translatesAutoresizingMaskIntoConstraints = NO;
-  NSTextField *title = [NSTextField labelWithString:@""]; title.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
-  title.translatesAutoresizingMaskIntoConstraints = NO; title.lineBreakMode = NSLineBreakByTruncatingTail;
+  NSTextField *title = [NSTextField labelWithString:@""]; title.font = [NSFont systemFontOfSize:13];
+  title.lineBreakMode = NSLineBreakByTruncatingTail;
   NSTextField *sub = [NSTextField labelWithString:@""]; sub.font = [NSFont systemFontOfSize:11]; sub.textColor = NSColor.secondaryLabelColor;
-  sub.translatesAutoresizingMaskIntoConstraints = NO; sub.lineBreakMode = NSLineBreakByTruncatingMiddle;
-  sub.allowsExpansionToolTips = YES;
+  sub.lineBreakMode = NSLineBreakByTruncatingTail;
   NSView *dot = [NSView new]; dot.wantsLayer = YES; dot.layer.cornerRadius = 4; dot.layer.backgroundColor = NSColor.systemGreenColor.CGColor;
   dot.translatesAutoresizingMaskIntoConstraints = NO; dot.toolTip = @"Running";
   NSProgressIndicator *spin = [NSProgressIndicator new];
   spin.style = NSProgressIndicatorStyleSpinning; spin.controlSize = NSControlSizeSmall; spin.displayedWhenStopped = NO;
   spin.translatesAutoresizingMaskIntoConstraints = NO; spin.toolTip = @"Launching…";
-  // three columns: icon | name + path (stacked) | status (running dot or launch spinner). The status column is hidden
-  // (and takes no space) while the app isn't running, so the titles use the full width.
+  // icon | name + bundle ID (stacked) | status (running dot or launch spinner). The status column is hidden (and takes
+  // no space) while the app isn't running, so the titles use the full width.
   NSStackView *titles = [NSStackView stackViewWithViews:@[ title, sub ]];
-  titles.orientation = NSUserInterfaceLayoutOrientationVertical; titles.alignment = NSLayoutAttributeLeading; titles.spacing = 2;
-  for (NSTextField *f in @[ title, sub ]) [f setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  titles.orientation = NSUserInterfaceLayoutOrientationVertical; titles.alignment = NSLayoutAttributeLeading; titles.spacing = 1;
+  for (NSTextField *t in @[ title, sub ]) [t setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   NSView *status = [NSView new]; status.translatesAutoresizingMaskIntoConstraints = NO;
   [status addSubview:dot]; [status addSubview:spin];
-  NSStackView *row = [NSStackView stackViewWithViews:@[ iv, titles, status ]];
-  row.orientation = NSUserInterfaceLayoutOrientationHorizontal; row.alignment = NSLayoutAttributeCenterY; row.spacing = 10;
+  NSStackView *row = [NSStackView new];
+  row.orientation = NSUserInterfaceLayoutOrientationHorizontal; row.alignment = NSLayoutAttributeCenterY; row.spacing = 8;
+  [row setViews:@[ iv, titles ] inGravity:NSStackViewGravityLeading];
+  [row setViews:@[ status ] inGravity:NSStackViewGravityTrailing];   // at the row's end, however short the name
   row.detachesHiddenViews = YES; row.translatesAutoresizingMaskIntoConstraints = NO;
   [row setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   [titles setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   [self addSubview:row];
   self.imageView = iv; self.textField = title; self.subtitle = sub; self.runningDot = dot; self.spinner = spin; self.status = status;
   [NSLayoutConstraint activateConstraints:@[
-    [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8], [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-10],
+    [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:2], [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6],
     [row.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-    [iv.widthAnchor constraintEqualToConstant:36], [iv.heightAnchor constraintEqualToConstant:36],
-    [status.widthAnchor constraintEqualToConstant:18], [status.heightAnchor constraintEqualToConstant:18],
+    [iv.widthAnchor constraintEqualToConstant:30], [iv.heightAnchor constraintEqualToConstant:30],
+    [status.widthAnchor constraintEqualToConstant:16], [status.heightAnchor constraintEqualToConstant:16],
     [dot.centerXAnchor constraintEqualToAnchor:status.centerXAnchor], [dot.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
     [dot.widthAnchor constraintEqualToConstant:8], [dot.heightAnchor constraintEqualToConstant:8],
     [spin.centerXAnchor constraintEqualToAnchor:status.centerXAnchor], [spin.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
   ]];
   return self;
 }
-- (void)setState:(SRAppState)state {
-  self.status.hidden = state == SRAppStateStopped;
-  self.runningDot.hidden = state != SRAppStateRunning;
-  if (state == SRAppStateLaunching) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];
+- (void)setLaunching:(BOOL)launching running:(BOOL)running {
+  self.status.hidden = !launching && !running;
+  self.runningDot.hidden = launching || !running;
+  if (launching) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];
 }
-@end
-
-// Content view that accepts .app drops anywhere in the window (also over the empty-state hint).
-@interface SRDropView : NSView
-@property (copy) BOOL (^onDrop)(NSArray<NSString *> *paths);
-@end
-@implementation SRDropView
-- (NSArray<NSString *> *)appPaths:(id<NSDraggingInfo>)info {
-  NSArray<NSURL *> *urls = [info.draggingPasteboard readObjectsForClasses:@[ NSURL.class ] options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
-  NSMutableArray *paths = [NSMutableArray array];
-  for (NSURL *u in urls) if ([u.pathExtension isEqualToString:@"app"]) [paths addObject:u.path];
-  return paths;
-}
-- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)info { return [self appPaths:info].count ? NSDragOperationCopy : NSDragOperationNone; }
-- (BOOL)performDragOperation:(id<NSDraggingInfo>)info { NSArray *p = [self appPaths:info]; return p.count && self.onDrop && self.onDrop(p); }
 @end
 
 // ---------------------------------------------------------------- launcher
-@interface SRLauncher () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
+@interface SRLauncher () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSToolbarDelegate, NSToolbarItemValidation>
 @end
 
 @implementation SRLauncher {
   __weak id<SRLauncherDelegate> _delegate;
-  NSWindow *_window; NSTableView *_table; NSTextField *_emptyHint;
+  NSWindow *_window; NSTableView *_table; SRAppDetailController *_detail;
+  NSToolbarItem *_moreItem;
+  NSMenu *_profileMenu;   // the Profiles outline's context menu
 }
 
 - (instancetype)initWithDelegate:(id<SRLauncherDelegate>)delegate {
@@ -89,49 +86,62 @@
   return self;
 }
 
+// A split view: the app library in a sidebar, the selected app's pane beside it, and the app commands in the toolbar.
 - (void)buildWindow {
-  _window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 480)
-      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+  _window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 900, 600)
+      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable |
+                NSWindowStyleMaskFullSizeContentView
       backing:NSBackingStoreBuffered defer:NO];
-  _window.title = @"SimRun"; _window.releasedWhenClosed = NO; _window.minSize = NSMakeSize(320, 260);
-  _window.frameAutosaveName = @"SRLauncherWindow";
-  if (!_window.frameAutosaveName.length || ![_window setFrameUsingName:@"SRLauncherWindow"]) [_window center];
-
-  SRDropView *root = [[SRDropView alloc] initWithFrame:_window.contentView.bounds];
-  [root registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
-  __weak SRLauncher *weakSelf = self;
-  root.onDrop = ^BOOL(NSArray<NSString *> *paths) { [weakSelf openPaths:paths]; return YES; };
-  _window.contentView = root;
+  _window.title = @"SimRun"; _window.releasedWhenClosed = NO;
+  _window.toolbarStyle = NSWindowToolbarStyleUnified;
 
   _table = [NSTableView new];
   NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"app"]; col.resizingMask = NSTableColumnAutoresizingMask;
   col.minWidth = 100; col.width = 100;   // grows to the table's width (sizeLastColumnToFit / autoresizing), never beyond
   [_table addTableColumn:col];
-  _table.headerView = nil; _table.rowHeight = 52; _table.style = NSTableViewStyleInset;
+  _table.headerView = nil; _table.style = NSTableViewStyleSourceList;
+  _table.rowSizeStyle = NSTableViewRowSizeStyleCustom; _table.rowHeight = 44;
   _table.columnAutoresizingStyle = NSTableViewFirstColumnOnlyAutoresizingStyle;   // the column always spans the table
   _table.dataSource = self; _table.delegate = self;
   _table.target = self; _table.doubleAction = @selector(launchSelected:);
   [_table registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
   [_table setDraggingSourceOperationMask:NSDragOperationCopy forLocal:NO];
   NSMenu *menu = [NSMenu new]; menu.delegate = self; _table.menu = menu;
-
   NSScrollView *scroll = [NSScrollView new];
-  scroll.documentView = _table; scroll.hasVerticalScroller = YES; scroll.hasHorizontalScroller = NO; scroll.drawsBackground = NO;
-  scroll.automaticallyAdjustsContentInsets = NO;
-  scroll.contentInsets = NSEdgeInsetsMake(0, 0, 12, 0);
-  scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  scroll.documentView = _table; scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.drawsBackground = NO;
+  NSViewController *sidebar = [NSViewController new]; sidebar.view = scroll;
 
-  _emptyHint = [NSTextField wrappingLabelWithString:@"Drop iOS Simulator apps here\n\nBuild your app for an iOS Simulator destination in Xcode, then drag the .app from Build/Products/Debug-iphonesimulator onto this window."];
-  _emptyHint.alignment = NSTextAlignmentCenter; _emptyHint.textColor = NSColor.secondaryLabelColor;
-  _emptyHint.translatesAutoresizingMaskIntoConstraints = NO;
+  _detail = [[SRAppDetailController alloc] initWithDelegate:_delegate];
+  __weak SRLauncher *weakSelf = self;
+  _detail.onAddApp = ^{ [weakSelf addAppWithPanel]; };
+  _detail.onAddXcodeBuilds = ^{ [weakSelf addXcodeBuilds]; };
+  _detail.onDrop = ^(NSArray<NSString *> *paths) { [weakSelf openPaths:paths]; };
+  _detail.onSelectProfile = ^{ SRLauncher *me = weakSelf; [me->_window.toolbar validateVisibleItems]; };
+  _detail.onOpenProfile = ^(NSString *profile) { SRLauncher *me = weakSelf; SRAppInfo *a = [me selectedApp]; if (a) [me->_delegate launchApp:a profile:profile]; };
+  NSMenu *profileMenu = [NSMenu new]; profileMenu.delegate = self; profileMenu.autoenablesItems = NO; _profileMenu = profileMenu;
+  _detail.profileMenu = profileMenu;
 
-  for (NSView *v in @[ scroll, _emptyHint ]) [root addSubview:v];
-  [NSLayoutConstraint activateConstraints:@[
-    [scroll.topAnchor constraintEqualToAnchor:root.topAnchor], [scroll.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
-    [scroll.trailingAnchor constraintEqualToAnchor:root.trailingAnchor], [scroll.bottomAnchor constraintEqualToAnchor:root.bottomAnchor],
-    [_emptyHint.centerXAnchor constraintEqualToAnchor:scroll.centerXAnchor], [_emptyHint.centerYAnchor constraintEqualToAnchor:scroll.centerYAnchor],
-    [_emptyHint.widthAnchor constraintEqualToAnchor:scroll.widthAnchor multiplier:0.75],
-  ]];
+  NSSplitViewController *split = [NSSplitViewController new];
+  NSSplitViewItem *sideItem = [NSSplitViewItem sidebarWithViewController:sidebar];
+  sideItem.minimumThickness = 200; sideItem.maximumThickness = 360;
+  NSSplitViewItem *detailItem = [NSSplitViewItem splitViewItemWithViewController:_detail];
+  detailItem.minimumThickness = 480;
+  split.splitViewItems = @[ sideItem, detailItem ];
+  NSString *splitName = @"SRLauncherSplit";
+  BOOL splitSaved = [NSUserDefaults.standardUserDefaults objectForKey:[@"NSSplitView Subview Frames " stringByAppendingString:splitName]] != nil;
+  split.splitView.autosaveName = splitName;
+  _window.contentViewController = split;
+
+  NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"SRLauncherToolbar"];
+  toolbar.delegate = self; toolbar.displayMode = NSToolbarDisplayModeIconOnly;
+  toolbar.allowsUserCustomization = YES; toolbar.autosavesConfiguration = YES;
+  _window.toolbar = toolbar;
+
+  _window.contentMinSize = NSMakeSize(700, 420);
+  [_window setContentSize:NSMakeSize(900, 600)];
+  if (!splitSaved) [split.splitView setPosition:250 ofDividerAtIndex:0];
+  _window.frameAutosaveName = @"SRLauncher";
+  if (![_window setFrameUsingName:@"SRLauncher"]) [_window center];
   [self reload];
 }
 
@@ -145,27 +155,79 @@
 
 - (void)reload {
   if (!_window) return;
-  NSInteger sel = _table.selectedRow;
+  NSString *path = [self selectedApp].path ?: [NSUserDefaults.standardUserDefaults stringForKey:kSelectionKey];
   [_table reloadData];
-  if (sel >= 0 && sel < _table.numberOfRows) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:sel] byExtendingSelection:NO];
-  _emptyHint.hidden = SRLibrary.shared.apps.count > 0;
+  NSArray<SRAppInfo *> *apps = SRLibrary.shared.apps;
+  NSUInteger i = [apps indexOfObjectPassingTest:^BOOL(SRAppInfo *a, NSUInteger idx, BOOL *stop) { return [a.path isEqualToString:path]; }];
+  if (i == NSNotFound && apps.count) i = 0;
+  if (i != NSNotFound) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
+  [self selectionChanged];
+  [_detail reloadInfo];   // launch options are saved with a library change notification
 }
-- (void)reloadState { [self reload]; }
+- (void)reloadState {
+  if (!_window) return;
+  if (_table.numberOfRows)
+    [_table reloadDataForRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, (NSUInteger)_table.numberOfRows)]
+                      columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+  [_detail reloadState];
+  [_window.toolbar validateVisibleItems];
+}
 - (SRAppInfo *)selectedApp {
-  NSInteger r = _table.clickedRow >= 0 ? _table.clickedRow : _table.selectedRow;
+  NSInteger r = _table.selectedRow;
   return r >= 0 && r < (NSInteger)SRLibrary.shared.apps.count ? SRLibrary.shared.apps[r] : nil;
 }
+- (void)selectApp:(SRAppInfo *)app {
+  NSUInteger i = [SRLibrary.shared.apps indexOfObjectPassingTest:^BOOL(SRAppInfo *a, NSUInteger idx, BOOL *stop) { return [a.path isEqualToString:app.path]; }];
+  if (i != NSNotFound && _window) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
+}
+- (void)selectionChanged {
+  SRAppInfo *a = [self selectedApp];
+  if (a) [NSUserDefaults.standardUserDefaults setObject:a.path forKey:kSelectionKey];
+  _detail.libraryEmpty = SRLibrary.shared.apps.count == 0;
+  _detail.app = a;
+  _moreItem.enabled = a != nil;
+  [_window.toolbar validateVisibleItems];
+}
+- (void)tableViewSelectionDidChange:(NSNotification *)n { [self selectionChanged]; }
 
 // ---------------------------------------------------------------- actions
-- (void)launchSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate launchApp:a]; }
-- (void)launchWithSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [self showLaunchOptionsForApp:a]; }
+// What an action is for: the menu item's app and profile (the context menus, More), else the selected app in the profile
+// selected in its pane (nil: its default one).
+- (SRAppInfo *)appFor:(id)sender profile:(NSString **)profile {
+  NSDictionary *t = [sender isKindOfClass:NSMenuItem.class] ? [sender representedObject] : nil;
+  if ([t isKindOfClass:NSDictionary.class]) {
+    if (profile) *profile = [t[@"profile"] isKindOfClass:NSString.class] ? t[@"profile"] : nil;
+    return t[@"app"];
+  }
+  if (profile) *profile = _detail.selectedProfile;
+  return [self selectedApp];
+}
+- (SRAppInfo *)appFor:(id)sender { return [self appFor:sender profile:NULL]; }
 
-- (void)showLaunchOptionsForApp:(SRAppInfo *)app {
+- (void)launchSelected:(id)sender {   // double-click, Launch / Show: launch, or show the running app
+  if (sender == _table && _table.clickedRow < 0) return;
+  NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p];
+  if (a) [_delegate launchApp:a profile:p];
+}
+- (void)run:(id)sender {               // ▶: launch, or relaunch the running app
+  NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p];
+  if (!a) return;
+  if ([_delegate stateForApp:a profile:p] == SRAppStateRunning) [_delegate relaunchApp:a profile:p];
+  else [_delegate launchApp:a profile:p];
+}
+- (void)launchWithSelected:(id)sender {
+  NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p];
+  if (a) [self showLaunchOptionsForApp:a profile:p];
+}
+
+- (void)showLaunchOptionsForApp:(SRAppInfo *)app profile:(NSString *)profile {
   [self show];
-  BOOL running = [_delegate stateForApp:app] != SRAppStateStopped;
+  [self selectApp:app];
+  [_detail selectProfile:profile];
+  BOOL running = [_delegate stateForApp:app profile:profile] != SRAppStateStopped;
   __weak id<SRLauncherDelegate> delegate = _delegate;
-  [SRLaunchSheet beginForApp:app running:running window:_window launch:^{
-    if (running) [delegate relaunchApp:app]; else [delegate launchApp:app];
+  [SRLaunchSheet beginForApp:app profile:profile running:running window:_window launch:^{
+    if (running) [delegate relaunchApp:app profile:profile]; else [delegate launchApp:app profile:profile];
   }];
 }
 
@@ -176,12 +238,9 @@
     NSString *why = [SRAppInfo problemWithAppAtPath:p];
     if (why) { [problems addObject:[NSString stringWithFormat:@"%@: %@", p.lastPathComponent, why]]; continue; }
     last = [SRLibrary.shared addPath:p];
-    [_delegate launchApp:last];
+    [_delegate launchApp:last profile:nil];
   }
-  if (last) {
-    NSUInteger i = [SRLibrary.shared.apps indexOfObject:last];
-    if (i != NSNotFound && _window) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
-  }
+  if (last) [self selectApp:last];
   if (problems.count) {
     [self show];
     NSAlert *al = [NSAlert new];
@@ -191,6 +250,7 @@
   }
 }
 
+- (void)addApp:(id)sender { [self addAppWithPanel]; }
 - (void)addAppWithPanel {
   [self show];
   NSOpenPanel *p = [NSOpenPanel openPanel];
@@ -203,6 +263,7 @@
   }];
 }
 
+- (void)addXcodeBuilds:(id)sender { [self addXcodeBuilds]; }
 - (void)addXcodeBuilds {
   [self show];
   NSArray *builds = [SRLibrary xcodeSimulatorBuilds];
@@ -217,68 +278,163 @@
   [al beginSheetModalForWindow:_window completionHandler:nil];
 }
 
-- (void)showInFinder:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:a.path] ]]; }
+- (void)showInFinder:(id)sender { SRAppInfo *a = [self appFor:sender]; if (a) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:a.path] ]]; }
 - (void)removeSelected:(id)sender {
-  SRAppInfo *a = [self selectedApp];
+  SRAppInfo *a = [self appFor:sender];
   if (a) { [SRLaunchOptions removeOptionsForAppAtPath:a.path]; [SRLibrary.shared removePath:a.path]; }
 }
-- (void)quitSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate quitApp:a]; }
-- (void)logSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate showLogForApp:a]; }
-- (NSString *)containerOfApp:(SRAppInfo *)a {
-  return [SREnvironment containerPathForIdentifier:[SREnvironment containerIdentifierForExecutable:a.executablePath] profile:nil];
+- (void)quitSelected:(id)sender { NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p]; if (a) [_delegate quitApp:a profile:p]; }
+- (void)logSelected:(id)sender { NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p]; if (a) [_delegate showLogForApp:a profile:p]; }
+- (NSString *)containerOfApp:(SRAppInfo *)a profile:(NSString *)profile {
+  return [SREnvironment containerPathForIdentifier:[SREnvironment containerIdentifierForExecutable:a.executablePath] profile:profile];
 }
 - (void)containerSelected:(id)sender {
-  SRAppInfo *a = [self selectedApp];
-  if (a) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:[self containerOfApp:a]] ]];
+  NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p];
+  if (a) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:[self containerOfApp:a profile:p]] ]];
 }
 - (void)resetSelected:(id)sender {
-  SRAppInfo *a = [self selectedApp];
+  NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p];
   if (!a) return;
   NSAlert *al = [NSAlert new];
-  al.messageText = [NSString stringWithFormat:@"Reset the data of %@?", a.name];
+  al.messageText = p ? [NSString stringWithFormat:@"Reset the data of %@ in profile “%@”?", a.name, p]
+                     : [NSString stringWithFormat:@"Reset the data of %@?", a.name];
   al.informativeText = @"Its data container (documents, preferences, caches, everything under its home directory) is deleted, as if "
                         "the app were deleted and installed again. Keychain items and app group containers are kept.";
   [al addButtonWithTitle:@"Reset"].hasDestructiveAction = YES;
   [al addButtonWithTitle:@"Cancel"];
   [al beginSheetModalForWindow:_window completionHandler:^(NSModalResponse r) {
-    if (r == NSAlertFirstButtonReturn) [self->_delegate resetDataForApp:a];
+    if (r == NSAlertFirstButtonReturn) { [self->_delegate resetDataForApp:a profile:p]; [self->_detail reloadState]; }
   }];
 }
-- (void)keychainSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [SRKeychainWindow.shared showWithFilter:a.bundleIdentifier ?: @""]; }
+- (void)deleteProfileSelected:(id)sender {
+  NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p];
+  if (a && p) [_detail deleteProfile:p];
+}
+- (void)keychainSelected:(id)sender { SRAppInfo *a = [self appFor:sender]; if (a) [SRKeychainWindow.shared showWithFilter:a.bundleIdentifier ?: @""]; }
 
+// ---------------------------------------------------------------- menus
+// The sidebar's context menu is about the app bundle (shared by all its profiles); a profile row's is about running it
+// in that profile and its data container; the toolbar's More has the container and the app's items.
 - (void)menuNeedsUpdate:(NSMenu *)menu {
   [menu removeAllItems];
-  SRAppInfo *a = [self selectedApp];
-  if (!a) return;
-  SRAppState st = [_delegate stateForApp:a];
-  if (st != SRAppStateLaunching) {
-    [menu addItemWithTitle:st == SRAppStateRunning ? @"Show" : @"Launch" action:@selector(launchSelected:) keyEquivalent:@""].target = self;
-    // with ⌥ held: the Launch With… sheet (Relaunch With… while the app runs)
-    NSMenuItem *with = [menu addItemWithTitle:st == SRAppStateRunning ? @"Relaunch With…" : @"Launch With…"
-                                       action:@selector(launchWithSelected:) keyEquivalent:@""];
-    with.target = self; with.alternate = YES; with.keyEquivalentModifierMask = NSEventModifierFlagOption;
+  SRAppInfo *a = nil; NSString *profile = nil;
+  if (menu == _table.menu) {
+    if (_table.clickedRow >= 0 && _table.clickedRow < (NSInteger)SRLibrary.shared.apps.count) a = SRLibrary.shared.apps[_table.clickedRow];
+    if (a) [self addAppItemsFor:a to:menu];
+  } else if (menu == _profileMenu) {
+    if ((a = [self selectedApp]) && [_detail profileForMenu:&profile]) [self addProfileItemsFor:a profile:profile to:menu running:YES];
+  } else if ((a = [self selectedApp])) {   // More
+    profile = _detail.selectedProfile;
+    [self addProfileItemsFor:a profile:profile to:menu running:NO];
+    [menu addItem:NSMenuItem.separatorItem];
+    [self addAppItemsFor:a to:menu];
   }
-  if (st != SRAppStateStopped) [menu addItemWithTitle:@"Quit App" action:@selector(quitSelected:) keyEquivalent:@""].target = self;
-  [menu addItemWithTitle:@"Show Log" action:@selector(logSelected:) keyEquivalent:@""].target = self;
-  [menu addItemWithTitle:@"Show Keychain Items" action:@selector(keychainSelected:) keyEquivalent:@""].target = self;
+}
+
+static NSMenuItem *AddItem(NSMenu *menu, NSString *title, SEL action, id target, SRAppInfo *app, NSString *profile) {
+  NSMenuItem *it = [menu addItemWithTitle:title action:action keyEquivalent:@""];
+  if (action) { it.target = target; it.representedObject = profile ? @{ @"app": app, @"profile": profile } : @{ @"app": app }; }
+  return it;
+}
+
+- (void)addAppItemsFor:(SRAppInfo *)a to:(NSMenu *)menu {
+  AddItem(menu, @"Show Keychain Items", @selector(keychainSelected:), self, a, nil);
+  AddItem(menu, @"Show in Finder", @selector(showInFinder:), self, a, nil);
   [menu addItem:NSMenuItem.separatorItem];
-  // the app's data container: there once the app has run; reset only while it isn't running
-  BOOL hasData = [NSFileManager.defaultManager fileExistsAtPath:[self containerOfApp:a]];
-  NSMenu *container = [[NSMenu alloc] initWithTitle:@"App Container"];
+  AddItem(menu, @"Remove from SimRun", @selector(removeSelected:), self, a, nil);
+}
+
+// `running`: with the commands that start, stop and show it (the toolbar has them too).
+- (void)addProfileItemsFor:(SRAppInfo *)a profile:(NSString *)p to:(NSMenu *)menu running:(BOOL)running {
+  SRAppState st = [_delegate stateForApp:a profile:p];
+  if (running) {
+    if (st != SRAppStateLaunching) {
+      AddItem(menu, st == SRAppStateRunning ? @"Show" : @"Launch", @selector(launchSelected:), self, a, p);
+      // with ⌥ held: the Launch With… sheet (Relaunch With… while it runs)
+      NSMenuItem *with = AddItem(menu, st == SRAppStateRunning ? @"Relaunch With…" : @"Launch With…", @selector(launchWithSelected:), self, a, p);
+      with.alternate = YES; with.keyEquivalentModifierMask = NSEventModifierFlagOption;
+    }
+    if (st != SRAppStateStopped) AddItem(menu, @"Quit App", @selector(quitSelected:), self, a, p);
+    AddItem(menu, @"Launch Options…", @selector(launchWithSelected:), self, a, p);
+    NSMenuItem *log = AddItem(menu, @"Show Log", @selector(logSelected:), self, a, p);
+    log.enabled = st != SRAppStateStopped;
+    [menu addItem:NSMenuItem.separatorItem];
+  }
+  // the profile's data container: there once the app has run in it; reset only while it doesn't run in it
+  BOOL hasData = [NSFileManager.defaultManager fileExistsAtPath:[self containerOfApp:a profile:p]];
+  NSMenu *container = [[NSMenu alloc] initWithTitle:@"Data Container"];
   container.autoenablesItems = NO;
-  NSMenuItem *show = [container addItemWithTitle:@"Show in Finder" action:@selector(containerSelected:) keyEquivalent:@""];
-  NSMenuItem *reset = [container addItemWithTitle:@"Reset…" action:@selector(resetSelected:) keyEquivalent:@""];
-  show.target = reset.target = self;
+  NSMenuItem *show = AddItem(container, @"Show in Finder", @selector(containerSelected:), self, a, p);
+  NSMenuItem *reset = AddItem(container, @"Reset…", @selector(resetSelected:), self, a, p);
   show.enabled = hasData;
   reset.enabled = hasData && st == SRAppStateStopped;
   if (hasData && st != SRAppStateStopped) reset.toolTip = @"Quit the app to reset its data.";
-  [menu addItemWithTitle:@"App Container" action:nil keyEquivalent:@""].submenu = container;
-  [menu addItem:NSMenuItem.separatorItem];
-  [menu addItemWithTitle:@"Show in Finder" action:@selector(showInFinder:) keyEquivalent:@""].target = self;
-  [menu addItemWithTitle:@"Remove from SimRun" action:@selector(removeSelected:) keyEquivalent:@""].target = self;
+  NSString *title = running || !p ? @"Data Container" : [NSString stringWithFormat:@"Data Container (%@)", p];
+  [menu addItemWithTitle:title action:nil keyEquivalent:@""].submenu = container;
+  if (running && p) {   // the default profile can't be deleted
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *del = AddItem(menu, @"Delete Profile…", @selector(deleteProfileSelected:), self, a, p);
+    del.enabled = [_detail canDeleteProfile:p];
+    if (!del.enabled) del.toolTip = @"Quit the app in this profile to delete it.";
+  }
 }
 
-// ---------------------------------------------------------------- table
+// ---------------------------------------------------------------- toolbar
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
+  return @[ NSToolbarToggleSidebarItemIdentifier, NSToolbarFlexibleSpaceItemIdentifier, kAddItem,
+            NSToolbarSidebarTrackingSeparatorItemIdentifier,
+            kRunItem, kStopItem, NSToolbarFlexibleSpaceItemIdentifier, kOptionsItem, kLogItem, kMoreItem ];
+}
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar {
+  return [[self toolbarDefaultItemIdentifiers:toolbar] arrayByAddingObject:NSToolbarSpaceItemIdentifier];
+}
+- (NSToolbarItem *)toolbar:(NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)ident willBeInsertedIntoToolbar:(BOOL)flag {
+  if ([ident isEqualToString:kAddItem] || [ident isEqualToString:kMoreItem]) {
+    NSMenuToolbarItem *it = [[NSMenuToolbarItem alloc] initWithItemIdentifier:ident];
+    NSMenu *m = [NSMenu new];
+    if ([ident isEqualToString:kAddItem]) {
+      it.image = Symbol(@"plus", @"Add Apps"); it.label = @"Add Apps"; it.toolTip = @"Add iOS Simulator apps";
+      [m addItemWithTitle:@"Add App…" action:@selector(addApp:) keyEquivalent:@""].target = self;
+      [m addItemWithTitle:@"Add Xcode Simulator Builds" action:@selector(addXcodeBuilds:) keyEquivalent:@""].target = self;
+    } else {
+      it.image = Symbol(@"ellipsis.circle", @"More"); it.label = @"More"; it.toolTip = @"More commands for the app";
+      m.delegate = self; m.autoenablesItems = NO;   // filled when opened: menuNeedsUpdate:
+      _moreItem = it; it.enabled = [self selectedApp] != nil;   // no action, so no validation: selectionChanged
+    }
+    it.menu = m; it.showsIndicator = NO;
+    return it;
+  }
+  NSDictionary<NSString *, NSArray *> *items = @{
+    kRunItem: @[ @"play.fill", @"Run", @"Run the app in the selected profile, or relaunch it", NSStringFromSelector(@selector(run:)) ],
+    kStopItem: @[ @"stop.fill", @"Stop", @"Quit the app in the selected profile", NSStringFromSelector(@selector(quitSelected:)) ],
+    kOptionsItem: @[ @"slider.horizontal.3", @"Launch Options", @"The selected profile's launch options: runtime, device, arguments, diagnostics",
+                     NSStringFromSelector(@selector(launchWithSelected:)) ],
+    kLogItem: @[ @"text.page", @"Log", @"Show the log (output) of the app in the selected profile", NSStringFromSelector(@selector(logSelected:)) ],
+  };
+  NSArray *d = items[ident];
+  if (!d) return nil;
+  NSToolbarItem *it = [[NSToolbarItem alloc] initWithItemIdentifier:ident];
+  it.image = Symbol(d[0], d[1]) ?: Symbol(@"doc.text", d[1]);
+  it.label = d[1]; it.paletteLabel = d[1]; it.toolTip = d[2];
+  it.target = self; it.action = NSSelectorFromString(d[3]); it.bordered = YES;
+  return it;
+}
+// The toolbar acts on the selected app in the profile selected in its pane (the default one if none is).
+- (BOOL)validateToolbarItem:(NSToolbarItem *)item {
+  NSString *p = nil; SRAppInfo *a = [self appFor:nil profile:&p];
+  SRAppState st = a ? [_delegate stateForApp:a profile:p] : SRAppStateStopped;
+  NSString *ident = item.itemIdentifier;
+  NSString *what = !a ? nil : p ? [NSString stringWithFormat:@"%@ (%@)", a.name, p] : a.name;
+  if ([ident isEqualToString:kRunItem]) {
+    item.toolTip = !a ? @"Run the app" : [NSString stringWithFormat:st == SRAppStateRunning ? @"Relaunch %@" : @"Run %@", what];
+    return a && st != SRAppStateLaunching;
+  }
+  if ([ident isEqualToString:kStopItem]) item.toolTip = a ? [NSString stringWithFormat:@"Quit %@", what] : @"Quit the app";
+  if ([ident isEqualToString:kStopItem] || [ident isEqualToString:kLogItem]) return st != SRAppStateStopped;
+  return a != nil;
+}
+
+// ---------------------------------------------------------------- sidebar
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)t { return SRLibrary.shared.apps.count; }
 - (NSView *)tableView:(NSTableView *)t viewForTableColumn:(NSTableColumn *)c row:(NSInteger)row {
   SRAppCell *cell = [t makeViewWithIdentifier:@"cell" owner:self];
@@ -286,9 +442,13 @@
   SRAppInfo *a = SRLibrary.shared.apps[row];
   cell.imageView.image = a.icon;
   cell.textField.stringValue = a.name;
-  NSString *sub = a.bundleIdentifier.length ? [NSString stringWithFormat:@"%@ - %@", a.bundleIdentifier, a.path.stringByAbbreviatingWithTildeInPath] : a.path.stringByAbbreviatingWithTildeInPath;
-  cell.subtitle.stringValue = sub;
-  [cell setState:[_delegate stateForApp:a]];
+  cell.subtitle.stringValue = a.bundleIdentifier.length ? a.bundleIdentifier : a.path.lastPathComponent;
+  cell.toolTip = a.path.stringByAbbreviatingWithTildeInPath;
+  // the dot: running in some profile; the spinner: launching in one (no window yet)
+  NSDictionary *instances = [_delegate instancesOfApp:a];
+  BOOL launching = [_delegate stateForApp:a profile:nil] == SRAppStateLaunching;
+  for (NSString *p in instances) launching |= [_delegate stateForApp:a profile:[p isEqualToString:@"default"] ? nil : p] == SRAppStateLaunching;
+  [cell setLaunching:launching running:instances.count > 0];
   return cell;
 }
 - (NSDragOperation)tableView:(NSTableView *)t validateDrop:(id<NSDraggingInfo>)info proposedRow:(NSInteger)row proposedDropOperation:(NSTableViewDropOperation)op {

@@ -229,8 +229,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   SEL a = item.action;
   SRRequest *r = [self frontRequest];
   if (a == @selector(relaunchFrontApp:)) return r.appPath != nil;
-  // the Launch With… sheet relaunches the app in its default profile
-  if (a == @selector(relaunchFrontAppWith:)) return r.appPath != nil && !r.profile;
+  if (a == @selector(relaunchFrontAppWith:)) return r.appPath != nil;
   if (a == @selector(quitFrontApp:) || a == @selector(showFrontAppLog:)) return r != nil;
   if (a == @selector(showFrontAppKeychain:)) return r.appPath != nil;
   return YES;
@@ -250,10 +249,10 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   if (r.appPath) [self relaunchApp:[SRAppInfo infoWithPath:r.appPath] profile:r.profile];
 }
 - (void)relaunchFrontAppWith:(id)s {
-  NSString *path = [self frontRequest].appPath;
-  if (!path) return;
+  SRRequest *r = [self frontRequest];
+  if (!r.appPath) return;
   _interactive = YES;
-  [_launcher showLaunchOptionsForApp:[SRAppInfo infoWithPath:path]];
+  [_launcher showLaunchOptionsForApp:[SRAppInfo infoWithPath:r.appPath] profile:r.profile];
 }
 
 // SimRun ▸ iOS Runtime: the runtime SimRun's shared services run on (and apps without their own), from the next start.
@@ -287,20 +286,28 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
 - (void)chooseRuntime:(NSMenuItem *)item { SREnvironment.preferredRuntimeBuild = item.representedObject; }
 
 // ---------------------------------------------------------------- SRLauncherDelegate
-// The launcher shows (and acts on) each app in its default profile; it can also run in its other profiles at once, one
-// instance per profile from here (simrun clients may start more).
+// The launcher runs an app in any of its profiles, one instance per profile from here (simrun clients may start more).
 - (SRRequest *)requestForApp:(SRAppInfo *)app profile:(NSString *)profile {
   for (SRRequest *r in _active) if ([r.appPath isEqualToString:app.path] && SameProfile(r.profile, profile)) return r;
   for (SRRequest *r in _pending) if ([r.appPath isEqualToString:app.path] && SameProfile(r.profile, profile)) return r;
   return nil;
 }
-- (SRAppState)stateForApp:(SRAppInfo *)app {
-  SRRequest *r = [self requestForApp:app profile:nil];
+- (SRAppState)stateForApp:(SRAppInfo *)app profile:(NSString *)profile {
+  SRRequest *r = [self requestForApp:app profile:profile];
   if (!r) return SRAppStateStopped;
   return r.session.isReady ? SRAppStateRunning : SRAppStateLaunching;
 }
-- (void)quitApp:(SRAppInfo *)app { [[self requestForApp:app profile:nil].session terminate]; }
-- (void)relaunchApp:(SRAppInfo *)app { [self relaunchApp:app profile:nil]; }
+- (NSDictionary<NSString *, NSArray<NSNumber *> *> *)instancesOfApp:(SRAppInfo *)app {
+  NSMutableDictionary<NSString *, NSMutableArray *> *out = [NSMutableDictionary dictionary];
+  for (SRRequest *r in _active) {
+    if (r.session.pid <= 0 || ![r.appPath isEqualToString:app.path]) continue;
+    NSString *p = r.profile ?: @"default";
+    if (!out[p]) out[p] = [NSMutableArray array];
+    [out[p] addObject:@(r.session.pid)];
+  }
+  return out;
+}
+- (void)quitApp:(SRAppInfo *)app profile:(NSString *)profile { [[self requestForApp:app profile:profile].session terminate]; }
 - (void)relaunchApp:(SRAppInfo *)app profile:(NSString *)profile {
   SRRequest *r = [self requestForApp:app profile:profile];
   if (!r.session) { [self launchApp:app profile:profile]; return; }   // not running (or still waiting for its simns)
@@ -309,21 +316,36 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   r.session.onExit = ^(SRSession *session, int status) { if (old) old(session, status); [weakSelf launchApp:app profile:profile]; };
   [r.session terminate];
 }
-- (void)showLogForApp:(SRAppInfo *)app { [[self requestForApp:app profile:nil].session showLog]; }
+- (void)showLogForApp:(SRAppInfo *)app profile:(NSString *)profile { [[self requestForApp:app profile:profile].session showLog]; }
 
-- (void)resetDataForApp:(SRAppInfo *)app {
-  if ([self requestForApp:app profile:nil]) return;   // running: it would recreate what we delete
+- (void)resetDataForApp:(SRAppInfo *)app profile:(NSString *)profile {
+  if ([self requestForApp:app profile:profile]) return;   // running: it would recreate what we delete
   NSString *ident = [SREnvironment containerIdentifierForExecutable:app.executablePath];
   // The shared cfprefsd caches the app's preferences domain and would write it straight back into the new container:
   // stop it first (letting it flush). simns keeps its service port meanwhile and relaunches it on the next message, so
   // running apps keep their CFPreferences connection (docs/simns.md).
   [self stopSimDaemonsNamed:@"cfprefsd"];
   NSFileManager *fm = NSFileManager.defaultManager;
-  [fm removeItemAtPath:[SREnvironment containerPathForIdentifier:ident profile:nil] error:nil];
+  [fm removeItemAtPath:[SREnvironment containerPathForIdentifier:ident profile:profile] error:nil];
+  if (profile) [SREnvironment createContainerForIdentifier:ident profile:profile];   // empty: the profile stays
   // cfprefsd copies a domain missing from a container from the shared Preferences (where every app's preferences
   // lived before apps had containers); don't let a stale copy come back
   [fm removeItemAtPath:[[SREnvironment dataDirectory] stringByAppendingFormat:@"/Library/Preferences/%@.plist", ident] error:nil];
-  LOG(@"reset the data container of %@", ident);
+  LOG(@"reset the data container of %@%@", ident, profile ? [@" in profile " stringByAppendingString:profile] : @"");
+}
+
+- (void)deleteProfile:(NSString *)profile ofApp:(SRAppInfo *)app {
+  if (!profile || [self requestForApp:app profile:profile]) return;
+  NSString *ident = [SREnvironment containerIdentifierForExecutable:app.executablePath];
+  // as for a reset: cfprefsd would write the profile's cached preferences back into a new container
+  [self stopSimDaemonsNamed:@"cfprefsd"];
+  NSFileManager *fm = NSFileManager.defaultManager;
+  NSString *container = [SREnvironment containerPathForIdentifier:ident profile:profile];
+  [fm removeItemAtPath:container error:nil];
+  NSString *parent = container.stringByDeletingLastPathComponent;   // Profiles/<id>: gone with the app's last profile
+  if (![fm contentsOfDirectoryAtPath:parent error:nil].count) [fm removeItemAtPath:parent error:nil];
+  [SRLaunchOptions removeOptionsForAppAtPath:app.path profile:profile];
+  LOG(@"deleted profile %@ of %@", profile, ident);
 }
 
 // SIGTERM to the simns-spawned daemons with this process name; waits up to 1 s for them, then SIGKILL. (They are
@@ -350,19 +372,18 @@ static BOOL ProcessGone(pid_t pid) {
   for (NSNumber *p in pids) kill(p.intValue, SIGKILL);
 }
 
-- (void)launchApp:(SRAppInfo *)app { [self launchApp:app profile:nil]; }
 - (void)launchApp:(SRAppInfo *)app profile:(NSString *)profile {
   SRRequest *running = [self requestForApp:app profile:profile];
   if (running) { [running.session bringToFront]; return; }   // no-op while it is still launching
   // the app's launch options (Launch With…): its runtime, device, arguments, environment
-  SRLaunchOptions *o = [SRLaunchOptions optionsForAppAtPath:app.path];
+  SRLaunchOptions *o = [SRLaunchOptions optionsForAppAtPath:app.path profile:profile];
   NSString *root = SREnvironment.runtimeRoot;
   if (o.runtimeBuild && ![o.runtimeBuild isEqualToString:[SRRuntime runtimeAtRoot:root].build]) {
     root = [SREnvironment installedRuntimeWithBuild:o.runtimeBuild].root;
     if (!root) {
       NSAlert *al = [NSAlert new]; al.messageText = [NSString stringWithFormat:@"Couldn't launch %@", app.name];
       al.informativeText = [NSString stringWithFormat:@"It is set to run on iOS runtime %@, which isn't installed. Choose another "
-                                                       "runtime with Launch With… (hold Option in the app's menu in the launcher).", o.runtimeBuild];
+                                                       "runtime in its Launch Options (in the launcher).", o.runtimeBuild];
       [al runModal];
       return;
     }
@@ -371,7 +392,7 @@ static BOOL ProcessGone(pid_t pid) {
   if (o.deviceType && !(device = [SREnvironment deviceTypeWithIdentifier:o.deviceType runtime:[SRRuntime runtimeAtRoot:root]])) {
     NSAlert *al = [NSAlert new]; al.messageText = [NSString stringWithFormat:@"Couldn't launch %@", app.name];
     al.informativeText = [NSString stringWithFormat:@"It is set to run as device type %@, which %@ doesn't support. Choose another "
-                                                     "device with Launch With… (hold Option in the app's menu in the launcher).",
+                                                     "device in its Launch Options (in the launcher).",
                                                      o.deviceType, [SRRuntime runtimeAtRoot:root].name ?: @"its runtime"];
     [al runModal];
     return;
@@ -559,8 +580,7 @@ static BOOL ProcessGone(pid_t pid) {
   NSString *name = r.title ?: r.argv.firstObject.lastPathComponent;
   NSString *how = r.sock >= 0
       ? @"Run it on a newer runtime with simrun run --runtime (simrun runtimes lists them)."
-      : @"Choose a newer runtime for it with Launch With… (hold Option in its menu in the launcher), or for SimRun in "
-         "SimRun ▸ iOS Runtime.";
+      : @"Choose a newer runtime for it in its Launch Options (in the launcher), or for SimRun in SimRun ▸ iOS Runtime.";
   return [NSString stringWithFormat:@"%@ requires iOS %@ or later, but it would run on %@. %@", name, min, rt.name, how];
 }
 

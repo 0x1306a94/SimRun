@@ -2,6 +2,7 @@
 #import "launchsheet.h"
 #import "launchoptions.h"
 #import "environment.h"
+#import "tabbar.h"
 
 // SimRun variables the Options and Diagnostics tabs switch: { variable, checkbox title, checked = variable unset }.
 static NSArray<NSArray *> *ServiceSwitches(void) {
@@ -16,24 +17,6 @@ static NSArray<NSArray *> *TracingSwitches(void) {
 }
 
 static const CGFloat kLabelWidth = 170, kFieldWidth = 360;
-
-// A tab of the sheet's tab bar: a borderless button on a pill tinted while selected, as in Xcode's scheme editor.
-@interface SRTabPill : NSView
-@property (nonatomic) BOOL selected;
-@property NSButton *button;
-@end
-@implementation SRTabPill
-- (void)setSelected:(BOOL)selected {
-  _selected = selected;
-  _button.contentTintColor = selected ? NSColor.controlAccentColor : NSColor.labelColor;
-  self.needsDisplay = YES;
-}
-- (void)drawRect:(NSRect)r {
-  if (!_selected) return;
-  [[NSColor.controlAccentColor colorWithAlphaComponent:0.15] setFill];
-  [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:6 yRadius:6] fill];
-}
-@end
 
 static NSTextField *Label(NSString *s) { return [NSTextField labelWithString:s]; }
 static NSTextField *Note(NSString *s) {
@@ -62,9 +45,9 @@ static NSGridView *Form(NSArray<NSArray<NSView *> *> *rows, NSInteger columns) {
 @end
 
 @implementation SRLaunchSheet {
-  SRAppInfo *_app; SRLaunchOptions *_options; BOOL _running; void (^_launch)(void);
+  SRAppInfo *_app; NSString *_profile; SRLaunchOptions *_options; BOOL _running; void (^_launch)(void);
   NSWindow *_sheet, *_parent;
-  NSArray<SRTabPill *> *_tabs; NSArray<NSView *> *_pages;
+  SRTabBar *_tabBar; NSArray<NSView *> *_pages;
   NSPopUpButton *_runtime, *_device, *_locale;
   NSMutableArray<NSButton *> *_switchBoxes;
   NSTableView *_argsTable, *_envTable;
@@ -72,11 +55,12 @@ static NSGridView *Form(NSArray<NSArray<NSView *> *> *rows, NSInteger columns) {
 
 static NSMutableSet<SRLaunchSheet *> *gShown;   // a sheet keeps itself alive until it is dismissed
 
-+ (void)beginForApp:(SRAppInfo *)app running:(BOOL)running window:(NSWindow *)window launch:(void (^)(void))launch {
++ (void)beginForApp:(SRAppInfo *)app profile:(NSString *)profile running:(BOOL)running window:(NSWindow *)window
+             launch:(void (^)(void))launch {
   if (!window || window.attachedSheet) return;
   SRLaunchSheet *s = [SRLaunchSheet new];
-  s->_app = app; s->_running = running; s->_launch = [launch copy]; s->_parent = window;
-  s->_options = [SRLaunchOptions optionsForAppAtPath:app.path];
+  s->_app = app; s->_profile = [profile copy]; s->_running = running; s->_launch = [launch copy]; s->_parent = window;
+  s->_options = [SRLaunchOptions optionsForAppAtPath:app.path profile:profile];
   [SREnvironment reloadInstalledRuntimes];
   s->_switchBoxes = [NSMutableArray array];
   [s build]; [s refresh];
@@ -92,23 +76,15 @@ static NSMutableSet<SRLaunchSheet *> *gShown;   // a sheet keeps itself alive un
 
   NSImageView *icon = [NSImageView imageViewWithImage:_app.icon];
   NSTextField *title = Label(_app.name); title.font = [NSFont systemFontOfSize:15];
-  NSStackView *header = [NSStackView stackViewWithViews:@[ icon, title ]]; header.spacing = 8;
+  // whose options these are: each profile has its own
+  NSTextField *profile = Label([NSString stringWithFormat:@"Profile: %@", _profile ?: @"Default"]);
+  profile.textColor = NSColor.secondaryLabelColor;
+  NSStackView *header = [NSStackView stackViewWithViews:@[ icon, title, profile ]]; header.spacing = 8;
+  [header setCustomSpacing:12 afterView:title];
 
-  NSMutableArray *tabs = [NSMutableArray array];
-  NSArray *names = @[ @"Info", @"Arguments", @"Options", @"Diagnostics" ];
-  for (NSUInteger i = 0; i < names.count; i++) {
-    SRTabPill *p = [SRTabPill new]; p.translatesAutoresizingMaskIntoConstraints = NO;
-    NSButton *b = [NSButton buttonWithTitle:names[i] target:self action:@selector(selectTab:)];
-    b.bordered = NO; b.tag = (NSInteger)i; b.font = [NSFont systemFontOfSize:13]; b.translatesAutoresizingMaskIntoConstraints = NO;
-    [p addSubview:b]; p.button = b;
-    [NSLayoutConstraint activateConstraints:@[
-      [b.centerXAnchor constraintEqualToAnchor:p.centerXAnchor], [b.centerYAnchor constraintEqualToAnchor:p.centerYAnchor],
-      [p.widthAnchor constraintEqualToAnchor:b.widthAnchor constant:18], [p.heightAnchor constraintEqualToConstant:26],
-    ]];
-    [tabs addObject:p];
-  }
-  _tabs = tabs;
-  NSStackView *tabBar = [NSStackView stackViewWithViews:tabs]; tabBar.spacing = 12;
+  SRTabBar *tabBar = _tabBar = [SRTabBar tabBarWithTitles:@[ @"Info", @"Arguments", @"Options", @"Diagnostics" ]];
+  __weak SRLaunchSheet *weakSelf = self;
+  tabBar.onSelect = ^(NSInteger i) { [weakSelf showPage:i]; };
 
   _pages = @[ [self infoPage], [self argumentsPage], [self optionsPage], [self diagnosticsPage] ];
   NSView *pageArea = [NSView new];
@@ -151,7 +127,7 @@ static NSMutableSet<SRLaunchSheet *> *gShown;   // a sheet keeps itself alive un
   for (int i = 0; i < 3; i++)
     [c addObjectsFromArray:@[ [sep[i].leadingAnchor constraintEqualToAnchor:root.leadingAnchor], [sep[i].trailingAnchor constraintEqualToAnchor:root.trailingAnchor] ]];
   [NSLayoutConstraint activateConstraints:c];
-  [self selectTab:_tabs[0].button];
+  [self showPage:0];
 }
 
 // A page holding `content` centered horizontally at its top.
@@ -384,8 +360,9 @@ static NSView *Page(NSView *content) {
   if (selected) [_device selectItem:selected]; else [_device selectItemAtIndex:0];
 }
 
-- (void)selectTab:(NSButton *)sender {
-  for (NSUInteger i = 0; i < _tabs.count; i++) { _tabs[i].selected = (NSInteger)i == sender.tag; _pages[i].hidden = (NSInteger)i != sender.tag; }
+- (void)showPage:(NSInteger)index {
+  _tabBar.selectedIndex = index;
+  for (NSUInteger i = 0; i < _pages.count; i++) _pages[i].hidden = (NSInteger)i != index;
 }
 - (void)runtimeChanged:(NSPopUpButton *)p {
   _options.runtimeBuild = p.selectedItem.representedObject;
@@ -405,7 +382,7 @@ static NSView *Page(NSView *content) {
 - (void)cancel:(id)s { [_parent endSheet:_sheet]; }
 - (void)launch:(id)s {
   [_sheet makeFirstResponder:nil];
-  [_options saveForAppAtPath:_app.path];
+  [_options saveForAppAtPath:_app.path profile:_profile];
   [_parent endSheet:_sheet];
   if (_launch) _launch();
 }

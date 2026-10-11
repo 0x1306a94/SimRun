@@ -2,7 +2,9 @@
 #import "launchoptions.h"
 #import "library.h"
 
-static NSString *const kOptionsKey = @"SRLaunchOptions";   // { app path: { runtime, device, arguments, environment, switches } }
+// { app path: { runtime, device, arguments, environment, switches,       (its default profile's)
+//               profiles: { name: { runtime, device, ... } } } }      (its other profiles')
+static NSString *const kOptionsKey = @"SRLaunchOptions";
 
 @implementation SRLaunchItem
 @end
@@ -43,9 +45,10 @@ static NSArray<NSString *> *ShellWords(NSString *s) {
   return [d isKindOfClass:NSDictionary.class] ? d : @{};
 }
 
-+ (instancetype)optionsForAppAtPath:(NSString *)path {
++ (instancetype)optionsForAppAtPath:(NSString *)path profile:(NSString *)profile {
   SRLaunchOptions *o = [SRLaunchOptions new];
   NSDictionary *d = [self allSaved][path];
+  if (profile && [d isKindOfClass:NSDictionary.class]) d = [d[@"profiles"] isKindOfClass:NSDictionary.class] ? d[@"profiles"][profile] : nil;
   if (![d isKindOfClass:NSDictionary.class]) return o;
   if ([d[@"runtime"] isKindOfClass:NSString.class]) o.runtimeBuild = d[@"runtime"];
   if ([d[@"device"] isKindOfClass:NSString.class]) o.deviceType = d[@"device"];
@@ -65,14 +68,29 @@ static NSArray<NSString *> *ShellWords(NSString *s) {
   return o;
 }
 
-+ (void)store:(NSDictionary *)d forPath:(NSString *)path {
+// Stores `d` (nil: removes them) as the options of the app's `profile`, keeping its other profiles'.
++ (void)store:(NSDictionary *)d forPath:(NSString *)path profile:(NSString *)profile {
   NSMutableDictionary *all = [[self allSaved] mutableCopy];
-  if (d) all[path] = d; else [all removeObjectForKey:path];
+  NSDictionary *old = [all[path] isKindOfClass:NSDictionary.class] ? all[path] : @{};
+  NSMutableDictionary *profiles = [old[@"profiles"] isKindOfClass:NSDictionary.class] ? [old[@"profiles"] mutableCopy] : [NSMutableDictionary dictionary];
+  NSMutableDictionary *entry;
+  if (profile) {
+    entry = [old mutableCopy];
+    if (d) profiles[profile] = d; else [profiles removeObjectForKey:profile];
+  } else entry = d ? [d mutableCopy] : [NSMutableDictionary dictionary];
+  if (profiles.count) entry[@"profiles"] = profiles; else [entry removeObjectForKey:@"profiles"];
+  if (entry.count) all[path] = entry; else [all removeObjectForKey:path];
   [NSUserDefaults.standardUserDefaults setObject:all forKey:kOptionsKey];
 }
-+ (void)removeOptionsForAppAtPath:(NSString *)path { [self store:nil forPath:path]; }
++ (void)removeOptionsForAppAtPath:(NSString *)path {
+  NSMutableDictionary *all = [[self allSaved] mutableCopy];
+  [all removeObjectForKey:path];
+  [NSUserDefaults.standardUserDefaults setObject:all forKey:kOptionsKey];
+}
 
-- (void)saveForAppAtPath:(NSString *)path {
++ (void)removeOptionsForAppAtPath:(NSString *)path profile:(NSString *)profile { [self store:nil forPath:path profile:profile]; }
+
+- (void)saveForAppAtPath:(NSString *)path profile:(NSString *)profile {
   NSMutableDictionary *d = [NSMutableDictionary dictionary];
   if (_runtimeBuild) d[@"runtime"] = _runtimeBuild;
   if (_deviceType) d[@"device"] = _deviceType;
@@ -83,7 +101,7 @@ static NSArray<NSString *> *ShellWords(NSString *s) {
   if (args.count) d[@"arguments"] = args;
   if (env.count) d[@"environment"] = env;
   if (_switches.count) d[@"switches"] = [_switches.allObjects sortedArrayUsingSelector:@selector(compare:)];
-  [SRLaunchOptions store:d.count ? d : nil forPath:path];
+  [SRLaunchOptions store:d.count ? d : nil forPath:path profile:profile];
   [NSNotificationCenter.defaultCenter postNotificationName:SRLibraryDidChangeNotification object:nil];
 }
 

@@ -70,15 +70,20 @@ make test-apps
 open build/SimRun.app
 ```
 
-SimRun opens a launcher window listing your apps. To add one, do any of the following:
+SimRun opens its launcher: your apps in the sidebar, and the selected app's details on the right: its version, the
+device and iOS runtime it runs as, and its **Profiles** (its data containers and what is running in each). To add an
+app, do any of the following:
 
 - Drag an iOS Simulator `.app` onto the launcher window or onto SimRun's Dock icon.
-- Choose **File ▸ Add App…**
+- Click **+** in the toolbar, or choose **File ▸ Add App…**
 - Choose **File ▸ Add Xcode Simulator Builds** to add everything you've built for the Simulator in Xcode.
 - In Finder, right-click an app and choose **Open With ▸ SimRun**.
 
-SimRun remembers the list. Double-click an app to launch it. While it starts, its row shows a spinner; once the
-window is up, the row shows a green dot.
+SimRun remembers the list. Double-click an app (or click ▶ in the toolbar) to launch it. While it starts, its row
+shows a spinner; once its window is up, the row shows a green dot. The toolbar acts on the profile selected under
+**Profiles** (the default one if none is): it runs and stops the app, opens its launch options and its log, and its
+**⋯** menu has the rest. Right-click a profile for the same commands and its data container; right-click an app in
+the sidebar for its keychain items, Show in Finder and Remove from SimRun.
 
 To see what SimRun can do, build the sample apps (`make test-apps`), then add `build/apps/Showcase.app` and launch it.
 
@@ -125,9 +130,11 @@ with no apps running.
   window only scales the picture; it doesn't change the screen size the app sees.
 - **See your app's `NSLog` and `os_log` messages** in the terminal by adding `OS_ACTIVITY_DT_MODE=1` before
   `simrun run`.
-- **Run an app twice with separate data** with profiles: `simrun run --profile alice …` uses the app's container
-  for profile "alice" (created on first use), so it can run next to the app's default container, or another profile.
-  `simrun profiles` lists them.
+- **Run an app twice with separate data** with profiles. Click **+** under the app's **Profiles** to make one, then
+  double-click it to launch the app with that profile's data container, next to the app in its default one. Each
+  profile has its own launch options (device, runtime, arguments…). From the terminal, `simrun run --profile alice …`
+  uses (and on first use creates) profile "alice"; `simrun profiles` lists them. Select a profile and click **−** (or
+  press ⌫) to delete it with its data.
 - **Manage running apps** with `simrun list`, `simrun quit <app>` and `simrun screenshot <app>`.
 - **Manage the background SimRun** with `simrun status`, `simrun stop` and `simrun log`. The log is the first place
   to look when an app fails to start. `simrun help` lists every command.

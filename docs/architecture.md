@@ -45,16 +45,22 @@ is started headless and exits after 10 idle minutes (`SIMRUND_IDLE`). Each app g
 exits with the app's status, and Ctrl-C (or closing the window) ends the app. Launching into a running server takes
 ~0.6 s to first frame.
 
-The launcher remembers its library of apps. **File ▸ Add Xcode Simulator Builds** scans
+The launcher (`launcher.m`, `appdetail.m`) is a split view: the library of apps in the sidebar, the selected app's
+pane beside it (its details, then tabs: Profiles lists its data containers with what each runs as and its running
+instances, and makes and deletes profiles), and the commands for the selected profile (run, stop, launch options, log, more)
+in the toolbar. The sidebar's context menu has what concerns the app bundle (keychain items, Show in Finder, Remove);
+a profile's has running it and its data container. It remembers its library of apps. **File ▸ Add Xcode
+Simulator Builds** scans
 `~/Library/Developer/Xcode/DerivedData/*/Build/Products/*-iphonesimulator/` for `.app` bundles. An app is accepted
 if it has a top-level `Info.plist` with a `CFBundleExecutable` whose arm64 slice is built for the `IOSSIMULATOR`
 platform.
 
-Holding ⌥ in an app's menu turns **Launch** into **Launch With…** (**Relaunch With…** while it runs; ⌥⌘R in an app
-window): a sheet, like a scheme's Run action in Xcode, with the app's launch options — its iOS runtime and device,
+Launch Options in the toolbar or a profile's menu (or ⌥ in it: **Launch With…**, **Relaunch With…** while it runs;
+⌥⌘R in an app window) opens a sheet, like a scheme's Run action in Xcode, with the launch options of the app's profile — its iOS runtime and device,
 arguments and environment variables, language & region, which SimRun services it gets, and diagnostics (os_log mirroring, component
-tracing, frame checks; these are the variables in [reference.md](reference.md)). They are saved per app path
-(`SRLaunchOptions` in SimRun's user defaults) and used by every launch from the launcher; apps launched from the
+tracing, frame checks; these are the variables in [reference.md](reference.md)). They are saved per app path and
+profile (`SRLaunchOptions` in SimRun's user defaults; a profile starts with the defaults) and used by every launch from
+the launcher; apps launched from the
 terminal get only what their environment says.
 
 ## Runtimes
@@ -98,7 +104,7 @@ caches, cookies, WebKit data — and tmp) is `~/Library/Developer/SimRun/data/Co
 (the executable's name for a bare binary). What is managed centrally stays in the shared data directory `data/`
 (`SIMULATOR_SHARED_RESOURCES_DIRECTORY`): the keychain, app group containers (`Containers/Shared/AppGroup/`, served by
 the runtime's containermanagerd to apps entitled to the group) and the shared daemons' state. In the launcher, an
-app's menu has App Container ▸ Show in Finder / Reset… (deletes the container; keychain items and app group
+app's menu (and the toolbar's ⋯ menu) has App Container ▸ Show in Finder / Reset… (deletes the container; keychain items and app group
 containers are kept). Containers are a convention, not a sandbox: apps run unsandboxed as you.
 
 An app can have more containers than its default one: **profiles**. `simrun run --profile <name>` runs the app with
@@ -107,8 +113,9 @@ the container of that profile,
 container. Profiles are per app: two apps' profiles of the same name have nothing to do with each other. So one app
 can run several times at once, one instance per profile, each with its own documents, preferences and caches; each
 gets its own window, titled "<app> — <profile>" (and log), and `SIMRUN_PROFILE=<profile>` in its environment. Everything outside the container is still shared between
-an app's profiles: keychain items, app group containers. The launcher shows and acts on the default profile; ⌘R in a
-profile's window relaunches it in that profile. `simrun profiles [bundle id]` lists apps' profiles, and `simrun quit`
+an app's profiles: keychain items, app group containers. The launcher lists an app's profiles, runs it in any of them,
+makes new ones (**+**: the profile's container, empty) and deletes them (**−**, ⌫ or Delete Profile…: the container
+and the profile's launch options; not the default profile, nor while the app runs in it); ⌘R in a profile's window relaunches it in that profile. `simrun profiles [bundle id]` lists apps' profiles, and `simrun quit`
 and `simrun screenshot` take `--profile` to pick one of an app's instances.
 
 ## Layout

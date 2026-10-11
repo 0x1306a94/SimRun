@@ -1,4 +1,5 @@
-// launcher.h — the launcher window: the app library, drag-and-drop, launch/quit.
+// launcher.h — the launcher window: the app library in a sidebar (drag-and-drop to add), the selected app's pane
+// (appdetail.h), and the app commands in the toolbar.
 #pragma once
 #import <Cocoa/Cocoa.h>
 #import "library.h"
@@ -9,13 +10,18 @@ typedef NS_ENUM(NSInteger, SRAppState) {
   SRAppStateRunning,     // window shown
 };
 
+// The launcher acts on an app in one of its profiles: `profile` nil is its default data container.
 @protocol SRLauncherDelegate <NSObject>
-- (void)launchApp:(SRAppInfo *)app;           // launches, or brings the running instance to the front
-- (void)relaunchApp:(SRAppInfo *)app;         // quits the running instance (if any), then launches
-- (SRAppState)stateForApp:(SRAppInfo *)app;
-- (void)quitApp:(SRAppInfo *)app;
-- (void)showLogForApp:(SRAppInfo *)app;
-- (void)resetDataForApp:(SRAppInfo *)app;      // deletes its data container (the app isn't running)
+- (void)launchApp:(SRAppInfo *)app profile:(NSString *)profile;     // launches, or brings the running instance to the front
+- (void)relaunchApp:(SRAppInfo *)app profile:(NSString *)profile;   // quits the running instance (if any), then launches
+- (SRAppState)stateForApp:(SRAppInfo *)app profile:(NSString *)profile;
+- (void)quitApp:(SRAppInfo *)app profile:(NSString *)profile;
+- (void)showLogForApp:(SRAppInfo *)app profile:(NSString *)profile;
+- (void)resetDataForApp:(SRAppInfo *)app profile:(NSString *)profile;   // deletes that data container (the app isn't running in it)
+// Deletes one of its profiles (not the default one): its data container and launch options. Not while it runs in it.
+- (void)deleteProfile:(NSString *)profile ofApp:(SRAppInfo *)app;
+// Its running instances (launching ones too) by profile, "default" for its default container: their pids.
+- (NSDictionary<NSString *, NSArray<NSNumber *> *> *)instancesOfApp:(SRAppInfo *)app;
 @end
 
 @interface SRLauncher : NSObject
@@ -26,6 +32,6 @@ typedef NS_ENUM(NSInteger, SRAppState) {
 - (void)openPaths:(NSArray<NSString *> *)paths;
 - (void)addAppWithPanel;
 - (void)addXcodeBuilds;
-// The Launch With… sheet for `app` on the launcher window; Launch saves its options and (re)launches the app.
-- (void)showLaunchOptionsForApp:(SRAppInfo *)app;
+// The Launch With… sheet for `app`'s `profile` on the launcher window; Launch saves its options and (re)launches it.
+- (void)showLaunchOptionsForApp:(SRAppInfo *)app profile:(NSString *)profile;
 @end

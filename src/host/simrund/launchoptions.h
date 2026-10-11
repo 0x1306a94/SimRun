@@ -1,5 +1,5 @@
 // launchoptions.h — an app's launch settings, edited in the launcher's Launch With… sheet and kept in user defaults per
-// app path; every launch from the launcher uses them. Besides the runtime, device, arguments and environment variables,
+// app path and profile (each of an app's data containers has its own); every launch from the launcher uses them. Besides the runtime, device, arguments and environment variables,
 // the switches are SimRun's own environment variables set to 1 (LOCALE_DISABLE, HID_VERBOSE, ...; docs/reference.md).
 #pragma once
 #import <Foundation/Foundation.h>
@@ -14,9 +14,11 @@
 @property (copy) NSString *deviceType;     // a device type identifier; nil: the runtime's default (environment.h)
 @property (readonly) NSMutableArray<SRLaunchItem *> *arguments, *environment;
 @property (readonly) NSMutableSet<NSString *> *switches;
-+ (instancetype)optionsForAppAtPath:(NSString *)path;   // the saved ones, or the defaults
-+ (void)removeOptionsForAppAtPath:(NSString *)path;
-- (void)saveForAppAtPath:(NSString *)path;              // posts SRLibraryDidChangeNotification
+// The saved ones of the app's `profile` (nil: its default container), or the defaults.
++ (instancetype)optionsForAppAtPath:(NSString *)path profile:(NSString *)profile;
++ (void)removeOptionsForAppAtPath:(NSString *)path;      // every profile's
++ (void)removeOptionsForAppAtPath:(NSString *)path profile:(NSString *)profile;
+- (void)saveForAppAtPath:(NSString *)path profile:(NSString *)profile;   // posts SRLibraryDidChangeNotification
 // The enabled arguments, each split into words as a shell would ("quotes", 'quotes' and \ escapes).
 - (NSArray<NSString *> *)launchArguments;
 // The switches (=1), then the enabled environment variables.
