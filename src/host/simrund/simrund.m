@@ -940,6 +940,10 @@ int main(int argc, char **argv) {
     else for (int i = 1; i < argc; i++)   // GUI: app bundles to open; skip LaunchServices/AppKit flags (-psn_…, -NSFoo YES)
       if (argv[i][0] == '-') { if (strncmp(argv[i], "-psn_", 5) && i + 1 < argc && argv[i + 1][0] != '-') i++; }
       else [rest addObject:[@(argv[i]) stringByStandardizingPath]];
+    // After a crash AppKit asks whether to reopen windows, in a modal alert that a headless server shows no one and
+    // waits on forever (simrun then can't connect). -ApplePersistenceIgnoreState YES, as if passed on the command line.
+    if (mode == SRModeServe)
+      [NSUserDefaults.standardUserDefaults setVolatileDomain:@{ @"ApplePersistenceIgnoreState": @YES } forName:NSArgumentDomain];
     NSApplication *app = [NSApplication sharedApplication];
     app.activationPolicy = NSApplicationActivationPolicyRegular;
     SRServer *server = [[SRServer alloc] initWithMode:mode args:rest];
