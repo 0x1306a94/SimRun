@@ -63,6 +63,12 @@ app process                                                         simrund (mac
 
 ## Not supported
 
+- Panels from a SimRun whose bundle was rebuilt (or replaced) after it started. macOS runs open and save panels in a
+  service that checks the app asking against its bundle on disk, and turns the old SimRun away (AppKit logs an error
+  obtaining an endpoint for `com.apple.view-bridge`; the app's picker saw its connection interrupted). SRDocumentPickerHost
+  notices the executable is no longer the one it started from and answers with an error saying to reopen SimRun; the
+  picker cancels.
+
 - File providers (iCloud Drive, third-party providers' browsing UI): the panel shows the Mac's file system, and iCloud
   Drive only as the Mac has it.
 - `UIDocumentBrowserViewController` (a document-based app's browser) is a separate remote UI, not covered (untested).

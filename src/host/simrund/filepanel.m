@@ -2,6 +2,7 @@
 #import "filepanel.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <xpc/xpc.h>
+#include <sys/stat.h>
 #include "docpicker.h"
 
 xpc_endpoint_t xpc_endpoint_create(xpc_connection_t);
@@ -38,10 +39,24 @@ static NSArray<UTType *> *AllowedTypes(NSArray<NSString *> *identifiers, NSArray
   NSWindow * (^_windowForPid)(pid_t);
   xpc_connection_t _listener;
   NSMutableDictionary<NSNumber *, NSSavePanel *> *_panels;   // by app pid: the panel it is choosing with
+  struct stat _executable;                                    // SimRun's executable when it started
+}
+
+// Open and save panels run in a macOS service that checks the app asking for one against its bundle on disk. Once
+// SimRun.app has been rebuilt under a running SimRun, the service turns that SimRun away (AppKit logs "an error occurred
+// while attempting to obtain endpoint for listener 'com.apple.view-bridge'") and the app's picker sees its connection
+// interrupted. Nothing short of reopening SimRun fixes that, so say so.
+- (BOOL)bundleReplaced {
+  struct stat now;
+  return stat(NSBundle.mainBundle.executablePath.fileSystemRepresentation, &now) != 0
+      || now.st_ino != _executable.st_ino || now.st_dev != _executable.st_dev;
 }
 
 - (instancetype)initWithWindowForPid:(NSWindow * (^)(pid_t))windowForPid {
-  if ((self = [super init])) { _windowForPid = [windowForPid copy]; _panels = [NSMutableDictionary dictionary]; }
+  if ((self = [super init])) {
+    _windowForPid = [windowForPid copy]; _panels = [NSMutableDictionary dictionary];
+    stat(NSBundle.mainBundle.executablePath.fileSystemRepresentation, &_executable);
+  }
   return self;
 }
 
@@ -78,6 +93,12 @@ static NSArray<UTType *> *AllowedTypes(NSArray<NSString *> *identifiers, NSArray
 
 - (void)choose:(xpc_object_t)m reply:(xpc_object_t)reply peer:(xpc_connection_t)peer pid:(pid_t)pid {
   if (_panels[@(pid)]) { xpc_dictionary_set_string(reply, "error", "a panel is already open"); xpc_connection_send_message(peer, reply); return; }
+  if ([self bundleReplaced]) {
+    static const char *why = "SimRun.app was rebuilt or replaced after this SimRun started, and macOS no longer shows its "
+                             "open and save panels: quit and reopen SimRun (simrun stop)";
+    fprintf(stderr, "[simrund] no file panel for pid %d: %s\n", pid, why);
+    xpc_dictionary_set_string(reply, "error", why); xpc_connection_send_message(peer, reply); return;
+  }
   const char *kind = xpc_dictionary_get_string(m, "panel"), *prompt = xpc_dictionary_get_string(m, "prompt");
   const char *directory = xpc_dictionary_get_string(m, "directory"), *message = xpc_dictionary_get_string(m, "message");
   NSSavePanel *panel;
