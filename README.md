@@ -167,7 +167,12 @@ with no apps running.
   simrun eval MyApp --snapshot 'await app.getByRole("button", { name: "Sign In" }).tap()'
   ```
 
-  See [scripting.md](docs/scripting.md) for what scripts can do.
+  See [scripting.md](docs/scripting.md) for what scripts can do. To teach your coding agent how to use it, install
+  the skill that comes with SimRun (for Claude Code; `simrun skill` prints it for other agents):
+
+  ```bash
+  simrun skill install
+  ```
 - **Manage the background SimRun** with `simrun status`, `simrun stop` and `simrun log`. The log is the first place
   to look when an app fails to start. `simrun help` lists every command.
 

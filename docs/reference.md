@@ -15,6 +15,7 @@ over its socket; `run`, `profiles`, `runtimes` and `devices` start SimRun headle
 | `simrun profiles [<bundle ID \| Sim.app>]` | Apps' data containers: `default` and their profiles |
 | `simrun runtimes` | The installed iOS runtimes (`*`: SimRun's) |
 | `simrun devices [-r <runtime>]` | A runtime's device types (`*`: the default) |
+| `simrun skill [path \| install [--project \| --dir <dir>]]` | The agent skill for `simrun eval` (`skills/simrun`, carried in SimRun.app): print its SKILL.md; print its directory; or copy it to `~/.claude/skills/simrun` (`$CLAUDE_CONFIG_DIR/skills` if set), `--project` to `./.claude/skills/simrun`, `--dir` to `<dir>/simrun` for other agents. A copy doesn't follow SimRun's updates: install again after updating. It replaces only a directory that holds its own skill, never a symbolic link |
 | `simrun status \| stop \| log` | Whether SimRun is running; quit it and its apps; follow its log (`~/Library/Logs/SimRun/simrund.log`) |
 | `tools/crash.py <procname> [n]` | Print the latest crash report backtrace for that process |
 

@@ -49,6 +49,11 @@ Error: tap: timed out after 1000 ms waiting for getByRole('button', { name: 'Jmp
 `tests/scripts/showcase.js` and `tests/scripts/sui.js` drive the Showcase and SwiftUI test apps through most of the
 API (`simrun eval Showcase -f tests/scripts/showcase.js`; exit status 1 at the first failing step).
 
+For coding agents there is a skill, `skills/simrun`: how to launch an app and wait for it, the snapshot → act →
+`expect` loop, which locators to prefer, how this differs from Playwright, and what each error means. SimRun.app
+carries it; `simrun skill install` copies it to `~/.claude/skills` for Claude Code (`--project` for the current
+project, `--dir` for other agents), and `simrun skill` prints it.
+
 ## What a script is
 
 - The body of an async function: `await` works at top level. A script that is one expression has that value; a longer

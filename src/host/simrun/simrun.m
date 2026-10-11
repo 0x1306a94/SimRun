@@ -42,7 +42,11 @@ static const char kUsage[] =
   "  devices [-r <runtime>]     a runtime's device types (* = the default)\n"
   "  status                     whether SimRun is running\n"
   "  stop                       quit SimRun and every app in it\n"
-  "  log                        follow SimRun's log (~/Library/Logs/SimRun/simrund.log)\n";
+  "  log                        follow SimRun's log (~/Library/Logs/SimRun/simrund.log)\n"
+  "  skill [path | install [--project | --dir <dir>]]\n"
+  "                             the skill that teaches coding agents to drive apps with simrun eval: print it,\n"
+  "                             print its directory, or install it for Claude Code in ~/.claude/skills/simrun\n"
+  "                             (--project: ./.claude/skills/simrun; --dir: <dir>/simrun, for other agents)\n";
 
 static int Fail(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
 static int Fail(NSString *fmt, ...) {
@@ -61,18 +65,27 @@ static int TryConnect(const char *path) {
   close(s); return -1;
 }
 
-// The SimRun.app executable: $SIMRUN_SERVER, else inside the bundle we live in (Contents/Helpers/simrun), else
-// build/SimRun.app next to build/bin/simrun.
+// Our SimRun.app: the bundle we live in (Contents/Helpers/simrun), else build/SimRun.app next to build/bin/simrun.
+// nil if there is neither.
+static NSString *OwnApp(void) {
+  char exe[PATH_MAX], real[PATH_MAX]; uint32_t len = sizeof exe;
+  _NSGetExecutablePath(exe, &len); if (!realpath(exe, real)) strlcpy(real, exe, sizeof real);
+  NSString *dir = @(dirname(real));
+  for (NSString *rel in @[ @"../..", @"../SimRun.app" ]) {
+    NSString *app = [dir stringByAppendingPathComponent:rel].stringByStandardizingPath;
+    if (access([app stringByAppendingPathComponent:@"Contents/MacOS/SimRun"].fileSystemRepresentation, X_OK) == 0) return app;
+  }
+  return nil;
+}
+
+// The SimRun.app executable: $SIMRUN_SERVER, else our SimRun.app's.
 static int FindServer(char *server, size_t n) {
   const char *o = getenv("SIMRUN_SERVER");
   if (o) { snprintf(server, n, "%s", o); return access(server, X_OK); }
-  char exe[PATH_MAX], real[PATH_MAX]; uint32_t len = sizeof exe;
-  _NSGetExecutablePath(exe, &len); if (!realpath(exe, real)) strlcpy(real, exe, sizeof real);
-  char *dir = dirname(real);
-  snprintf(server, n, "%s/../MacOS/SimRun", dir);
-  if (access(server, X_OK) == 0) return 0;
-  snprintf(server, n, "%s/../SimRun.app/Contents/MacOS/SimRun", dir);
-  return access(server, X_OK);
+  NSString *app = OwnApp();
+  if (!app) return -1;
+  snprintf(server, n, "%s/Contents/MacOS/SimRun", app.fileSystemRepresentation);
+  return 0;
 }
 
 // Start `SimRun --serve` as a detached session leader, logging to ~/Library/Logs/SimRun/simrund.log. It gets our
@@ -365,6 +378,66 @@ static int Stop(NSArray<NSString *> *args) {
   return 0;
 }
 
+// A directory holds SimRun's skill if its SKILL.md says `name: simrun` (so `skill install` replaces only its own).
+static BOOL IsSimRunSkill(NSString *dir) {
+  NSString *s = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:@"SKILL.md"] encoding:NSUTF8StringEncoding error:nil];
+  return [s hasPrefix:@"---\n"] && [s containsString:@"\nname: simrun\n"];
+}
+
+// `skill`: the agent skill in SimRun.app (skills/simrun in the repo): print it, say where it is, or copy it to where
+// coding agents look for skills. A copy doesn't follow SimRun's updates, so install says to run it again.
+static int Skill(NSArray<NSString *> *args) {
+  NSFileManager *fm = NSFileManager.defaultManager;
+  NSString *app = OwnApp();
+  NSString *src = [app stringByAppendingPathComponent:@"Contents/Resources/skills/simrun"];
+  if (!src || !IsSimRunSkill(src)) return Fail(@"the skill isn't in %@", app ?: @"SimRun.app (not found)");
+  NSString *sub = args.firstObject ?: @"print";
+  NSMutableArray<NSString *> *rest = [args mutableCopy];
+  if (rest.count) [rest removeObjectAtIndex:0];
+
+  if ([sub isEqualToString:@"print"] && !rest.count) {
+    NSString *text = [NSString stringWithContentsOfFile:[src stringByAppendingPathComponent:@"SKILL.md"] encoding:NSUTF8StringEncoding error:nil];
+    fputs(text.UTF8String, stdout);
+    Print([NSString stringWithFormat:@"\n(The files linked above are in %@.)", src]);
+    return 0;
+  }
+  if ([sub isEqualToString:@"path"] && !rest.count) { Print(src); return 0; }
+  if (![sub isEqualToString:@"install"]) return Usage();
+
+  BOOL project = [rest containsObject:@"--project"];
+  [rest removeObject:@"--project"];
+  NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *positional = [NSMutableArray array];
+  NSString *err = ParseOptions(rest, @{ @"--dir": @"dir" }, NO, o, positional);
+  if (err) { Fail(@"%@", err); return Usage(); }
+  if (positional.count || (project && o[@"dir"])) return Usage();
+  // Claude Code's own directory: $CLAUDE_CONFIG_DIR, else ~/.claude with ~ from $HOME, as Claude Code reads it
+  NSDictionary<NSString *, NSString *> *env = NSProcessInfo.processInfo.environment;
+  NSString *claude = env[@"CLAUDE_CONFIG_DIR"].length ? AbsolutePath(env[@"CLAUDE_CONFIG_DIR"])
+                   : [(env[@"HOME"].length ? env[@"HOME"] : NSHomeDirectory()) stringByAppendingPathComponent:@".claude"];
+  NSString *skills = o[@"dir"] ? AbsolutePath(o[@"dir"])
+                   : project ? [fm.currentDirectoryPath stringByAppendingPathComponent:@".claude/skills"]
+                   : [claude stringByAppendingPathComponent:@"skills"];
+  NSString *dest = [skills stringByAppendingPathComponent:@"simrun"], *shown = dest.stringByAbbreviatingWithTildeInPath;
+  // attributesOfItemAtPath doesn't follow links: a link (to a checkout's skills/simrun, say) is the user's to manage
+  NSDictionary *attrs = [fm attributesOfItemAtPath:dest error:nil];
+  if ([attrs.fileType isEqualToString:NSFileTypeSymbolicLink]) return Fail(@"%@ is a symbolic link; leaving it alone", shown);
+  if (attrs && !IsSimRunSkill(dest)) return Fail(@"%@ exists and isn't SimRun's skill; leaving it alone", shown);
+
+  // copy next to it, then swap it in
+  NSString *tmp = [skills stringByAppendingPathComponent:@".simrun.new"];
+  NSError *e = nil;
+  [fm removeItemAtPath:tmp error:nil];
+  if (![fm createDirectoryAtPath:skills withIntermediateDirectories:YES attributes:nil error:&e] || ![fm copyItemAtPath:src toPath:tmp error:&e])
+    return Fail(@"cannot copy the skill to %@: %@", skills.stringByAbbreviatingWithTildeInPath, e.localizedDescription);
+  if ((attrs && ![fm removeItemAtPath:dest error:&e]) || ![fm moveItemAtPath:tmp toPath:dest error:&e]) {
+    [fm removeItemAtPath:tmp error:nil];
+    return Fail(@"cannot replace %@: %@", shown, e.localizedDescription);
+  }
+  Print([NSString stringWithFormat:@"%@ the simrun skill in %@. Run this again after updating SimRun to keep it in step.",
+                                   attrs ? @"Updated" : @"Installed", shown]);
+  return 0;
+}
+
 static int Log(NSArray<NSString *> *args) {
   if (args.count) return Usage();
   char log[1024]; simrund_log_path(log, sizeof log);
@@ -389,6 +462,7 @@ int main(int argc, char **argv) {
     if ([cmd isEqualToString:@"status"]) return Status(args);
     if ([cmd isEqualToString:@"stop"]) return Stop(args);
     if ([cmd isEqualToString:@"log"]) return Log(args);
+    if ([cmd isEqualToString:@"skill"]) return Skill(args);
     if ([cmd isEqualToString:@"help"] || [cmd isEqualToString:@"-h"] || [cmd isEqualToString:@"--help"]) { fputs(kUsage, stdout); return 0; }
     Fail(@"unknown command %@", cmd);
     return Usage();
