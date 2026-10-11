@@ -18,7 +18,9 @@ simrun (CLI) ───unix socket──▶ build/bin/simrund   macOS AppKit serv
                                          └─ each app (bootstrap port = its namespace), with DYLD_INSERT_LIBRARIES =
                                               rshim.dylib    Metal shader-compiler XPC service spawning, bootstrap fallbacks,
                                                              the Mac's language & region (locale, languages, 24-hour
-                                                             time, first weekday...) into the device's global preferences
+                                                             time, first weekday...) into the device's global preferences,
+                                                             the app's HOME as its sandbox container
+                                                             (sandbox_container_path_for_pid)
                                               glue.dylib     starts the in-process CA render server (CAWindowServer) and hosts the
                                                              scene's layers on the display (SpringBoard's job)
                                               scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene)

@@ -4,6 +4,7 @@
 //    host (render/gpuhost.m) via mach_ports_register slots 1/2.
 //  * com.apple.CARenderServer bootstrap name -> in-process CA render server port (bootstrap_check_in/look_up).
 //  * the Mac's language & region settings -> the device's global preferences (SIMRUN_HOST_INTL).
+//  * sandbox_container_path_for_pid(self) -> the app's HOME (its data container).
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
 #include <xpc/xpc.h>
@@ -248,7 +249,26 @@ static void sync_host_intl(void) {
       [remove componentsJoinedByString:@","].UTF8String);
 }
 
+// ---------- the app's sandbox container ----------
+// Apps run unsandboxed, so the kernel has no container for them and sandbox_container_path_for_pid() fails. Apple's apps
+// ask it where their container is (Safari's SafariCore, then LaunchServices' dataContainerURL, which is nil here too)
+// and crash on the nil path. The container is the app's HOME (its data container, set by SimRun), so answer that for
+// our own process.
+int sandbox_container_path_for_pid(pid_t pid, char *buf, size_t size);
+static int my_sandbox_container_path_for_pid(pid_t pid, char *buf, size_t size) {
+  const char *home = getenv("HOME");
+  if ((pid == 0 || pid == getpid()) && home && *home) {
+    size_t n = strlen(home);
+    if (!buf || n >= size) { errno = ERANGE; return -1; }
+    memcpy(buf, home, n + 1);
+    LOG("sandbox_container_path_for_pid(%d) -> %s\n", pid, home);
+    return 0;
+  }
+  return sandbox_container_path_for_pid(pid, buf, size);
+}
+
 __attribute__((used, section("__DATA,__interpose"))) static struct { const void *n, *o; } interposers[] = {
+  { (const void *)my_sandbox_container_path_for_pid, (const void *)sandbox_container_path_for_pid },
   { (const void *)my_xpc_connection_create_mach_service, (const void *)sr_xpc_create_mach_service },
   { (const void *)my_bootstrap_check_in, (const void *)bootstrap_check_in },
   { (const void *)my_xpc_connection_create, (const void *)sr_xpc_connection_create },
