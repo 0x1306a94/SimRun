@@ -1,5 +1,6 @@
 // simapp — client for simrund: launch a sim app in the shared server, starting the server if needed.
 // usage: simapp <sim-binary> [args...]   (run with the simrun.sh environment; scripts/simapp.sh does this)
+// SIMRUN_PROFILE=<name> in the environment runs it in that profile: another data container of the app's.
 // Behaves like running the app directly: its stdout/stderr go to this terminal, the exit status is the app's,
 // and Ctrl-C (or killing simapp) terminates the app.
 #include "simrund_proto.h"
@@ -50,7 +51,8 @@ static int start_server(void) {
   int ne = 0; while (environ[ne]) ne++;
   char **env = calloc(ne + 1, sizeof(char *)); int k = 0;
   for (int i = 0; i < ne; i++)
-    if (strncmp(environ[i], "DYLD_INSERT_LIBRARIES=", 22) && strncmp(environ[i], "SIMRUN_TITLE=", 13)) env[k++] = environ[i];
+    if (strncmp(environ[i], "DYLD_INSERT_LIBRARIES=", 22) && strncmp(environ[i], "SIMRUN_TITLE=", 13) &&
+        strncmp(environ[i], "SIMRUN_PROFILE=", 15)) env[k++] = environ[i];
   char *argv[] = { server, "--serve", NULL };
   pid_t pid; int r = posix_spawn(&pid, server, &fa, &at, argv, env);
   posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&at); free(env);

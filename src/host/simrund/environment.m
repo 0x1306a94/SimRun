@@ -281,11 +281,27 @@ static NSArray<NSString *> *ScannedDeviceTypePaths(NSString *version) {
   if (![ident isKindOfClass:NSString.class] || !ident.length) ident = executable.lastPathComponent;
   return [ident stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
 }
-+ (NSString *)containerPathForIdentifier:(NSString *)identifier {
-  return [[[self dataDirectory] stringByAppendingPathComponent:@"Containers/Data/Application"] stringByAppendingPathComponent:identifier];
++ (NSString *)normalizedProfile:(NSString *)name {
+  return !name.length || [name isEqualToString:@"default"] ? nil : name;
 }
-+ (NSString *)createContainerForIdentifier:(NSString *)identifier {
-  NSString *c = [self containerPathForIdentifier:identifier];
++ (NSString *)problemWithProfileName:(NSString *)name {
+  if (!(name = [self normalizedProfile:name])) return nil;
+  NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:
+      @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._- "] invertedSet];
+  if (name.length > 64 || [name rangeOfCharacterFromSet:bad].location != NSNotFound || [name hasPrefix:@"."] ||
+      [name hasPrefix:@" "] || [name hasSuffix:@" "])
+    return [NSString stringWithFormat:@"Invalid profile name \"%@\": use up to 64 letters, digits, spaces, '.', '_' and '-', "
+                                       "not starting with '.' or a space", name];
+  return nil;
+}
++ (NSString *)containerPathForIdentifier:(NSString *)identifier profile:(NSString *)profile {
+  NSString *containers = [[self dataDirectory] stringByAppendingPathComponent:@"Containers/Data"];
+  if ((profile = [self normalizedProfile:profile]))
+    return [[[containers stringByAppendingPathComponent:@"Profiles"] stringByAppendingPathComponent:identifier] stringByAppendingPathComponent:profile];
+  return [[containers stringByAppendingPathComponent:@"Application"] stringByAppendingPathComponent:identifier];
+}
++ (NSString *)createContainerForIdentifier:(NSString *)identifier profile:(NSString *)profile {
+  NSString *c = [self containerPathForIdentifier:identifier profile:profile];
   for (NSString *sub in @[ @"Documents", @"Library/Caches", @"Library/Preferences", @"tmp" ])
     [NSFileManager.defaultManager createDirectoryAtPath:[c stringByAppendingPathComponent:sub] withIntermediateDirectories:YES attributes:nil error:nil];
   return c;

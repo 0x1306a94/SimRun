@@ -4,8 +4,8 @@
 
 | Command | Effect |
 |---|---|
-| `scripts/simapp.sh <Sim.app \| sim-binary> [args…]` | Run an app in the shared SimRun server (started headless if needed); output goes to the terminal, exits with the app's status |
-| `scripts/simrund.sh status \| stop \| log` | Show whether the server is running, stop it, or follow its log (`~/Library/Logs/SimRun/simrund.log`) |
+| `scripts/simapp.sh [--profile <name>] <Sim.app \| sim-binary> [args…]` | Run an app in the shared SimRun server (started headless if needed); output goes to the terminal, exits with the app's status. `--profile` (`-p`): run it with that profile's data container ([architecture.md](architecture.md#data-containers)) |
+| `scripts/simrund.sh status \| stop \| log \| profiles [bundle id]` | Show whether the server is running, stop it, follow its log (`~/Library/Logs/SimRun/simrund.log`), or list apps' profiles |
 | `scripts/simrun.sh <sim-binary> [args…]` | Run any sim binary with the environment launchd_sim would set, without the SimRun server (HOME = the shared data directory) |
 | `scripts/capture.sh <pgrep -f pattern> <out.png> [window title]` | Screenshot a process's largest (or titled) window |
 | `scripts/devicetype.py <RuntimeRoot> [--list]` | The device type `simrun.sh` simulates on that runtime, as variables; `--list`: the ones it supports (default marked `*`) |
@@ -18,6 +18,7 @@
 | `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>` | Use this iOS Simulator runtime instead of the one chosen in SimRun ▸ iOS Runtime (default: the newest installed). For SimRun (and `simrun.sh`): its own runtime; in a `simapp` client's environment: that app's runtime |
 | `SIMRUN_DEVICE=<identifier or name>` | Simulate this device type (e.g. `"iPhone SE (3rd generation)"`) when the runtime supports it, instead of the runtime's default ([architecture.md](architecture.md#devices)). For SimRun: the default for launcher launches; for `simrun.sh` / `simapp.sh`: that app's device. `scripts/devicetype.py <RuntimeRoot> --list` lists them |
 | `SIMRUN_DATA=dir` | Shared data directory (default `~/Library/Developer/SimRun/data`) |
+| `SIMRUN_PROFILE=name` | In a `simapp` client's environment (what `simapp.sh --profile` sets): run the app in that profile, another data container of the app's; `default` or empty: its default container |
 | `SIMNS_QUIET=1` | Hide simns's log (in the server log, `simrund.sh log`, for shared launches) of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
 | `SIMNS_DAEMONS=a,b` / `none` | Labels of real sim daemons simns may launch on demand |
 | `SIMAPP_EXTRA_INSERT=x.dylib` | Inject an extra sim dylib into the app |

@@ -225,7 +225,7 @@
 - (void)quitSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate quitApp:a]; }
 - (void)logSelected:(id)sender { SRAppInfo *a = [self selectedApp]; if (a) [_delegate showLogForApp:a]; }
 - (NSString *)containerOfApp:(SRAppInfo *)a {
-  return [SREnvironment containerPathForIdentifier:[SREnvironment containerIdentifierForExecutable:a.executablePath]];
+  return [SREnvironment containerPathForIdentifier:[SREnvironment containerIdentifierForExecutable:a.executablePath] profile:nil];
 }
 - (void)containerSelected:(id)sender {
   SRAppInfo *a = [self selectedApp];

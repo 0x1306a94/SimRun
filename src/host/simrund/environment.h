@@ -58,10 +58,15 @@
 // preferences, app group containers, daemon state.
 + (NSString *)dataDirectory;
 // Each app's own data container — its HOME, like an iOS sandbox container: <data>/Containers/Data/Application/<id>,
-// <id> being the app's bundle identifier (the executable's name for a bare binary).
+// <id> being the app's bundle identifier (the executable's name for a bare binary). An app can also run in other
+// profiles, each its own container of that app (<data>/Containers/Data/Profiles/<id>/<profile>), so it can run several
+// times at once with separate data; profile nil is the default container. normalizedProfile: nil for nil, "" and
+// "default", else the name; problemWithProfileName: why it can't be a profile name (it names a directory), or nil.
++ (NSString *)normalizedProfile:(NSString *)name;
++ (NSString *)problemWithProfileName:(NSString *)name;
 + (NSString *)containerIdentifierForExecutable:(NSString *)executable;
-+ (NSString *)containerPathForIdentifier:(NSString *)identifier;
-+ (NSString *)createContainerForIdentifier:(NSString *)identifier;   // the path, with Documents/, Library/, tmp/ made
++ (NSString *)containerPathForIdentifier:(NSString *)identifier profile:(NSString *)profile;
++ (NSString *)createContainerForIdentifier:(NSString *)identifier profile:(NSString *)profile;   // the path, with Documents/, Library/, tmp/ made
 // `base` ("KEY=VALUE" strings, e.g. this process's environment) with `overrides` applied.
 + (NSArray<NSString *> *)environment:(NSArray<NSString *> *)base withOverrides:(NSDictionary<NSString *, NSString *> *)overrides;
 + (NSArray<NSString *> *)processEnvironment;

@@ -98,7 +98,16 @@ caches, cookies, WebKit data — and tmp) is `~/Library/Developer/SimRun/data/Co
 (`SIMULATOR_SHARED_RESOURCES_DIRECTORY`): the keychain, app group containers (`Containers/Shared/AppGroup/`, served by
 the runtime's containermanagerd to apps entitled to the group) and the shared daemons' state. In the launcher, an
 app's menu has App Container ▸ Show in Finder / Reset… (deletes the container; keychain items and app group
-containers are kept). Containers are a convention, not a sandbox: apps run unsandboxed as you. `scripts/simrun.sh`
+containers are kept). Containers are a convention, not a sandbox: apps run unsandboxed as you.
+
+An app can have more containers than its default one: **profiles**. `scripts/simapp.sh --profile <name>` (or
+`SIMRUN_PROFILE=<name>` in a `simapp` client's environment) runs the app with the container of that profile,
+`data/Containers/Data/Profiles/<bundle id>/<name>/`, created on first use; no profile (or `default`) is the default
+container. Profiles are per app: two apps' profiles of the same name have nothing to do with each other. So one app
+can run several times at once, one instance per profile, each with its own documents, preferences and caches; each
+gets its own window, titled "<app> — <profile>" (and log). Everything outside the container is still shared between
+an app's profiles: keychain items, app group containers. The launcher shows and acts on the default profile; ⌘R in a
+profile's window relaunches it in that profile. `scripts/simrund.sh profiles [bundle id]` lists apps' profiles. `scripts/simrun.sh`
 on its own (no SimRun server) still runs a binary with the shared directory as HOME.
 
 ## Layout
