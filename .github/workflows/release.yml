@@ -10,15 +10,13 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
 
-      # The app icon is an Icon Composer document, which needs Xcode 26 or later; use the newest Xcode on the runner.
       - name: Select Xcode
         run: |
-          XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)
-          sudo xcode-select -s "$XCODE"
+          sudo xcode-select -s /Applications/Xcode_27.0.app
           xcodebuild -version
 
       # Tags like v1.2 or 1.2.3 become the app's version; the run number becomes its build number.
