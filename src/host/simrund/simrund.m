@@ -449,9 +449,15 @@ static BOOL ProcessGone(pid_t pid) {
   char *argv[] = { (char *)simns.UTF8String, "--serve", NULL };
   mach_port_t reg[1] = { ctl };
   mach_ports_register(mach_task_self(), reg, 1);   // simns finds us in slot 0 and says hello
+  // simns (and the daemons it starts) get our stdio and none of our other descriptors
+  posix_spawnattr_t at; posix_spawnattr_init(&at);
+  posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT);
+  posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
+  for (int i = 0; i < 3; i++) posix_spawn_file_actions_addinherit_np(&fa, i);
   pid_t pid = 0;
-  int r = posix_spawn(&pid, argv[0], NULL, NULL, argv, cenv);
+  int r = posix_spawn(&pid, argv[0], &fa, &at, argv, cenv);
   mach_ports_register(mach_task_self(), NULL, 0);
+  posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&at);
   free(cenv);
   if (r) {
     LOG(@"spawn %@: %s", simns, strerror(r));

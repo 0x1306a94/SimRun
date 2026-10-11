@@ -82,7 +82,7 @@ static int StartServer(void) {
   posix_spawn_file_actions_addopen(&fa, 1, log, O_WRONLY | O_CREAT | O_APPEND, 0644);
   posix_spawn_file_actions_adddup2(&fa, 1, 2);
   posix_spawnattr_t at; posix_spawnattr_init(&at);
-  posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSID);
+  posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT);   // nothing of ours but stdio
   int ne = 0; while (environ[ne]) ne++;
   char **env = calloc(ne + 1, sizeof(char *)); int k = 0;
   for (int i = 0; i < ne; i++) if (strncmp(environ[i], "DYLD_INSERT_LIBRARIES=", 22)) env[k++] = environ[i];
@@ -100,7 +100,7 @@ static int Connect(BOOL start) {
   if (s >= 0 || !start) return s;
   // serialize server start-up between concurrent clients
   char lockp[1100]; snprintf(lockp, sizeof lockp, "%s.lock", path);
-  int lk = open(lockp, O_CREAT | O_RDWR, 0600);
+  int lk = open(lockp, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (lk >= 0) flock(lk, LOCK_EX);
   s = TryConnect(path);
   if (s < 0 && StartServer() == 0)

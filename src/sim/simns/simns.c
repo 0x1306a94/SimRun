@@ -241,8 +241,11 @@ static void ensure_daemon(const char *name) {
     char svc[300]; snprintf(svc, sizeof svc, "XPC_SERVICE_NAME=%s", d->label); env[k++] = svc;
     posix_spawnattr_t attr; posix_spawnattr_init(&attr);
     posix_spawnattr_setspecialport_np(&attr, gNS, TASK_BOOTSTRAP_PORT);
-    int r = posix_spawn(&d->pid, d->argv[0], NULL, &attr, d->argv, env);
-    posix_spawnattr_destroy(&attr); free(env);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);   // stdio only (not our log)
+    posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
+    for (int i = 0; i < 3; i++) posix_spawn_file_actions_addinherit_np(&fa, i);
+    int r = posix_spawn(&d->pid, d->argv[0], &fa, &attr, d->argv, env);
+    posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&attr); free(env);
     if (r) { L("spawn daemon %s failed: %s", d->label, strerror(r)); d->pid = 0; }
     else L("launched %s (pid %d) for %s", d->label, d->pid, name);
   }
@@ -490,7 +493,10 @@ int main(int argc, char **argv) {
 
   posix_spawnattr_t attr; posix_spawnattr_init(&attr);
   posix_spawnattr_setspecialport_np(&attr, gNS, TASK_BOOTSTRAP_PORT);
-  pid_t pid; int r = posix_spawn(&pid, argv[1], NULL, &attr, argv + 1, env);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);   // stdio only (not our log)
+  posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
+  for (int i = 0; i < 3; i++) posix_spawn_file_actions_addinherit_np(&fa, i);
+  pid_t pid; int r = posix_spawn(&pid, argv[1], &fa, &attr, argv + 1, env);
   if (r) { L("spawn %s failed: %s", argv[1], strerror(r)); return 1; }
   L("spawned %s pid %d", argv[1], pid);
   gAppPid = pid; signal(SIGTERM, on_term); signal(SIGINT, on_term); signal(SIGHUP, on_term);

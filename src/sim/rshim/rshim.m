@@ -67,6 +67,10 @@ static mach_port_t spawn_xpc_service(const char *path, pid_t *outPid) {
   mach_port_insert_right(mach_task_self(), rp, rp, MACH_MSG_TYPE_MAKE_SEND);
   posix_spawnattr_t at; posix_spawnattr_init(&at);
   posix_spawnattr_setspecialport_np(&at, rp, TASK_BOOTSTRAP_PORT);
+  // the service keeps the app's stdio and nothing else of its (or SimRun's) descriptors
+  posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT);
+  posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
+  for (int i = 0; i < 3; i++) posix_spawn_file_actions_addinherit_np(&fa, i);
   // the bundle's XPCService.EnvironmentVariables (MTLCompilerService: MallocNanoZone=1), as launchd_sim sets them
   NSString *bundle = @(path).stringByDeletingLastPathComponent;
   NSDictionary *xs = [NSDictionary dictionaryWithContentsOfFile:[bundle stringByAppendingPathComponent:@"Info.plist"]][@"XPCService"];
@@ -96,8 +100,8 @@ static mach_port_t spawn_xpc_service(const char *path, pid_t *outPid) {
   env[k++] = "RSHIM_ROLE=xpcservice";
   char pp[32]; snprintf(pp, sizeof pp, "RSHIM_PARENT=%d", getpid()); env[k++] = pp;
   char *argv[] = { (char *)path, NULL }; pid_t pid;
-  int r = posix_spawn(&pid, path, NULL, &at, argv, env);
-  posix_spawnattr_destroy(&at); free(env);
+  int r = posix_spawn(&pid, path, &fa, &at, argv, env);
+  posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&at); free(env);
   if (r) { fprintf(stderr, "[rshim] spawn %s: %s\n", path, strerror(r)); return MACH_PORT_NULL; }
   // up to 20 s for the listener, but give up as soon as the child dies (then we're called again on the next connection)
   port_rcv_t m = {0}; kern_return_t kr; int st;

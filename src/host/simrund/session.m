@@ -162,10 +162,14 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   char **cargv = calloc(argv.count + 1, sizeof(char *)), **cenv = calloc(env.count + 1, sizeof(char *));
   for (NSUInteger i = 0; i < argv.count; i++) cargv[i] = (char *)argv[i].UTF8String;
   for (NSUInteger i = 0; i < env.count; i++) cenv[i] = (char *)env[i].UTF8String;
+  // the app gets its stdio and nothing else of ours (sockets, the log, clients' connections)
   posix_spawnattr_t attr; posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
   if (bootstrap) posix_spawnattr_setspecialport_np(&attr, bootstrap, TASK_BOOTSTRAP_PORT);
   posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
-  for (int i = 0; i < 3; i++) if (fds[i] >= 0) posix_spawn_file_actions_adddup2(&fa, fds[i], i);
+  for (int i = 0; i < 3; i++)
+    if (fds[i] >= 0) posix_spawn_file_actions_adddup2(&fa, fds[i], i);
+    else posix_spawn_file_actions_addinherit_np(&fa, i);
   if (cwd.length) posix_spawn_file_actions_addchdir_np(&fa, cwd.UTF8String);
   // The app's components find this session's port in mach_ports_lookup()[0]; registered ports are inherited by
   // posix_spawn children. Process-wide, so spawns are serialized on the main thread.

@@ -91,10 +91,14 @@ static pid_t spawn_extension(NSString *exe, NSString *bundleID, mach_port_t *lis
 
   posix_spawnattr_t at; posix_spawnattr_init(&at);
   posix_spawnattr_setspecialport_np(&at, bootstrap_port, TASK_BOOTSTRAP_PORT);
+  // the extension keeps the app's stdio and nothing else of its descriptors
+  posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT);
+  posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
+  for (int i = 0; i < 3; i++) posix_spawn_file_actions_addinherit_np(&fa, i);
   char *argv[] = { (char *)exe.UTF8String, NULL };
   pid_t pid = -1;
-  int r = posix_spawn(&pid, argv[0], NULL, &at, argv, envp);
-  posix_spawnattr_destroy(&at); free(envp);
+  int r = posix_spawn(&pid, argv[0], &fa, &at, argv, envp);
+  posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&at); free(envp);
   if (r) { fprintf(stderr, "[webkit] spawn %s: %s\n", argv[0], strerror(r)); mach_port_destruct(me, hs, -1, 0); return -1; }
 
   port_rcv_t m = {0};
