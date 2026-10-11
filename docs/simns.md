@@ -41,7 +41,7 @@ The control port is also registered as `dev.simrun.simns.control` so an in-app s
 ## On-demand sim daemons
 simns reads $SIMULATOR_ROOT/System/Library/{LaunchDaemons,LaunchAgents}/*.plist. For allow-listed labels
 (env SIMNS_DAEMONS, comma-separated; default com.apple.trustd,com.apple.securityd,com.apple.cfprefsd.xpc.daemon,
-com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd; "none" disables) the first lookup of any of the daemon's
+com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd,com.apple.nsurlsessiond; "none" disables) the first lookup of any of the daemon's
 MachServices pre-creates its ports (lookups succeed immediately, messages queue), then spawns the daemon
 (ProgramArguments rebased into the runtime root, plist EnvironmentVariables, XPC_SERVICE_NAME=label, simns as
 bootstrap). Check-in hands it the queued receive rights. All are SIGTERMed when the app exits or simns is terminated.
@@ -56,6 +56,14 @@ getaddrinfo work without any daemon. notifyd is NOT allow-listed: it needs XPC e
 (aborts "Event publisher error").
 containermanagerd serves app group containers (`containerURL(forSecurityApplicationGroupIdentifier:)`, and cfprefsd
 for group suites) under data/Containers/Shared/AppGroup/ to apps entitled to the group; ~0.4 s on first use.
+nsurlsessiond does background URLSession transfers (`backgroundSessionConfigurationWithIdentifier:`); without it,
+creating a task fails with NSURLErrorDomain -1 ("remote session is unavailable"). It accepts a client only if it
+can tell its bundle ID: from iOS 27 the code signature's identifier (an Xcode build's ad-hoc signature has it),
+before that the `application-identifier` entitlement, which those runtimes also find in the `__TEXT,__entitlements`
+section Xcode gives simulator builds. Its data (`Library/com.apple.nsurlsessiond`, downloads under
+`Library/Caches/com.apple.nsurlsessiond`) is in the shared data directory. Routine 712 (a pid's launchd attributes:
+bundle-id, extension, which libxpc's xpc_connection_copy_bundle_id / xpc_connection_is_extension ask for; nsurlsessiond
+for every client) is answered 113, no attributes, which libxpc takes without logging an error.
 
 ## Shared server mode (simns --serve)
 Used by simrund. simns spawns no app; the host sends SIMNS_MSG_NEW_NS (reply port in msgh_local_port) and gets back

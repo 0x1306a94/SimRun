@@ -3,7 +3,7 @@
 // Serves the launchd XPC-pipe protocol on a port that becomes the app's TASK_BOOTSTRAP_PORT.
 // Sim libxpc only checks that XPC_SIMULATOR_LAUNCHD_NAME is set and then uses the bootstrap special port.
 //   request: msgh_id 0x40000000|routine (wants reply) / 0x10000000|routine, body = serialized xpc dictionary
-//   routines: 204 register {name,port}  206 check_in {name}->{port:recv}  207 look_up {name}->{port}
+//   routines: 204 register {name,port}  206 check_in {name}->{port:recv}  207 look_up {name}->{port}  712 attrs {pid} (none)
 //             804 endpoint lookup {name}->{port}   805 listener check-in {name}->{port:recv}
 // Control port (simns_proto.h) lets the host viewer / app shim register names (e.g. host-side sim2host services).
 // Env: SIMNS_INSERT (DYLD_INSERT_LIBRARIES for the app), SIMNS_HOST_SLOT (mach_ports_lookup slot of host helper;
@@ -132,7 +132,8 @@ static char *gRoot;
 
 static int allowed(const char *label) {
   const char *list = getenv("SIMNS_DAEMONS");
-  if (!list) list = "com.apple.trustd,com.apple.securityd,com.apple.cfprefsd.xpc.daemon,com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd";  // notifyd needs XPC event-publisher routines (crashes)
+  if (!list) list = "com.apple.trustd,com.apple.securityd,com.apple.cfprefsd.xpc.daemon,com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd,"
+                    "com.apple.nsurlsessiond";  // notifyd needs XPC event-publisher routines (crashes)
   if (!strcmp(list, "none")) return 0;
   size_t n = strlen(label);
   for (const char *p = list; (p = strstr(p, label)); p += n)
@@ -342,6 +343,10 @@ static void handle_pipe(mach_msg_header_t *h, pid_t pid) {
       if (reply) xpc_dictionary_set_mach_recv(reply, "port", r);
       break;
     }
+    case 712:   // a process's launchd attributes {pid} -> {attrs}: bundle-id, extension... (xpc_connection_copy_bundle_id,
+                // xpc_connection_is_extension; nsurlsessiond asks for every client). 113 = none, which libxpc takes quietly
+      if (reply) xpc_dictionary_set_int64(reply, "error", 113);
+      break;
     default: {
       char *d = xpc_copy_description(msg);
       L("%-16s %d  routine %u (unhandled) %s", who, pid, routine, d ? d : "");

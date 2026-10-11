@@ -60,6 +60,9 @@ select all) go to the app while one of its windows is key.
 - Rotation: scenes can be rotated ([scenes.md](scenes.md)), but the viewer has no way to rotate and doesn't map
   input into rotated space; `deviceOrientation` and the accelerometer aren't wired.
 - No audio; notifyd is not provided.
+- Background URLSession transfers continue while the app isn't running (nsurlsessiond does them), but the app isn't
+  relaunched when they finish: it gets their events the next time it starts and makes the session. Two profiles of
+  one app running at once share its background sessions (nsurlsessiond knows apps by bundle ID).
 - App extensions and embedded frameworks are untested.
 - No secure paste (`UIPasteControl`) or pasteboard pattern detection ([pasteboard.md](pasteboard.md)).
 - No LaunchServices: UTType knows only the built-in core types.

@@ -71,7 +71,7 @@ under `/Library/Developer/CoreSimulator/Volumes` (disk images), under `/private/
 simctl can't be run. SimRun has a runtime of its own: `SIMRUN_RUNTIME_ROOT`, else the one chosen in **SimRun ▸ iOS Runtime** (a build
 version, `SRRuntimeBuild` in its user defaults), else the newest installed iOS runtime. It is read once at start, so a
 new choice takes effect when SimRun is reopened; the menu says so while the two differ. Its `simns --serve`, and with
-it the shared daemons (cfprefsd, containermanagerd, trustd, securityd), runs from that runtime.
+it the shared daemons (cfprefsd, containermanagerd, trustd, securityd, nsurlsessiond), runs from that runtime.
 
 An app can run on another installed runtime (Launch With… ▸ Info, or `simrun run --runtime`). SimRun then starts a second `simns --serve` from that runtime the first time it is needed, publishes the
 same host services (IOSurface, Metal, pasteboard) in it, and gives the app a namespace there, so an app never talks to
@@ -127,7 +127,7 @@ and `simrun screenshot` take `--profile` to pick one of an app's instances.
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `crash.py` (crash-report backtrace) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `bgdownload` background URLSession, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
 | `docs/` | These write-ups |
 
 ## Building

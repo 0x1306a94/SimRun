@@ -22,7 +22,7 @@ APP   := $(BUILD)/SimRun.app
 CORE  := $(APP) $(BIN)/simrun
 PARTS := $(BIN)/simrund $(BIN)/simrun $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput
-TEST_APPS  := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/Showcase.app
+TEST_APPS  := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/BGDownload.app $(APPS)/Showcase.app
 TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest
 
 .PHONY: all core tools test-apps test-programs tests clean $(APP)
@@ -142,6 +142,13 @@ $(APPS)/DragTest.app: tests/apps/dragtest/main.m tests/apps/dragtest/Info.plist 
 $(APPS)/WebTest.app: tests/apps/webtest/main.m tests/apps/webtest/Info.plist | $(APPS)
 	@mkdir -p $@ && cp tests/apps/webtest/Info.plist $@/
 	$(SIMCC) $< -framework UIKit -framework WebKit -framework QuartzCore -o $@/WebTest
+	@$(SIGN) $@ 2>/dev/null
+
+# BGDownload: a background URLSession download. Like Xcode's simulator builds, its entitlements (application-identifier,
+# which nsurlsessiond takes the client's bundle ID from on iOS 26 and earlier) go in __TEXT,__entitlements.
+$(APPS)/BGDownload.app: tests/apps/bgdownload/main.m tests/apps/bgdownload/Info.plist tests/apps/bgdownload/Entitlements.plist | $(APPS)
+	@mkdir -p $@ && cp tests/apps/bgdownload/Info.plist $@/
+	$(SIMCC) $< -framework UIKit -Wl,-sectcreate,__TEXT,__entitlements,tests/apps/bgdownload/Entitlements.plist -o $@/BGDownload
 	@$(SIGN) $@ 2>/dev/null
 
 # Showcase: a SwiftUI tour of what works under SimRun, with its own Icon Composer icon compiled into Assets.car.
