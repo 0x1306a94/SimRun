@@ -23,7 +23,7 @@ CORE  := $(APP) $(BIN)/simrun
 PARTS := $(BIN)/simrund $(BIN)/simrun $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/mps.dylib $(LIB)/script.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput
 TEST_APPS  := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/BGDownload.app $(APPS)/PickerTest.app $(APPS)/Showcase.app
-TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest $(TBIN)/mpstest
+TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest $(TBIN)/mpstest $(TBIN)/audiotest
 
 .PHONY: all core tools test-apps test-programs tests clean $(APP)
 all: core tools test-programs
@@ -203,6 +203,9 @@ $(TBIN)/loctest: tests/locale/loctest.m | $(TBIN)
 	@$(SIGN) $@ 2>/dev/null
 $(TBIN)/mpstest: tests/mps/mpstest.m | $(TBIN)
 	$(SIMCC) $< -framework Foundation -framework Metal -framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph -o $@
+	@$(SIGN) $@ 2>/dev/null
+$(TBIN)/audiotest: tests/audio/audiotest.m | $(TBIN)
+	$(SIMCC) $< -framework Foundation -framework AVFoundation -framework AudioToolbox -framework CoreMedia -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 clean:

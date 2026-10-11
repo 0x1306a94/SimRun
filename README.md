@@ -186,7 +186,6 @@ There are many more settings for troubleshooting and debugging. See [Configurati
   characters may come out differently on other keyboard layouts.
 - **The first time you tap into a text field, the app may freeze for 2–3 seconds.** It's fine after that.
 - **Portrait only.** There's no way to turn an app sideways yet, and apps aren't told about device orientation.
-- **No sound.**
 - **Background apps keep running.** Apps never get suspended the way they would on a phone.
 - **Drag and drop only works within one app**, not between apps or between an app and the Mac.
 - **The keychain isn't secure.** Everything is stored unencrypted, and nothing ever asks for Face ID or a passcode.
@@ -194,7 +193,8 @@ There are many more settings for troubleshooting and debugging. See [Configurati
   `ASWebAuthenticationSession` (used for "Sign in with…" flows) don't.
 - **Apps aren't sandboxed.** They run with your user account's full access to your files.
 - **Quitting is abrupt.** Apps are stopped without running their termination code.
-- **Untested:** app extensions (widgets, share extensions and so on) and apps that bundle their own frameworks.
+- **Untested:** app extensions (widgets, share extensions and so on), apps that bundle their own frameworks, and
+  recording from the microphone.
 
 The [technical notes](docs/reference.md#known-gaps) have the details.
 

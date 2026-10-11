@@ -133,7 +133,7 @@ static char *gRoot;
 static int allowed(const char *label) {
   const char *list = getenv("SIMNS_DAEMONS");
   if (!list) list = "com.apple.trustd,com.apple.securityd,com.apple.cfprefsd.xpc.daemon,com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd,"
-                    "com.apple.nsurlsessiond";  // notifyd needs XPC event-publisher routines (crashes)
+                    "com.apple.nsurlsessiond,com.apple.audio.systemsoundserver-simd";  // notifyd needs XPC event-publisher routines (crashes)
   if (!strcmp(list, "none")) return 0;
   size_t n = strlen(label);
   for (const char *p = list; (p = strstr(p, label)); p += n)
@@ -301,6 +301,27 @@ static void stop_daemons(void) {
   }
   for (daemon_t *d = gDaemons; d; d = d->next) if (d->pid > 0) { kill(d->pid, SIGKILL); d->pid = 0; }
 }
+// Daemons stopped when the last app goes away. systemsoundserver-simd keeps the Mac's audio output running (and with it
+// coreaudiod's assertion against idle sleep) from its first sound until it exits, as sim CoreAudio does in any process
+// that has played sound; Simulator.app ends that at shutdown, a shared simns only when SimRun quits. A later app's
+// first system sound brings it back (its service port returns to us).
+static const char *kStopWhenIdle[] = { "com.apple.audio.systemsoundserver-simd", NULL };
+static void *stop_idle_daemons(void *arg) {
+  pid_t pids[8]; int n = 0;
+  pthread_mutex_lock(&gDaemonLock);
+  for (daemon_t *d = gDaemons; d && n < 8; d = d->next)
+    for (const char **l = kStopWhenIdle; *l; l++)
+      if (!strcmp(d->label, *l) && d->pid > 0 && !d->gone && kill(d->pid, SIGTERM) == 0) { L("no apps: stopping %s (pid %d)", d->label, d->pid); pids[n++] = d->pid; }
+  pthread_mutex_unlock(&gDaemonLock);
+  for (int t = 0; n && t < 20; t++) {   // a moment to exit, then SIGKILL (as stop_daemons)
+    usleep(50000);
+    int alive = 0; for (int i = 0; i < n; i++) if (pids[i] && kill(pids[i], 0) == 0) { int st; if (waitpid(pids[i], &st, WNOHANG) == 0) alive++; else pids[i] = 0; } else pids[i] = 0;
+    if (!alive) n = 0;
+  }
+  for (int i = 0; i < n; i++) if (pids[i]) kill(pids[i], SIGKILL);
+  return NULL;
+}
+
 static pid_t gAppPid;
 static void on_term(int sig) { if (gAppPid > 0) kill(gAppPid, SIGKILL); stop_daemons(); _exit(128 + sig); }
 
@@ -411,6 +432,8 @@ static void destroy_ns(mach_port_t port) {
   mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_RECEIVE, -1);
   L("namespace %x destroyed", port);
   free(n);
+  pthread_mutex_lock(&gLock); int last = gApps == NULL; pthread_mutex_unlock(&gLock);
+  if (last) { pthread_t t; if (pthread_create(&t, NULL, stop_idle_daemons, NULL) == 0) pthread_detach(t); }
 }
 
 static void *serve(void *arg) {

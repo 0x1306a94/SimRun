@@ -64,7 +64,11 @@ select all) go to the app while one of its windows is key.
 - First text-field focus stalls ~2–3 s.
 - Rotation: scenes can be rotated ([scenes.md](scenes.md)), but the viewer has no way to rotate and doesn't map
   input into rotated space; `deviceOrientation` and the accelerometer aren't wired.
-- No audio; notifyd is not provided.
+- notifyd is not provided.
+- Sound plays through the Mac's default output ([architecture.md](architecture.md)); there is no volume or mute of
+  the app's own, and recording is untested. Once an app has played a sound, its audio output keeps running (and with
+  it coreaudiod's assertion against idle sleep) until the app exits, as in Simulator.app; for system sounds that is
+  the sound server, which SimRun stops when no apps are left ([simns.md](simns.md#on-demand-sim-daemons)).
 - Background URLSession transfers continue while the app isn't running (nsurlsessiond does them), but the app isn't
   relaunched when they finish: it gets their events the next time it starts and makes the session. Two profiles of
   one app running at once share its background sessions (nsurlsessiond knows apps by bundle ID).

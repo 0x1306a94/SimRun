@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <libproc.h>
 #include <sys/proc.h>
+#include <servers/bootstrap.h>
 #include "session.h"
 #include "mirrorwindow.h"
 #include "environment.h"
@@ -86,6 +87,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   SRPasteboardHost *_pasteboard; mach_port_t _pasteboardPort;
   SRDocumentPickerHost *_docPicker; mach_port_t _docPickerPort;
   BOOL _gpuStarted; mach_port_t _iosurfacePort, _metalPort;
+  mach_port_t _audioPort; dispatch_source_t _audioDeath;
   BOOL _launched;
 }
 
@@ -500,6 +502,8 @@ static BOOL ProcessGone(pid_t pid) {
       _docPickerPort = [_docPicker start];
     }
     if (_docPickerPort) [self registerName:SRDP_SERVICE port:_docPickerPort in:ns]; else LOG(@"host document picker service failed to start");
+    if (!_audioPort) [self lookUpHostAudio];
+    if (_audioPort) [self registerName:"com.apple.audio.audiohald" port:_audioPort in:ns];
     mach_msg_header_t ready = { .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0), .msgh_size = sizeof ready,
                                 .msgh_remote_port = ns.control, .msgh_id = SIMNS_MSG_READY };
     mach_msg(&ready, MACH_SEND_MSG, sizeof ready, 0, 0, 0, 0);
@@ -507,6 +511,30 @@ static BOOL ProcessGone(pid_t pid) {
     for (SRRequest *r in [_pending copy])
       if ([r.runtimeRoot.stringByStandardizingPath isEqualToString:ns.root]) { [_pending removeObject:r]; [self launch:r]; }
   }
+}
+
+// The Mac's CoreAudio server (coreaudiod), which sim CoreAudio talks to directly, as in Simulator.app. When coreaudiod
+// restarts, its old port dies: look the new one up and publish it again, so apps started after that have sound.
+- (void)lookUpHostAudio {
+  if (bootstrap_look_up(bootstrap_port, "com.apple.audio.audiohald", &_audioPort) != KERN_SUCCESS) {
+    _audioPort = MACH_PORT_NULL; LOG(@"host audio service not found"); return;
+  }
+  _audioDeath = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_SEND, _audioPort, DISPATCH_MACH_SEND_DEAD, dispatch_get_main_queue());
+  mach_port_t dead = _audioPort;
+  __weak SRServer *weakSelf = self;
+  dispatch_source_set_event_handler(_audioDeath, ^{
+    SRServer *s = weakSelf; if (!s) return;
+    dispatch_source_cancel(s->_audioDeath); s->_audioDeath = nil;
+    mach_port_deallocate(mach_task_self(), dead); s->_audioPort = MACH_PORT_NULL;
+    LOG(@"host audio service went away");
+    // coreaudiod comes back under launchd at once; give it a moment to check in
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+      SRServer *s = weakSelf; if (!s || s->_audioPort) return;
+      [s lookUpHostAudio];
+      if (s->_audioPort) for (SRSimns *ns in s->_simns.allValues) if (ns.control) [s registerName:"com.apple.audio.audiohald" port:s->_audioPort in:ns];
+    });
+  });
+  dispatch_resume(_audioDeath);
 }
 
 - (void)registerName:(const char *)name port:(mach_port_t)port in:(SRSimns *)ns {

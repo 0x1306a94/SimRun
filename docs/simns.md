@@ -41,7 +41,7 @@ The control port is also registered as `dev.simrun.simns.control` so an in-app s
 ## On-demand sim daemons
 simns reads $SIMULATOR_ROOT/System/Library/{LaunchDaemons,LaunchAgents}/*.plist. For allow-listed labels
 (env SIMNS_DAEMONS, comma-separated; default com.apple.trustd,com.apple.securityd,com.apple.cfprefsd.xpc.daemon,
-com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd,com.apple.nsurlsessiond; "none" disables) the first lookup of any of the daemon's
+com.apple.cfprefsd.xpc.agent,com.apple.containermanagerd,com.apple.nsurlsessiond,com.apple.audio.systemsoundserver-simd; "none" disables) the first lookup of any of the daemon's
 MachServices pre-creates its ports (lookups succeed immediately, messages queue), then spawns the daemon
 (ProgramArguments rebased into the runtime root, plist EnvironmentVariables, XPC_SERVICE_NAME=label, simns as
 bootstrap). Check-in hands it the queued receive rights. All are SIGTERMed when the app exits or simns is terminated.
@@ -64,6 +64,15 @@ section Xcode gives simulator builds. Its data (`Library/com.apple.nsurlsessiond
 `Library/Caches/com.apple.nsurlsessiond`) is in the shared data directory. Routine 712 (a pid's launchd attributes:
 bundle-id, extension, which libxpc's xpc_connection_copy_bundle_id / xpc_connection_is_extension ask for; nsurlsessiond
 for every client) is answered 113, no attributes, which libxpc takes without logging an error.
+Sound: sim CoreAudio is a client of the Mac's coreaudiod, which it finds as `com.apple.audio.audiohald`
+(bootstrap_look_up2); simrund looks that up in its own (macOS) bootstrap and registers it host-side, as CoreSimulator
+does for launchd_sim, and again when coreaudiod restarts. With it AudioQueue, RemoteIO, AVAudioEngine, AVAudioPlayer
+and AVPlayer play through the Mac's default output; AVAudioSession works without it. System sounds
+(`AudioServicesPlaySystemSound`, keyboard clicks) are played by systemsoundserver-simd (`com.apple.audio.SystemSoundServer-Sim`);
+without it they are silent, but their completion is still called. Sim CoreAudio keeps a process's output running
+from its first sound until it exits, and coreaudiod holds an assertion against idle sleep for it (Simulator.app is
+the same). An app ends that when it quits; the shared sound server would only when SimRun quits, so simns stops it
+when the last app namespace goes away, and the next system sound launches it again.
 
 ## Shared server mode (simns --serve)
 Used by simrund. simns spawns no app; the host sends SIMNS_MSG_NEW_NS (reply port in msgh_local_port) and gets back
