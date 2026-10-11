@@ -39,6 +39,8 @@ internal.formatError = (e, prefix) => {
 // Calls probe() every `interval` ms until it returns { done: true, … } or `timeout` ms have passed; returns its last
 // answer either way (callers say what was being waited for when it isn't done).
 internal.poll = async (probe, timeout, interval = 60) => {
+  // the first look at the elements in an app loads its accessibility support (seconds, once): not part of the wait
+  if (internal.ready) await internal.ready();
   const deadline = Date.now() + timeout;
   for (;;) {
     const r = await probe();

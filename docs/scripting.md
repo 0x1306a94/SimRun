@@ -258,6 +258,9 @@ How the elements become what scripts see (ax.m):
   close-on-exec. In the spike, which used a unix socket per app, a connection inherited by such a helper never saw
   EOF after the app closed it, and two scripts hung their client this way. The Mach channel avoids that by design.
   SimRun had the same leak with its own descriptors.
+- **The first action could time out while accessibility loaded.** The 4–5 s load counted against the action's 5 s
+  timeout, which then ran out during the stability check ("keeps moving"). `internal.poll` now loads first and
+  starts its clock after.
 - Loading WebKit.axbundle and WebCore.axbundle logs a duplicate-class warning (`UIAccessibilityLoaderWebShared`).
   It looks harmless.
 
