@@ -12,6 +12,7 @@ over its socket; `run`, `profiles`, `runtimes` and `devices` start SimRun headle
 | `simrun quit <pid \| app> [-p <profile>]` | Quit a running app (by name, bundle ID or executable; `-p` picks among its profiles); returns once it has exited |
 | `simrun screenshot <pid \| app> [-p <profile>] [-o <file.png>]` | Save the app's screen as it last drew it, at its pixel size (default `./<app>.png`) |
 | `simrun eval <pid \| app> [-p <profile>] [--snapshot] [<script> \| -f <file>]` | Run JavaScript in a running app ([scripting.md](scripting.md)): prints its console output as it happens, then its value; exits 1 if it throws. The script is the argument, the file (`-` for stdin), or stdin. `--snapshot`: then print the screen as text (`app.snapshot()`) once the UI has settled |
+| `simrun inspect <pid \| app> [-p <profile>] [--watch] [--png <file>] [--check]` | Print the app's layer tree as SimRun copies it ([inspect.md](inspect.md)); App ▸ Show Layers draws the copy. `--watch`: then a line per update until Ctrl-C; `--png`: save the copy as the Mac draws it (2x); `--check`: compare the live copy with a fresh one from the app (exits 1, with a diff, if they differ) |
 | `simrun profiles [<bundle ID \| Sim.app>]` | Apps' data containers: `default` and their profiles |
 | `simrun runtimes` | The installed iOS runtimes (`*`: SimRun's) |
 | `simrun devices [-r <runtime>]` | A runtime's device types (`*`: the default) |
@@ -52,7 +53,7 @@ them in Launch With….
 
 ## Keyboard shortcuts
 
-In an app window: ⌘R relaunch, ⌥⌘R relaunch with other launch options, ⌘L log (the app's stdout/stderr), ⌘Q or ⌘W quit the app, ⌘0 launcher, ⇧⌘K Keychain
+In an app window: ⌘R relaunch, ⌥⌘R relaunch with other launch options, ⌘L log (the app's stdout/stderr), ⌥⌘I layers (inspect.md), ⌘Q or ⌘W quit the app, ⌘0 launcher, ⇧⌘K Keychain
 window, ⌥⌘Q quit SimRun (⌘Q in SimRun's own windows). Edit menu commands (undo, redo, cut, copy, paste, delete,
 select all) go to the app while one of its windows is key.
 

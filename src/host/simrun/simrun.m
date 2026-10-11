@@ -36,6 +36,10 @@ static const char kUsage[] =
   "                             run JavaScript in a running app: prints its console output, then its value; exits\n"
   "                             1 if it throws. The script is the argument, the file (- for stdin), or stdin.\n"
   "                             --snapshot: then print the screen as text (app.snapshot()) once the UI has settled\n"
+  "  inspect <pid | app> [-p <profile>] [--watch] [--png <file>] [--check]\n"
+  "                             print the app's layer tree as SimRun copies it (App > Show Layers draws the copy);\n"
+  "                             --watch: then a line per update until Ctrl-C; --png: save the copy as drawn on the\n"
+  "                             Mac; --check: compare the live copy with a fresh one (exits 1 if they differ)\n"
   "  profiles [<bundle ID | App.app>]\n"
   "                             apps' data containers: their default one and their profiles\n"
   "  runtimes                   the installed iOS runtimes (* = SimRun's)\n"
@@ -311,6 +315,56 @@ static int Eval(NSArray<NSString *> *args) {
   }
 }
 
+// `inspect`: SimRun's copy of the app's layer tree (inspect.md).
+static int Inspect(NSArray<NSString *> *args) {
+  NSMutableArray *a = [args mutableCopy];
+  BOOL watch = [a containsObject:@"--watch"], check = [a containsObject:@"--check"];
+  [a removeObject:@"--watch"]; [a removeObject:@"--check"];
+  NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *rest = [NSMutableArray array];
+  NSString *err = ParseOptions(a, @{ @"-p": @"profile", @"--profile": @"profile", @"--png": @"png" }, NO, o, rest);
+  if (err) { Fail(@"%@", err); return Usage(); }
+  if (rest.count != 1 || (check && (watch || o[@"png"]))) return Usage();
+  NSMutableDictionary *req = [@{ @"action": @"inspect", @"instance": rest[0] } mutableCopy];
+  if (o[@"profile"]) req[@"profile"] = o[@"profile"];
+  if (watch) req[@"watch"] = @YES;
+  if (check) req[@"check"] = @YES;
+  if (o[@"png"]) req[@"png"] = @YES;
+  int s = Connect(NO);
+  if (s < 0) return Fail(@"SimRun isn't running");
+  if (simrund_send(s, (__bridge CFDictionaryRef)req, NULL, 0)) return Fail(@"send failed");
+  for (;;) {
+    NSDictionary *msg = CFBridgingRelease(simrund_recv(s, NULL, NULL));
+    if (!msg) return watch ? 0 : Fail(@"lost connection to SimRun");
+    if ([msg[@"error"] isKindOfClass:NSString.class]) return Fail(@"%@", msg[@"error"]);
+    NSString *tree = [msg[@"tree"] isKindOfClass:NSString.class] ? msg[@"tree"] : nil;
+    if (tree && check) {
+      NSString *before = [msg[@"before"] isKindOfClass:NSString.class] ? msg[@"before"] : @"";
+      NSUInteger n = [tree componentsSeparatedByString:@"\n"].count - 1;
+      if ([before isEqualToString:tree]) { Print([NSString stringWithFormat:@"the live copy matches a fresh one (%lu layers)", (unsigned long)n]); return 0; }
+      NSString *dir = NSTemporaryDirectory();
+      NSString *f1 = [dir stringByAppendingPathComponent:@"simrun-inspect-live.txt"], *f2 = [dir stringByAppendingPathComponent:@"simrun-inspect-fresh.txt"];
+      [before writeToFile:f1 atomically:YES encoding:NSUTF8StringEncoding error:nil];
+      [tree writeToFile:f2 atomically:YES encoding:NSUTF8StringEncoding error:nil];
+      Print(@"the live copy differs from a fresh one:");
+      fflush(stdout);
+      NSTask *diff = [NSTask launchedTaskWithLaunchPath:@"/usr/bin/diff" arguments:@[ @"-u", f1, f2 ]];
+      [diff waitUntilExit];
+      return 1;
+    }
+    if (tree) {
+      fputs(tree.UTF8String, stdout); fflush(stdout);
+      if (o[@"png"]) {
+        NSData *png = [msg[@"png"] isKindOfClass:NSData.class] ? msg[@"png"] : nil;
+        if (!png || ![png writeToFile:o[@"png"] atomically:YES]) return Fail(@"cannot write %@", o[@"png"]);
+        fprintf(stderr, "saved %s\n", [o[@"png"] UTF8String]);
+      }
+      if (!watch) return 0;
+      continue;
+    }
+    if ([msg[@"changes"] isKindOfClass:NSString.class]) { Print(msg[@"changes"]); fflush(stdout); }
+  }
+}
+
 static int Profiles(NSArray<NSString *> *args) {
   if (args.count > 1) return Usage();
   NSMutableDictionary *req = [@{ @"action": @"profiles" } mutableCopy];
@@ -456,6 +510,7 @@ int main(int argc, char **argv) {
     if ([cmd isEqualToString:@"list"]) return List(args);
     if ([cmd isEqualToString:@"quit"] || [cmd isEqualToString:@"screenshot"]) return Instance(cmd, args);
     if ([cmd isEqualToString:@"eval"]) return Eval(args);
+    if ([cmd isEqualToString:@"inspect"]) return Inspect(args);
     if ([cmd isEqualToString:@"profiles"]) return Profiles(args);
     if ([cmd isEqualToString:@"runtimes"]) return Runtimes(args);
     if ([cmd isEqualToString:@"devices"]) return Devices(args);

@@ -11,6 +11,7 @@
 #include <mach/notify.h>
 #include "protocol.h"
 #import "mirrorwindow.h"
+#import "layermirror.h"
 
 extern int posix_spawnattr_setspecialport_np(posix_spawnattr_t *, mach_port_t, int);
 extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, const char *);
@@ -108,6 +109,8 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   NSWindow *_logWindow; NSTextView *_logView;
   CFAbsoluteTime _spawnTime;
   uint32_t _shownSurfaceID, _shownChecksum; uint64_t _shownSince;   // SIMFB_CHECK diagnostics
+  mach_port_t _inspectPort; dispatch_source_t _inspectSource;        // the layer tree stream, while watched
+  SRLayerMirror *_mirror; NSMutableArray *_layerObservers;
 }
 
 - (instancetype)initWithTitle:(NSString *)title screenSize:(NSSize)screenSize cornerRadius:(CGFloat)cornerRadius {
@@ -202,6 +205,10 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   if (_view.inputPort) mach_port_deallocate(mach_task_self(), _view.inputPort);
   if (_scriptPort) mach_port_deallocate(mach_task_self(), _scriptPort);
   _scriptPort = MACH_PORT_NULL;
+  NSArray *observers = [_layerObservers copy]; SRLayerMirror *mirror = _mirror;
+  [_layerObservers removeAllObjects];
+  [self stopInspecting];
+  for (void (^o)(SRLayerMirror *, NSDictionary *) in observers) o(mirror, nil);
   _window.delegate = nil; [_window close];
   if (_logWindow) _logWindow.title = [NSString stringWithFormat:@"%@ — Log (exited)", _title];
   if (self.onExit) self.onExit(self, st);
@@ -394,6 +401,71 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
     return NO;
   }
   return YES;
+}
+
+// ---------------------------------------------------------------- the layer tree (protocol.h SR_MSG_INSPECT_*)
+- (id)addLayerObserver:(void (^)(SRLayerMirror *mirror, NSDictionary *changes))observer {
+  if (_exited || !_scriptPort) return nil;
+  if (!_inspectPort && ![self startInspecting]) return nil;
+  id token = [observer copy];
+  [_layerObservers addObject:token];
+  if (_mirror.batchCount) {   // already copied: the newcomer gets what is there
+    SRLayerMirror *m = _mirror;
+    dispatch_async(dispatch_get_main_queue(), ^{ if ([self->_layerObservers indexOfObjectIdenticalTo:token] != NSNotFound) observer(m, @{}); });
+  }
+  return token;
+}
+- (void)removeLayerObserver:(id)token {
+  if (!token) return;
+  [_layerObservers removeObjectIdenticalTo:token];
+  if (!_layerObservers.count) [self stopInspecting];
+}
+- (BOOL)sendInspectStart:(mach_port_t)port {
+  mach_msg_header_t h = { .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND), .msgh_size = sizeof h,
+                          .msgh_remote_port = _scriptPort, .msgh_local_port = port, .msgh_id = SR_MSG_INSPECT_START };
+  return mach_msg(&h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof h, 0, MACH_PORT_NULL, 1000, MACH_PORT_NULL) == KERN_SUCCESS;
+}
+- (void)resyncLayers { if (_inspectPort && _scriptPort) [self sendInspectStart:_inspectPort]; }
+- (BOOL)startInspecting {
+  mach_port_t task = mach_task_self(), port = MACH_PORT_NULL;
+  if (mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &port) != KERN_SUCCESS) return NO;
+  // batches come once per commit; the app sends the whole tree again if this queue is ever full
+  mach_port_limits_t limits = { .mpl_qlimit = MACH_PORT_QLIMIT_MAX };
+  mach_port_set_attributes(task, port, MACH_PORT_LIMITS_INFO, (mach_port_info_t)&limits, MACH_PORT_LIMITS_INFO_COUNT);
+  if (![self sendInspectStart:port]) { mach_port_mod_refs(task, port, MACH_PORT_RIGHT_RECEIVE, -1); return NO; }
+  _inspectPort = port;
+  _mirror = [SRLayerMirror new];
+  if (!_layerObservers) _layerObservers = [NSMutableArray array];
+  // decoded off the main thread, applied on it
+  dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, port, 0, dispatch_queue_create("dev.simrun.inspect", DISPATCH_QUEUE_SERIAL));
+  __weak SRSession *weakSelf = self;
+  dispatch_source_set_event_handler(src, ^{
+    union { sr_script_msg_t m; char buf[sizeof(sr_script_msg_t) + MAX_TRAILER_SIZE]; } u;
+    while (mach_msg(&u.m.h, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof u, port, 0, MACH_PORT_NULL) == KERN_SUCCESS) {
+      if (u.m.h.msgh_id != SR_MSG_INSPECT_BATCH || !(u.m.h.msgh_bits & MACH_MSGH_BITS_COMPLEX) || u.m.h.msgh_size < sizeof u.m ||
+          u.m.b.msgh_descriptor_count != 1 || u.m.data.type != MACH_MSG_OOL_DESCRIPTOR) { mach_msg_destroy(&u.m.h); continue; }
+      NSData *d = [[NSData alloc] initWithBytesNoCopy:u.m.data.address length:u.m.data.size deallocator:^(void *bytes, NSUInteger length) {
+        if (length) vm_deallocate(task, (vm_address_t)bytes, length);
+      }];
+      NSDictionary *batch = [NSPropertyListSerialization propertyListWithData:d options:NSPropertyListImmutable format:NULL error:NULL];
+      if ([batch isKindOfClass:NSDictionary.class]) dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf applyLayerBatch:batch fromPort:port]; });
+    }
+  });
+  // destroying the port tells the app to stop (a dead-name notification on its side)
+  dispatch_source_set_cancel_handler(src, ^{ mach_port_mod_refs(task, port, MACH_PORT_RIGHT_RECEIVE, -1); });
+  dispatch_resume(src);
+  _inspectSource = src;
+  return YES;
+}
+- (void)applyLayerBatch:(NSDictionary *)batch fromPort:(mach_port_t)port {
+  if (port != _inspectPort || !_mirror) return;   // from a stream that has since been stopped
+  NSDictionary *changes = [_mirror applyBatch:batch];
+  SRLayerMirror *m = _mirror;
+  for (void (^o)(SRLayerMirror *, NSDictionary *) in [_layerObservers copy]) o(m, changes);
+}
+- (void)stopInspecting {
+  if (_inspectSource) dispatch_source_cancel(_inspectSource);
+  _inspectSource = nil; _inspectPort = MACH_PORT_NULL; _mirror = nil;
 }
 
 - (void)drain {

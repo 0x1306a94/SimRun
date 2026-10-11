@@ -1,0 +1,332 @@
+// layermirror.m — see layermirror.h. One node per app layer: the properties the app last sent (defaults left out) and
+// the CALayer they are applied to. A batch updates nodes' properties, then their sublayers and masks, then drops the
+// nodes the screen can no longer reach (inspect.m forgets the same ones, so they are sent whole if they come back).
+#import "layermirror.h"
+#import <ImageIO/ImageIO.h>
+
+@interface SRMirrorNode : NSObject
+@property (copy) NSNumber *nid;
+@property (strong) NSMutableDictionary *props;
+@property (strong) CALayer *layer;
+@property (strong) CALayer *placeholder;   // first sublayer: drawn where the layer's contents would be
+@end
+@implementation SRMirrorNode
+@end
+
+static CGRect RectOf(id v, CGRect d) {
+  NSArray *a = v;
+  return [a isKindOfClass:NSArray.class] && a.count == 4 ? CGRectMake([a[0] doubleValue], [a[1] doubleValue], [a[2] doubleValue], [a[3] doubleValue]) : d;
+}
+static CGPoint PointOf(id v, CGPoint d) {
+  NSArray *a = v;
+  return [a isKindOfClass:NSArray.class] && a.count == 2 ? CGPointMake([a[0] doubleValue], [a[1] doubleValue]) : d;
+}
+static CGFloat Num(id v, CGFloat d) { return [v isKindOfClass:NSNumber.class] ? [v doubleValue] : d; }
+static BOOL Bool(id v, BOOL d) { return [v isKindOfClass:NSNumber.class] ? [v boolValue] : d; }
+static NSString *Str(id v, NSString *d) { return [v isKindOfClass:NSString.class] ? v : d; }
+static CATransform3D Matrix(id v) {
+  NSArray *a = v;
+  if (![a isKindOfClass:NSArray.class] || a.count != 16) return CATransform3DIdentity;
+  CGFloat m[16]; for (int i = 0; i < 16; i++) m[i] = [a[i] doubleValue];
+  return (CATransform3D){ m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15] };
+}
+// [r, g, b, a] in extended sRGB; nil for [] (no color) or anything else. Autoreleased.
+static CGColorRef Color(id v) {
+  NSArray *a = v;
+  if (![a isKindOfClass:NSArray.class] || a.count != 4) return NULL;
+  static CGColorSpaceRef ext; if (!ext) ext = CGColorSpaceCreateWithName(kCGColorSpaceExtendedSRGB);
+  CGFloat c[4] = { [a[0] doubleValue], [a[1] doubleValue], [a[2] doubleValue], [a[3] doubleValue] };
+  return (__bridge CGColorRef)CFBridgingRelease(CGColorCreate(ext, c));
+}
+// From inspect.m's [element type, coordinates…] arrays. Autoreleased.
+static CGPathRef Path(id v) {
+  if (![v isKindOfClass:NSArray.class]) return NULL;
+  CGMutablePathRef p = CGPathCreateMutable();
+  for (NSArray *e in v) {
+    if (![e isKindOfClass:NSArray.class] || !e.count) continue;
+    CGFloat c[6] = {0}; for (NSUInteger i = 1; i < e.count && i <= 6; i++) c[i - 1] = [e[i] doubleValue];
+    switch ([e[0] intValue]) {
+      case kCGPathElementMoveToPoint: CGPathMoveToPoint(p, NULL, c[0], c[1]); break;
+      case kCGPathElementAddLineToPoint: CGPathAddLineToPoint(p, NULL, c[0], c[1]); break;
+      case kCGPathElementAddQuadCurveToPoint: CGPathAddQuadCurveToPoint(p, NULL, c[0], c[1], c[2], c[3]); break;
+      case kCGPathElementAddCurveToPoint: CGPathAddCurveToPoint(p, NULL, c[0], c[1], c[2], c[3], c[4], c[5]); break;
+      case kCGPathElementCloseSubpath: CGPathCloseSubpath(p); break;
+    }
+  }
+  return (__bridge CGPathRef)CFBridgingRelease(p);
+}
+
+// Kinds (inspect.m SRKind) the Mac can't draw: they get the orange stand-in.
+static BOOL IsForeign(NSString *kind) {
+  static NSSet *s; if (!s) s = [NSSet setWithArray:@[ @"backdrop", @"portal", @"host", @"sdf", @"metal", @"video", @"emitter", @"replicator" ]];
+  return [s containsObject:kind];
+}
+
+@implementation SRLayerMirror {
+  NSMutableDictionary<NSNumber *, SRMirrorNode *> *_nodes;
+}
+
+- (instancetype)init {
+  if (!(self = [super init])) return nil;
+  _nodes = [NSMutableDictionary dictionary];
+  _showsPlaceholders = YES;
+  _rootLayer = [CALayer layer];
+  _rootLayer.geometryFlipped = YES;   // y down, as the app's screen
+  _rootLayer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+  _rootLayer.masksToBounds = YES;
+  [self reset];
+  return self;
+}
+- (void)reset {
+  [_nodes removeAllObjects];
+  SRMirrorNode *screen = [SRMirrorNode new];
+  screen.nid = @1; screen.props = [NSMutableDictionary dictionary]; screen.layer = _rootLayer;
+  _rootLayer.sublayers = nil;
+  _nodes[@1] = screen;
+}
+- (NSUInteger)nodeCount { return _nodes.count; }
+
+- (SRMirrorNode *)newNode:(NSNumber *)nid kind:(NSString *)kind {
+  SRMirrorNode *n = [SRMirrorNode new];
+  n.nid = nid; n.props = [NSMutableDictionary dictionary];
+  Class c = [kind isEqual:@"gradient"] ? CAGradientLayer.class : [kind isEqual:@"shape"] ? CAShapeLayer.class
+          : [kind isEqual:@"transform"] ? CATransformLayer.class : [kind isEqual:@"text"] ? CATextLayer.class : CALayer.class;
+  n.layer = [c layer];
+  return n;
+}
+
+// Puts all of a node's properties on its layer (defaults for those left out). YES if its stand-in came or went, so
+// its sublayers must be set again.
+- (BOOL)configure:(SRMirrorNode *)n {
+  CALayer *l = n.layer; NSDictionary *p = n.props;
+  BOOL screen = [n.nid isEqual:@1];
+  l.bounds = RectOf(p[@"bounds"], CGRectZero);
+  l.position = PointOf(p[@"position"], CGPointZero);
+  if (!screen) {
+    l.anchorPoint = PointOf(p[@"anchorPoint"], CGPointMake(0.5, 0.5));
+    l.anchorPointZ = Num(p[@"anchorPointZ"], 0);
+    l.zPosition = Num(p[@"zPosition"], 0);
+    l.transform = Matrix(p[@"transform"]);
+    l.sublayerTransform = Matrix(p[@"sublayerTransform"]);
+    l.geometryFlipped = Bool(p[@"geometryFlipped"], NO);
+    l.hidden = Bool(p[@"hidden"], NO);
+    l.opacity = Num(p[@"opacity"], 1);
+    l.allowsGroupOpacity = Bool(p[@"allowsGroupOpacity"], YES);
+    l.doubleSided = Bool(p[@"doubleSided"], YES);
+    l.masksToBounds = Bool(p[@"masksToBounds"], NO);
+    l.backgroundColor = Color(p[@"backgroundColor"]);
+    l.borderWidth = Num(p[@"borderWidth"], 0);
+    l.borderColor = p[@"borderColor"] ? Color(p[@"borderColor"]) : CGColorGetConstantColor(kCGColorBlack);
+    l.cornerRadius = Num(p[@"cornerRadius"], 0);
+    l.cornerCurve = Str(p[@"cornerCurve"], kCACornerCurveCircular);
+    l.maskedCorners = (CACornerMask)Num(p[@"maskedCorners"], 15);
+    l.shadowOpacity = Num(p[@"shadowOpacity"], 0);
+    l.shadowColor = p[@"shadowColor"] ? Color(p[@"shadowColor"]) : CGColorGetConstantColor(kCGColorBlack);
+    NSArray *so = [p[@"shadowOffset"] isKindOfClass:NSArray.class] ? p[@"shadowOffset"] : nil;
+    l.shadowOffset = so.count == 2 ? CGSizeMake([so[0] doubleValue], [so[1] doubleValue]) : CGSizeMake(0, -3);
+    l.shadowRadius = Num(p[@"shadowRadius"], 3);
+    l.shadowPath = Path(p[@"shadowPath"]);
+    l.contentsGravity = Str(p[@"contentsGravity"], kCAGravityResize);
+    l.contentsRect = RectOf(p[@"contentsRect"], CGRectMake(0, 0, 1, 1));
+    l.contentsCenter = RectOf(p[@"contentsCenter"], CGRectMake(0, 0, 1, 1));
+    l.contentsScale = Num(p[@"contentsScale"], 1);
+  }
+  if ([l isKindOfClass:CAGradientLayer.class]) {
+    CAGradientLayer *g = (CAGradientLayer *)l;
+    NSMutableArray *colors = [NSMutableArray array];
+    for (id c in p[@"colors"]) { CGColorRef cg = Color(c); if (cg) [colors addObject:(__bridge id)cg]; }
+    g.colors = colors.count ? colors : nil;
+    g.locations = [p[@"locations"] isKindOfClass:NSArray.class] ? p[@"locations"] : nil;
+    g.startPoint = PointOf(p[@"startPoint"], CGPointMake(0.5, 0));
+    g.endPoint = PointOf(p[@"endPoint"], CGPointMake(0.5, 1));
+    g.type = Str(p[@"gradientType"], kCAGradientLayerAxial);
+  } else if ([l isKindOfClass:CAShapeLayer.class]) {
+    CAShapeLayer *s = (CAShapeLayer *)l;
+    s.path = Path(p[@"path"]);
+    s.fillColor = p[@"fillColor"] ? Color(p[@"fillColor"]) : CGColorGetConstantColor(kCGColorBlack);
+    s.strokeColor = Color(p[@"strokeColor"]);
+    s.lineWidth = Num(p[@"lineWidth"], 1);
+    s.fillRule = Str(p[@"fillRule"], kCAFillRuleNonZero);
+    s.lineCap = Str(p[@"lineCap"], kCALineCapButt);
+    s.lineJoin = Str(p[@"lineJoin"], kCALineJoinMiter);
+    s.miterLimit = Num(p[@"miterLimit"], 10);
+    s.strokeStart = Num(p[@"strokeStart"], 0);
+    s.strokeEnd = Num(p[@"strokeEnd"], 1);
+    s.lineDashPattern = [p[@"lineDashPattern"] isKindOfClass:NSArray.class] ? p[@"lineDashPattern"] : nil;
+    s.lineDashPhase = Num(p[@"lineDashPhase"], 0);
+  } else if ([l isKindOfClass:CATextLayer.class]) {
+    ((CATextLayer *)l).string = Str(p[@"string"], nil);
+  }
+
+  // the stand-in for what isn't copied (yet)
+  NSString *kind = Str(p[@"kind"], @"layer");
+  BOOL foreign = IsForeign(kind), want = _showsPlaceholders && !screen && (p[@"contents"] || foreign);
+  BOOL changed = want != (n.placeholder != nil);
+  if (want && !n.placeholder) { n.placeholder = [CALayer layer]; n.placeholder.anchorPoint = CGPointZero; }
+  if (!want) n.placeholder = nil;
+  if (n.placeholder) {
+    CALayer *ph = n.placeholder;
+    NSColor *tint = foreign ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
+    ph.position = l.bounds.origin; ph.bounds = (CGRect){ CGPointZero, l.bounds.size };
+    ph.backgroundColor = [tint colorWithAlphaComponent:foreign ? 0.3 : 0.15].CGColor;
+    ph.borderColor = [tint colorWithAlphaComponent:0.6].CGColor; ph.borderWidth = 0.5;
+    ph.cornerRadius = l.cornerRadius; ph.cornerCurve = l.cornerCurve; ph.maskedCorners = l.maskedCorners;
+  }
+  return changed;
+}
+
+// Sets a node's sublayers (its stand-in first, where contents are drawn) and mask from its properties.
+- (void)restructure:(SRMirrorNode *)n {
+  NSMutableArray *subs = [NSMutableArray array];
+  if (n.placeholder) [subs addObject:n.placeholder];
+  for (NSNumber *c in n.props[@"sublayers"]) { CALayer *cl = _nodes[c].layer; if (cl && cl != n.layer) [subs addObject:cl]; }
+  if (![n.layer.sublayers isEqualToArray:subs]) n.layer.sublayers = subs;
+  NSNumber *m = n.props[@"mask"];
+  CALayer *mask = [m isKindOfClass:NSNumber.class] ? _nodes[m].layer : nil;
+  if (n.layer.mask != mask) { [mask removeFromSuperlayer]; n.layer.mask = mask; }
+}
+
+- (NSDictionary *)applyBatch:(NSDictionary *)batch {
+  NSMutableDictionary *summary = [NSMutableDictionary dictionary];
+  NSMutableArray *added = [NSMutableArray array], *removed = [NSMutableArray array];
+  NSMutableDictionary *changed = [NSMutableDictionary dictionary];
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  if ([batch[@"full"] isEqual:@YES]) { [self reset]; summary[@"full"] = @YES; }
+  NSMutableArray<SRMirrorNode *> *restructure = [NSMutableArray array];
+  NSArray *nodes = [batch[@"nodes"] isKindOfClass:NSArray.class] ? batch[@"nodes"] : @[];
+  for (NSDictionary *d in nodes) {
+    if (![d isKindOfClass:NSDictionary.class] || ![d[@"id"] isKindOfClass:NSNumber.class]) continue;
+    NSNumber *nid = d[@"id"];
+    SRMirrorNode *n = _nodes[nid];
+    BOOL fresh = !n;
+    if (fresh) { n = [self newNode:nid kind:Str(d[@"kind"], @"layer")]; _nodes[nid] = n; [added addObject:nid]; }
+    NSArray *unset = [d[@"unset"] isKindOfClass:NSArray.class] ? d[@"unset"] : @[];
+    for (NSString *k in unset) [n.props removeObjectForKey:k];
+    NSMutableArray *keys = [unset mutableCopy];
+    [d enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *stop) {
+      if ([k isEqual:@"id"] || [k isEqual:@"unset"]) return;
+      n.props[k] = v; [keys addObject:k];
+    }];
+    if (!fresh) changed[nid] = keys;
+    BOOL placeholderChanged = [self configure:n];
+    if (fresh || placeholderChanged || [keys containsObject:@"sublayers"] || [keys containsObject:@"mask"]) [restructure addObject:n];
+  }
+  for (SRMirrorNode *n in restructure) [self restructure:n];
+
+  // drop what the screen can no longer reach
+  NSMutableSet *reach = [NSMutableSet set];
+  NSMutableArray *todo = [NSMutableArray arrayWithObject:@1];
+  while (todo.count) {
+    NSNumber *nid = todo.lastObject; [todo removeLastObject];
+    if ([reach containsObject:nid] || !_nodes[nid]) continue;
+    [reach addObject:nid];
+    NSDictionary *p = _nodes[nid].props;
+    if ([p[@"sublayers"] isKindOfClass:NSArray.class]) [todo addObjectsFromArray:p[@"sublayers"]];
+    if ([p[@"mask"] isKindOfClass:NSNumber.class]) [todo addObject:p[@"mask"]];
+  }
+  for (NSNumber *nid in _nodes.allKeys)
+    if (![reach containsObject:nid]) { [_nodes[nid].layer removeFromSuperlayer]; [_nodes removeObjectForKey:nid]; [removed addObject:nid]; }
+  [CATransaction commit];
+  _batchCount++;
+  summary[@"added"] = added; summary[@"changed"] = changed; summary[@"removed"] = removed;
+  return summary;
+}
+
+- (void)setShowsPlaceholders:(BOOL)on {
+  if (on == _showsPlaceholders) return;
+  _showsPlaceholders = on;
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  for (SRMirrorNode *n in _nodes.allValues) if ([self configure:n]) [self restructure:n];
+  [CATransaction commit];
+}
+
+// ---------------------------------------------------------------- text
+static NSString *Fmt(CGFloat v) { return [NSString stringWithFormat:@"%g", round(v * 10) / 10]; }
+static NSString *Hex(id v) {
+  NSArray *a = v;
+  if (![a isKindOfClass:NSArray.class] || a.count != 4) return @"none";
+  NSMutableString *s = [NSMutableString stringWithString:@"#"];
+  for (NSNumber *c in a) [s appendFormat:@"%02X", (int)lround(MAX(0, MIN(1, c.doubleValue)) * 255)];
+  return s;
+}
+- (NSString *)lineFor:(SRMirrorNode *)n {
+  NSDictionary *p = n.props;
+  NSMutableString *s = [NSMutableString stringWithFormat:@"%@ #%@", Str(p[@"class"], @"?"), n.nid];
+  if (p[@"view"]) [s appendFormat:@" (%@)", p[@"view"]];
+  CGRect b = RectOf(p[@"bounds"], CGRectZero); CGPoint pos = PointOf(p[@"position"], CGPointZero), ap = PointOf(p[@"anchorPoint"], CGPointMake(0.5, 0.5));
+  [s appendFormat:@" (%@,%@ %@x%@)", Fmt(pos.x - ap.x * b.size.width), Fmt(pos.y - ap.y * b.size.height), Fmt(b.size.width), Fmt(b.size.height)];
+  if (b.origin.x || b.origin.y) [s appendFormat:@" origin=(%@,%@)", Fmt(b.origin.x), Fmt(b.origin.y)];
+  if (p[@"name"]) [s appendFormat:@" name=\"%@\"", p[@"name"]];
+  if (Bool(p[@"hidden"], NO)) [s appendString:@" hidden"];
+  if (p[@"opacity"]) [s appendFormat:@" alpha=%@", Fmt(Num(p[@"opacity"], 1))];
+  if (p[@"transform"]) [s appendString:@" transform"];
+  if (p[@"sublayerTransform"]) [s appendString:@" sublayerTransform"];
+  if (p[@"zPosition"]) [s appendFormat:@" z=%@", Fmt(Num(p[@"zPosition"], 0))];
+  if (Bool(p[@"masksToBounds"], NO)) [s appendString:@" clips"];
+  if (p[@"backgroundColor"]) [s appendFormat:@" bg=%@", Hex(p[@"backgroundColor"])];
+  if (p[@"borderWidth"]) [s appendFormat:@" border=%@ %@", Fmt(Num(p[@"borderWidth"], 0)), Hex(p[@"borderColor"])];
+  if (p[@"cornerRadius"]) [s appendFormat:@" radius=%@%@", Fmt(Num(p[@"cornerRadius"], 0)), [p[@"cornerCurve"] isEqual:kCACornerCurveContinuous] ? @" continuous" : @""];
+  if (p[@"shadowOpacity"]) [s appendFormat:@" shadow=%@", Fmt(Num(p[@"shadowOpacity"], 0))];
+  if (p[@"contents"]) {
+    [s appendFormat:@" contents=%@", p[@"contents"]];
+    NSArray *cs = p[@"contentsSize"]; if (cs.count == 2) [s appendFormat:@" %@x%@", cs[0], cs[1]];
+  }
+  if ([p[@"colors"] count]) [s appendFormat:@" gradient=%lu colors", (unsigned long)[p[@"colors"] count]];
+  if (p[@"path"]) [s appendFormat:@" path=%lu elements fill=%@", (unsigned long)[p[@"path"] count], Hex(p[@"fillColor"] ?: @[ @0, @0, @0, @1 ])];
+  if (p[@"filters"]) [s appendFormat:@" filters=%@", [p[@"filters"] componentsJoinedByString:@","]];
+  if (p[@"backgroundFilters"]) [s appendFormat:@" backgroundFilters=%@", [p[@"backgroundFilters"] componentsJoinedByString:@","]];
+  if (p[@"compositingFilter"]) [s appendFormat:@" compositing=%@", p[@"compositingFilter"]];
+  if (p[@"string"]) [s appendFormat:@" string=\"%@\"", p[@"string"]];
+  return s;
+}
+- (void)describe:(NSNumber *)nid depth:(int)depth prefix:(NSString *)prefix into:(NSMutableString *)out {
+  SRMirrorNode *n = _nodes[nid];
+  if (!n) { [out appendFormat:@"%*s- %@(missing #%@)\n", depth * 2, "", prefix, nid]; return; }
+  [out appendFormat:@"%*s- %@%@\n", depth * 2, "", prefix, [self lineFor:n]];
+  if ([n.props[@"mask"] isKindOfClass:NSNumber.class]) [self describe:n.props[@"mask"] depth:depth + 1 prefix:@"mask: " into:out];
+  for (NSNumber *c in n.props[@"sublayers"]) [self describe:c depth:depth + 1 prefix:@"" into:out];
+}
+- (NSString *)treeDescription {
+  NSMutableString *out = [NSMutableString string];
+  [self describe:@1 depth:0 prefix:@"" into:out];
+  return out;
+}
+- (NSString *)describeChanges:(NSDictionary *)c {
+  if ([c[@"full"] isEqual:@YES]) return [NSString stringWithFormat:@"whole tree: %lu layers", (unsigned long)_nodes.count];
+  NSDictionary *changed = c[@"changed"];
+  NSMutableString *s = [NSMutableString stringWithFormat:@"+%lu -%lu ~%lu", (unsigned long)[c[@"added"] count], (unsigned long)[c[@"removed"] count], (unsigned long)changed.count];
+  NSArray *ids = [changed.allKeys sortedArrayUsingSelector:@selector(compare:)];
+  NSUInteger shown = 0;
+  for (NSNumber *nid in ids) {
+    if (shown++ == 6) { [s appendFormat:@" …"]; break; }
+    NSString *cls = Str(_nodes[nid].props[@"class"], @"?");
+    if ([cls hasPrefix:@"_Tt"]) cls = @"(Swift)";
+    [s appendFormat:@"%@ %@#%@ %@", shown == 1 ? @":" : @";", cls, nid, [changed[nid] componentsJoinedByString:@","]];
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------- picture
+- (NSData *)PNGWithScale:(CGFloat)scale {
+  CGSize size = _rootLayer.bounds.size;
+  size_t w = (size_t)lround(size.width * scale), h = (size_t)lround(size.height * scale);
+  if (!w || !h) return nil;
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, 0, cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(cs);
+  if (!ctx) return nil;
+  // the bitmap is y up; the root's geometry is flipped (y down)
+  CGContextTranslateCTM(ctx, 0, h);
+  CGContextScaleCTM(ctx, scale, -scale);
+  [_rootLayer renderInContext:ctx];
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  CGContextRelease(ctx);
+  NSMutableData *png = [NSMutableData data];
+  CGImageDestinationRef dst = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, CFSTR("public.png"), 1, NULL);
+  CGImageDestinationAddImage(dst, img, NULL);
+  BOOL ok = CGImageDestinationFinalize(dst);
+  CFRelease(dst); CGImageRelease(img);
+  return ok ? png : nil;
+}
+@end

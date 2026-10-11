@@ -41,7 +41,8 @@ simrun (CLI) ───unix socket──▶ build/bin/simrund   macOS AppKit serv
                                               mps.dylib      works around MPSGraph's simulator bugs so graphs run on
                                                              the GPU (mps.md)
                                               script.dylib   runs JavaScript from `simrun eval` on the app's main thread;
-                                                             loads JavaScriptCore on the first script (scripting.md)
+                                                             loads JavaScriptCore on the first script (scripting.md);
+                                                             streams the layer tree while it is watched (inspect.md)
                                             SimFramebuffer   fake SimFramebuffer: the render server's display; presented
                                                              IOSurfaces go to the app's window (include/protocol.h)
 ```

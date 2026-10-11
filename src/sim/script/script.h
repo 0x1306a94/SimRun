@@ -21,6 +21,11 @@ JSValue *SRThrow(NSString *msg);
 // (protocol.h SR_SCRIPT_*).
 void SRRunScript(NSString *source, uint32_t flags, void (^emit)(uint32_t kind, NSString *text));
 
+// inspect.m (main thread): stream the layer tree to `host` (a send right, now ours), replacing any earlier watcher;
+// its dead-name notification goes to `notify`, and is handed to SRInspectDeadName.
+void SRInspectStart(mach_port_t host, mach_port_t notify);
+void SRInspectDeadName(mach_port_t name);
+
 // ui.m: the app's foreground window scene, and its windows back to front.
 @class UIWindowScene, UIWindow;
 UIWindowScene *SRActiveScene(void);

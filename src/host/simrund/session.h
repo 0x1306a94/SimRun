@@ -3,7 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #include <mach/mach.h>
 
-@class SRSession;
+@class SRSession, SRLayerMirror;
 typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 
 @interface SRSession : NSObject <NSWindowDelegate>
@@ -38,4 +38,14 @@ typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 // app went away first). NO if the app can't run scripts: it isn't running, it hasn't started its script channel yet,
 // or it was launched with SCRIPT_DISABLE.
 - (BOOL)runScript:(NSString *)source snapshot:(BOOL)snapshot output:(void (^)(NSString *key, NSString *text))output;
+
+// A live copy of the app's layer tree (layermirror.h, inspect.md), shared by everyone watching it: the first observer
+// starts it streaming from the app, removing the last one stops it. Observers run on the main thread after each batch
+// from the app has been applied, with what it changed (SRLayerMirror -applyBatch:); an observer added while the copy
+// is already there is called at once with @{} (nothing new); `changes` nil means it has ended (the app went away).
+// Returns a token for -removeLayerObserver:, or nil if the app can't be inspected (it has no script channel).
+- (id)addLayerObserver:(void (^)(SRLayerMirror *mirror, NSDictionary *changes))observer;
+- (void)removeLayerObserver:(id)token;
+// Asks the app for its whole tree again (`simrun inspect --check`: does the live copy match a fresh one?).
+- (void)resyncLayers;
 @end

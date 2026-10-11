@@ -28,6 +28,8 @@
 #include "pasteboard.h"
 #include "filepanel.h"
 #include "keychainwindow.h"
+#include "layerwindow.h"
+#include "layermirror.h"
 #include "launchoptions.h"
 #include "simns_proto.h"
 #include "simrund_proto.h"
@@ -201,6 +203,8 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   _quitAppItem.target = self;
   [appCmds addItemWithTitle:@"Show Log" action:@selector(showFrontAppLog:) keyEquivalent:@"l"].target = self;
   [appCmds addItemWithTitle:@"Show Keychain Items" action:@selector(showFrontAppKeychain:) keyEquivalent:@""].target = self;
+  NSMenuItem *layers = [appCmds addItemWithTitle:@"Show Layers" action:@selector(showFrontAppLayers:) keyEquivalent:@"i"];   // ⌥⌘I
+  layers.target = self; layers.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
 
   NSMenu *win = [[NSMenu alloc] initWithTitle:@"Window"];
   [win addItemWithTitle:@"Launcher" action:@selector(showLauncher:) keyEquivalent:@"0"].target = self;
@@ -235,7 +239,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   SRRequest *r = [self frontRequest];
   if (a == @selector(relaunchFrontApp:)) return r.appPath != nil;
   if (a == @selector(relaunchFrontAppWith:)) return r.appPath != nil;
-  if (a == @selector(quitFrontApp:) || a == @selector(showFrontAppLog:)) return r != nil;
+  if (a == @selector(quitFrontApp:) || a == @selector(showFrontAppLog:) || a == @selector(showFrontAppLayers:)) return r != nil;
   if (a == @selector(showFrontAppKeychain:)) return r.appPath != nil;
   return YES;
 }
@@ -245,6 +249,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
 - (void)quitFrontApp:(id)s { [[self frontRequest].session terminate]; }
 - (void)showFrontAppLog:(id)s { [[self frontRequest].session showLog]; }
 - (void)showKeychain:(id)s { [SRKeychainWindow.shared showWithFilter:nil]; }
+- (void)showFrontAppLayers:(id)s { SRSession *session = [self frontRequest].session; if (session) [SRLayerWindow showForSession:session]; }
 - (void)showFrontAppKeychain:(id)s {
   NSString *path = [self frontRequest].appPath;
   if (path) [SRKeychainWindow.shared showWithFilter:[SRAppInfo infoWithPath:path].bundleIdentifier ?: @""];
@@ -770,6 +775,7 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
         return;
       }
       if ([action isEqual:@"eval"]) { [self evalRequest:d client:c]; return; }
+      if ([action isEqual:@"inspect"]) { [self inspectRequest:d client:c]; return; }
       if ([action isEqual:@"stop"]) {
         SendReply(c, @{ @"ok": @YES }, ^{ LOG(@"stopped by a client"); [NSApp terminate:nil]; });
         return;
@@ -814,6 +820,57 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
   if (!started)
     SendReply(c, @{ @"error": r.session.ready ? [NSString stringWithFormat:@"%@ can't run scripts (launched with SCRIPT_DISABLE)", r.session.title]
                                               : [NSString stringWithFormat:@"%@ is still launching", r.session.title] }, nil);
+}
+
+// `inspect`: the app's layer tree as text (and, with `png`, the Mac copy drawn as PNG), then with `watch` a line per
+// update until the client goes away. With `check`, the live copy's text and a fresh copy's, to compare: the app is
+// asked for its whole tree again.
+- (void)inspectRequest:(NSDictionary *)d client:(int)c {
+  NSString *err = nil;
+  SRRequest *r = [self instanceMatching:Str(d, @"instance") profile:Str(d, @"profile") error:&err];
+  if (!r) { SendReply(c, @{ @"error": err }, nil); return; }
+  __weak SRSession *s = r.session;   // it holds the observer, which holds finish
+  BOOL watch = [d[@"watch"] isEqual:@YES], png = [d[@"png"] isEqual:@YES], check = [d[@"check"] isEqual:@YES];
+  dispatch_queue_t q = dispatch_queue_create("dev.simrun.inspect-client", DISPATCH_QUEUE_SERIAL);   // writes off the main thread
+  __block id token = nil;
+  __block dispatch_source_t eof = nil;
+  __block BOOL closed = NO;
+  __block int stage = 0;   // 0: waiting for the tree; 1 (check): waiting for the fresh tree; 2: watching
+  __block NSString *before = nil;
+  void (^finish)(NSDictionary *) = ^(NSDictionary *last) {
+    if (closed) return;
+    closed = YES;
+    [s removeLayerObserver:token]; token = nil;
+    if (eof) { dispatch_source_cancel(eof); eof = nil; }
+    dispatch_async(q, ^{ if (last) simrund_send(c, (__bridge CFDictionaryRef)last, NULL, 0); close(c); });
+  };
+  token = [s addLayerObserver:^(SRLayerMirror *m, NSDictionary *changes) {
+    if (closed) return;
+    if (!changes) { finish(@{ @"error": @"the app went away" }); return; }
+    if (stage == 0 && check) { before = m.treeDescription; stage = 1; [s resyncLayers]; return; }
+    if (stage == 1) { if ([changes[@"full"] isEqual:@YES]) finish(@{ @"tree": m.treeDescription, @"before": before }); return; }
+    if (stage == 0) {
+      NSMutableDictionary *reply = [NSMutableDictionary dictionaryWithObject:m.treeDescription forKey:@"tree"];
+      if (png) { NSData *data = [m PNGWithScale:2]; if (data) reply[@"png"] = data; }
+      if (!watch) { finish(reply); return; }
+      stage = 2;
+      dispatch_async(q, ^{ simrund_send(c, (__bridge CFDictionaryRef)reply, NULL, 0); });
+      return;
+    }
+    if (changes.count) {
+      NSString *line = [m describeChanges:changes];
+      dispatch_async(q, ^{ simrund_send(c, (__bridge CFDictionaryRef)@{ @"changes": line }, NULL, 0); });
+    }
+  }];
+  if (!token) {
+    SendReply(c, @{ @"error": r.session.ready ? [NSString stringWithFormat:@"%@ can't be inspected (launched with SCRIPT_DISABLE)", r.session.title]
+                                     : [NSString stringWithFormat:@"%@ is still launching", r.session.title] }, nil);
+    return;
+  }
+  // the client going away (Ctrl-C on --watch) stops it
+  eof = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, c, 0, dispatch_get_main_queue());
+  dispatch_source_set_event_handler(eof, ^{ char b; if (recv(c, &b, 1, MSG_PEEK | MSG_DONTWAIT) == 0) finish(nil); });
+  dispatch_resume(eof);
 }
 
 // Fills in `r` from a client's `run` request: the app, its profile, runtime and device, and its environment (the

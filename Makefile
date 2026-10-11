@@ -147,7 +147,7 @@ $(BUILD)/gen/script_js.h: $(SCRIPT_JS)
 	@mkdir -p $(@D)
 	@(cd src/sim/script/js && for f in *.js; do xxd -i $$f; done) > $@.tmp && mv $@.tmp $@
 $(LIB)/script.dylib: $(SCRIPT_SRC) src/sim/script/script.h $(BUILD)/gen/script_js.h $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib -I$(BUILD)/gen $(SCRIPT_SRC) -framework Foundation -framework UIKit -framework CoreGraphics -o $@
+	$(SIMCC) -dynamiclib -I$(BUILD)/gen $(SCRIPT_SRC) -framework Foundation -framework UIKit -framework CoreGraphics -framework QuartzCore -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 $(LIB)/pboard.dylib: src/sim/pboard/pboard.m $(HDRS) | $(LIB)

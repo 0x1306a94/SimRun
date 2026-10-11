@@ -1,4 +1,5 @@
-// script.dylib — runs JavaScript inside the app, on its main thread, for `simrun eval` (see scripting.md).
+// script.dylib — runs JavaScript inside the app, on its main thread, for `simrun eval` (see scripting.md), and
+// streams the app's layer tree to SimRun while it is being watched (inspect.md).
 //
 // SimRun sends a script over the app's session channel (protocol.h, SR_MSG_SCRIPT_*); console output and then the
 // result or exception go back as they happen. JavaScriptCore isn't linked: it is loaded on the first script, so apps
@@ -9,12 +10,14 @@
 //   ui.m          touches, keys and text through hid.dylib; the frame count (has the UI settled?); the view dump
 //   ax.m          the accessibility elements a script sees: roles, states, visibility, refs, scrolling into view
 //   objcbridge.m  sending Objective-C messages from JS
+//   inspect.m     the layer tree, whole and then what changed after each commit, for SimRun's layer window
 //   js/*.js       the API scripts use (app, expect, objc), built on those native functions; embedded at build time
 //
 // Env: SCRIPT_DISABLE (no scripts: SimRun is never told the script port), SCRIPT_VERBOSE (log timings to stderr).
 #import <UIKit/UIKit.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <mach/notify.h>
 #include "script.h"
 #include "protocol.h"
 
@@ -56,9 +59,19 @@ static void SRSendOutput(mach_port_t reply, uint32_t kind, NSString *text) {
 }
 
 static void SRReceive(void) {
-  union { sr_script_msg_t m; char buf[sizeof(sr_script_msg_t) + MAX_TRAILER_SIZE]; } u;
+  union { sr_script_msg_t m; mach_dead_name_notification_t dead; char buf[sizeof(sr_script_msg_t) + MAX_TRAILER_SIZE]; } u;
   while (mach_msg(&u.m.h, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof u, gScriptPort, 0, MACH_PORT_NULL) == KERN_SUCCESS) {
     mach_msg_header_t *h = &u.m.h;
+    if (h->msgh_id == SR_MSG_INSPECT_START && MACH_PORT_VALID(h->msgh_remote_port)) {   // inspect.m
+      mach_port_t host = h->msgh_remote_port;
+      dispatch_async(dispatch_get_main_queue(), ^{ SRInspectStart(host, gScriptPort); });
+      continue;
+    }
+    if (h->msgh_id == MACH_NOTIFY_DEAD_NAME) {   // the port of an inspect watcher that has gone
+      mach_port_t name = u.dead.not_port;
+      dispatch_async(dispatch_get_main_queue(), ^{ SRInspectDeadName(name); });
+      continue;
+    }
     if (h->msgh_id != SR_MSG_SCRIPT_EVAL || !(h->msgh_bits & MACH_MSGH_BITS_COMPLEX) || h->msgh_size < sizeof u.m ||
         u.m.b.msgh_descriptor_count != 1 || u.m.data.type != MACH_MSG_OOL_DESCRIPTOR || !MACH_PORT_VALID(h->msgh_remote_port)) {
       mach_msg_destroy(h);

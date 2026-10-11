@@ -211,6 +211,9 @@ The error message usually says what to do next.
   ```
 
 - **The view hierarchy.** `app.views()` returns the views as indented text with class names and frames.
+- **The layer tree.** `simrun inspect MyApp` prints every layer with its view, frame, background, corner radius,
+  opacity and whether it has contents. It answers layout and styling questions the snapshot can't ("why is this
+  clipped?", "what color is that card?").
 
 ## Limits
 
