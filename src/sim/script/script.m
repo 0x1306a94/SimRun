@@ -67,6 +67,14 @@ static void SRReceive(void) {
       dispatch_async(dispatch_get_main_queue(), ^{ SRInspectStart(host, gScriptPort); });
       continue;
     }
+    if (h->msgh_id == SR_MSG_INSPECT_EDIT && (h->msgh_bits & MACH_MSGH_BITS_COMPLEX) && h->msgh_size >= sizeof u.m &&
+        u.m.b.msgh_descriptor_count == 1 && u.m.data.type == MACH_MSG_OOL_DESCRIPTOR) {   // inspect.m: change a layer
+      NSData *d = [NSData dataWithBytes:u.m.data.address length:u.m.data.size];
+      if (u.m.data.size) vm_deallocate(mach_task_self(), (vm_address_t)u.m.data.address, u.m.data.size);
+      NSDictionary *edit = [NSPropertyListSerialization propertyListWithData:d options:0 format:NULL error:NULL];
+      if ([edit isKindOfClass:NSDictionary.class]) dispatch_async(dispatch_get_main_queue(), ^{ SRInspectEdit(edit); });
+      continue;
+    }
     if (h->msgh_id == MACH_NOTIFY_DEAD_NAME) {   // the port of an inspect watcher that has gone
       mach_port_t name = u.dead.not_port;
       dispatch_async(dispatch_get_main_queue(), ^{ SRInspectDeadName(name); });

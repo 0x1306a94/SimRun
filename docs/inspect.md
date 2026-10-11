@@ -30,7 +30,10 @@ The plan, toward a view debugger like Xcode's but live:
 4. ✅ Contents: what layers drew and the images they show, sent as pictures, once each.
 5. ✅ The tree and inspector panels.
 
-Next could come: editing properties from the inspector, view controllers in the tree, and copying animations.
+Since then:
+- Editing properties from the inspector (or `simrun inspect --set`).
+- View controllers in the tree.
+- Copying animations.
 
 ```bash
 simrun inspect Showcase                 # the tree as text
@@ -278,6 +281,42 @@ middle. Selecting a layer anywhere selects it everywhere.
   
   This applies in the tree, the inspector and `simrun inspect`'s text, including layer names (UIKit names a view's
   layer after its class and its view controller's).
+
+### Editing
+
+The inspector's appearance and layout values are controls: Hidden and Clips to bounds checkboxes, number fields
+(opacity, border width, corner radius, position, size), and color wells (background, border, with a button back to no
+color). `simrun inspect <app> --set <id> <key>=<json>` makes the same changes from the command line, for example
+`--set 21 'backgroundColor=[1,0,0,1]'`.
+
+- An edit goes to the app as `SR_MSG_INSPECT_EDIT` (protocol.h) on the script port: `{ id, key, value }`.
+- The app applies it on its main thread, through the view when the layer is a view's (`hidden`, `alpha`,
+  `backgroundColor`, `center`, `bounds`), so UIKit's idea of the view agrees. Other layers are changed directly.
+- The change commits like any other and comes back as a batch. So the copy, the tree and the inspector show what the
+  app really did: UIKit's layout may change it back.
+- The inspector doesn't rebuild while a field is being typed in, or while a color well's panel is open. It refreshes
+  once that ends.
+
+### View controllers
+
+The app records, for each view's layer, the view controller whose view it is (`viewController`, from UIKit's
+`-[UIView _viewDelegate]`).
+- The tree shows a yellow row for the controller above its view, as Xcode does. Its item is the view's id negated, so
+  rows stay stable `NSNumber`s; selecting it selects the view.
+- The inspector lists the controller, and `simrun inspect` says "(view of controller)".
+
+### Animations
+
+A layer's `CAAnimation`s in flight come across too: `animations` is `{ key: keyed archive }`. Once committed, an
+animation carries an absolute `beginTime` on the mach clock. The Mac's `CACurrentMediaTime()` reads the same clock, so
+the copy plays it at exactly the app's moment instead of jumping to the end value. A 4-second fade added from a
+script showed half-faded in the copy one second in.
+- Each key is added again only when its archive changed. Keys gone from the app are removed.
+- Unarchiving allows only the animation classes, `CAMediaTimingFunction` and plist types.
+- A finished animation stays on the app's layer until that layer's next commit, so the tree can say `animating` a
+  little after it has ended: that is the app's state. On the Mac it removes itself on completion.
+- SwiftUI mostly animates by committing new values every frame, which the copy follows anyway.
+- Animations aren't applied in the 3D view: it shows model values.
 
 ## Findings
 

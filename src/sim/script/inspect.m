@@ -30,6 +30,7 @@
 
 static mach_port_t gHost;   // where batches go; MACH_PORT_NULL while nobody watches (main thread)
 static NSMapTable<CALayer *, NSNumber *> *gIds;            // layer -> its node id (weak keys)
+static NSMapTable<NSNumber *, CALayer *> *gLayers;         // and back (weak values): for edits
 static NSMapTable<CALayer *, CALayer *> *gMaskOwners;      // mask -> the layer it masks (weak both ways)
 static uint64_t gNextId = 2;                               // 1 is the screen
 static NSMutableDictionary<NSNumber *, NSDictionary *> *gSent;   // node id -> the properties last sent
@@ -83,7 +84,7 @@ static BOOL SRHookCommits(void) {
 // ---------------------------------------------------------------- reading a layer
 static NSNumber *SRId(CALayer *layer) {
   NSNumber *n = [gIds objectForKey:layer];
-  if (!n) { n = @(gNextId++); [gIds setObject:n forKey:layer]; }
+  if (!n) { n = @(gNextId++); [gIds setObject:n forKey:layer]; [gLayers setObject:layer forKey:n]; }
   return n;
 }
 
@@ -290,7 +291,15 @@ static NSDictionary *SRRecord(CALayer *l) {
   p[@"class"] = NSStringFromClass(l.class);
   p[@"kind"] = SRKind(l);
   id d = l.delegate;
-  if ([d isKindOfClass:UIView.class]) p[@"view"] = NSStringFromClass([d class]);
+  if ([d isKindOfClass:UIView.class]) {
+    p[@"view"] = NSStringFromClass([d class]);
+    // the view controller whose view this is (UIKit's -_viewDelegate)
+    static SEL viewDelegate; if (!viewDelegate) viewDelegate = NSSelectorFromString(@"_viewDelegate");
+    if ([d respondsToSelector:viewDelegate]) {
+      id vc = ((id (*)(id, SEL))objc_msgSend)(d, viewDelegate);
+      if ([vc isKindOfClass:UIViewController.class]) p[@"viewController"] = NSStringFromClass([vc class]);
+    }
+  }
   if (l.name.length) p[@"name"] = l.name;
   NSArray *subs = l.sublayers;
   if (subs.count) { NSMutableArray *ids = [NSMutableArray arrayWithCapacity:subs.count]; for (CALayer *s in subs) [ids addObject:SRId(s)]; p[@"sublayers"] = ids; }
@@ -331,6 +340,18 @@ static NSDictionary *SRRecord(CALayer *l) {
   if (l.compositingFilter) p[@"compositingFilter"] = SRFilterNames(@[ l.compositingFilter ]).firstObject;
   NSData *extras = SRExtras(l, p[@"kind"]);
   if (extras) p[@"extras"] = extras;
+  // animations in flight: each a keyed archive, by key. Once committed they carry an absolute beginTime on the mach
+  // clock (CACurrentMediaTime), which the Mac shares, so the copy plays them in step with the app.
+  NSArray *animationKeys = l.animationKeys;
+  if (animationKeys.count) {
+    NSMutableDictionary *anims = [NSMutableDictionary dictionary];
+    for (NSString *k in animationKeys) {
+      CAAnimation *a = [l animationForKey:k];
+      NSData *d = a ? [NSKeyedArchiver archivedDataWithRootObject:a requiringSecureCoding:YES error:NULL] : nil;
+      if (d) anims[k] = d; else VLOG("inspect: can't copy animation %s of %s", k.UTF8String, NSStringFromClass(l.class).UTF8String);
+    }
+    if (anims.count) p[@"animations"] = anims;
+  }
   if ([p[@"kind"] isEqual:@"portal"]) {   // what it shows: another layer of the tree
     id src = nil;
     @try { src = [l valueForKey:@"sourceLayer"]; } @catch (NSException *e) {}
@@ -557,6 +578,7 @@ void SRInspectStart(mach_port_t host, mach_port_t notify) {
   static BOOL hooked;
   if (!gIds) {
     gIds = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory];
+    gLayers = [NSMapTable strongToWeakObjectsMapTable];
     gMaskOwners = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality
                                         valueOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality];
     gDetached = [NSMutableSet set];
@@ -592,4 +614,38 @@ void SRInspectStart(mach_port_t host, mach_port_t notify) {
 void SRInspectDeadName(mach_port_t name) {
   mach_port_deallocate(mach_task_self(), name);   // the notification's reference
   if (name == gHost) SRInspectStop();
+}
+
+// ---------------------------------------------------------------- edits from the inspector
+// A view's layer is changed through the view (hidden, alpha, backgroundColor, center, bounds), so UIKit's idea of it
+// stays the same; other layers directly. The change commits like any other and comes back to SimRun as a batch.
+void SRInspectEdit(NSDictionary *edit) {
+  NSNumber *nid = edit[@"id"]; NSString *key = edit[@"key"]; id v = edit[@"value"];
+  CALayer *l = [nid isKindOfClass:NSNumber.class] ? [gLayers objectForKey:nid] : nil;
+  if (!l || ![key isKindOfClass:NSString.class]) { VLOG("inspect: edit of a layer that has gone (#%s)", nid.description.UTF8String); return; }
+  UIView *view = [l.delegate isKindOfClass:UIView.class] ? (UIView *)l.delegate : nil;
+  NSArray *a = [v isKindOfClass:NSArray.class] ? v : nil;
+  CGColorRef color = NULL;
+  if ([key hasSuffix:@"Color"] && a.count == 4) {
+    static CGColorSpaceRef ext; if (!ext) ext = CGColorSpaceCreateWithName(kCGColorSpaceExtendedSRGB);
+    CGFloat c[4] = { [a[0] doubleValue], [a[1] doubleValue], [a[2] doubleValue], [a[3] doubleValue] };
+    color = CGColorCreate(ext, c);
+  }
+  @try {
+    if ([key isEqual:@"hidden"]) { if (view) view.hidden = [v boolValue]; else l.hidden = [v boolValue]; }
+    else if ([key isEqual:@"opacity"]) { if (view) view.alpha = [v doubleValue]; else l.opacity = [v floatValue]; }
+    else if ([key isEqual:@"masksToBounds"]) l.masksToBounds = [v boolValue];
+    else if ([key isEqual:@"backgroundColor"]) { if (view) view.backgroundColor = color ? [UIColor colorWithCGColor:color] : nil; else l.backgroundColor = color; }
+    else if ([key isEqual:@"borderWidth"]) l.borderWidth = [v doubleValue];
+    else if ([key isEqual:@"borderColor"]) l.borderColor = color;
+    else if ([key isEqual:@"cornerRadius"]) l.cornerRadius = [v doubleValue];
+    else if ([key isEqual:@"position"] && a.count == 2) {
+      CGPoint p = CGPointMake([a[0] doubleValue], [a[1] doubleValue]);
+      if (view) view.center = p; else l.position = p;
+    } else if ([key isEqual:@"size"] && a.count == 2) {
+      CGRect b = l.bounds; b.size = CGSizeMake(MAX(0, [a[0] doubleValue]), MAX(0, [a[1] doubleValue]));
+      if (view) view.bounds = b; else l.bounds = b;
+    } else VLOG("inspect: can't edit %s", key.UTF8String);
+  } @catch (NSException *e) { LOG("inspect: editing %s failed: %s", key.UTF8String, e.reason.UTF8String); }
+  if (color) CGColorRelease(color);
 }

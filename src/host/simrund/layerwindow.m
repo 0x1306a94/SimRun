@@ -218,6 +218,10 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
   };
   _canvas.onMagnify = ^(CGFloat m) { SRLayerWindow *s = weakSelf; if (s && s->_threeD) s->_scene.zoom *= 1 + m; };
   _tree.onSelect = ^(NSNumber *nid) { [weakSelf select:nid fromTree:YES]; };
+  __weak SRSession *weakSession = session;
+  _inspector.onEdit = ^(NSNumber *nid, NSString *key, id value) {   // into the app; it comes back as a batch
+    if (![weakSession editLayer:nid key:key value:value]) NSBeep();
+  };
   [_inspector showNode:nil of:nil];
 
   _token = [session addLayerObserver:^(SRLayerMirror *mirror, NSDictionary *changes) { [weakSelf mirror:mirror changed:changes]; }];

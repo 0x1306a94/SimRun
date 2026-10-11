@@ -4,6 +4,7 @@
 #import "layermirror.h"
 #import <ImageIO/ImageIO.h>
 #import <Metal/Metal.h>
+#import <objc/runtime.h>
 #include <dlfcn.h>
 
 @implementation SRMirrorNode
@@ -92,6 +93,30 @@ static NSDictionary *Extras(id data) {
     if (!d) { static int logged; if (logged++ < 5) NSLog(@"[layers] can't unarchive extras: %@", err.localizedDescription); }
     return [d isKindOfClass:NSDictionary.class] ? d : nil;
   } @catch (NSException *e) { return nil; }
+}
+
+// A node's animations (inspect.m): keyed archives by key, unarchived into the CAAnimation classes. Each is added again
+// only when it changed (or is new); those gone from the app are removed.
+static void ApplyAnimations(CALayer *l, NSDictionary *p) {
+  static NSSet *allowed;
+  if (!allowed) allowed = [NSSet setWithArray:@[ CABasicAnimation.class, CAKeyframeAnimation.class, CASpringAnimation.class, CAAnimationGroup.class,
+                                                 CATransition.class, CAMediaTimingFunction.class, NSValue.class, NSNumber.class, NSArray.class,
+                                                 NSString.class, NSDictionary.class, NSNull.class, NSData.class ]];
+  NSDictionary *anims = [p[@"animations"] isKindOfClass:NSDictionary.class] ? p[@"animations"] : @{};
+  static char appliedKey;   // what was last added, per key: the archives
+  NSMutableDictionary *applied = objc_getAssociatedObject(l, &appliedKey);
+  if (!applied && !anims.count) return;
+  if (!applied) { applied = [NSMutableDictionary dictionary]; objc_setAssociatedObject(l, &appliedKey, applied, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+  for (NSString *k in applied.allKeys) if (!anims[k]) { [l removeAnimationForKey:k]; [applied removeObjectForKey:k]; }
+  [anims enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSData *d, BOOL *stop) {
+    if (![d isKindOfClass:NSData.class] || [applied[k] isEqual:d]) return;
+    CAAnimation *a = nil;
+    @try { a = [NSKeyedUnarchiver unarchivedObjectOfClasses:allowed fromData:d error:NULL]; } @catch (NSException *e) {}
+    if (![a isKindOfClass:CAAnimation.class]) return;
+    a.delegate = nil;
+    [l addAnimation:a forKey:k];
+    applied[k] = d;
+  }];
 }
 
 static void ApplyExtras(CALayer *l, NSDictionary *p) {
@@ -272,6 +297,7 @@ static CGImageRef NewPicture(NSDictionary *d) {
   l.hidden = Bool(p[@"hidden"], NO);
   SRApplyAppearance(l, p, YES);
   l.contents = (__bridge id)[self imageNamed:p[@"contentsImage"]];
+  ApplyAnimations(l, p);
   CALayer *standIn = SRUpdateStandIn(l, n.placeholder, p, _showsPlaceholders);
   BOOL changed = standIn != n.placeholder;
   if (changed && standIn) [_layerNodes setObject:n.nid forKey:standIn];
@@ -424,7 +450,8 @@ static NSString *Hex(id v) {
 - (NSString *)lineFor:(SRMirrorNode *)n {
   NSDictionary *p = n.props;
   NSMutableString *s = [NSMutableString stringWithFormat:@"%@ #%@", SRReadableClassName(Str(p[@"class"], @"?")), n.nid];
-  if (p[@"view"]) [s appendFormat:@" (%@)", SRReadableClassName(p[@"view"])];
+  if (p[@"view"]) [s appendFormat:@" (%@%@)", SRReadableClassName(p[@"view"]),
+                                  p[@"viewController"] ? [@" of " stringByAppendingString:SRReadableClassName(p[@"viewController"])] : @""];
   CGRect b = RectOf(p[@"bounds"], CGRectZero); CGPoint pos = PointOf(p[@"position"], CGPointZero), ap = PointOf(p[@"anchorPoint"], CGPointMake(0.5, 0.5));
   [s appendFormat:@" (%@,%@ %@x%@)", Fmt(pos.x - ap.x * b.size.width), Fmt(pos.y - ap.y * b.size.height), Fmt(b.size.width), Fmt(b.size.height)];
   if (b.origin.x || b.origin.y) [s appendFormat:@" origin=(%@,%@)", Fmt(b.origin.x), Fmt(b.origin.y)];
@@ -450,6 +477,7 @@ static NSString *Hex(id v) {
   if (p[@"backgroundFilters"]) [s appendFormat:@" backgroundFilters=%@", [p[@"backgroundFilters"] componentsJoinedByString:@","]];
   if (p[@"compositingFilter"]) [s appendFormat:@" compositing=%@", p[@"compositingFilter"]];
   if (p[@"string"]) [s appendFormat:@" string=\"%@\"", p[@"string"]];
+  if ([p[@"animations"] count]) [s appendFormat:@" animating=%@", [[[p[@"animations"] allKeys] sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]];
   NSMutableArray *extras = [[Extras(p[@"extras"]) allKeys] mutableCopy];
   [extras removeObjectsInArray:@[ @"filters", @"backgroundFilters", @"compositingFilter" ]];   // listed above
   if (extras.count) [s appendFormat:@" {%@}", [[extras sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]];

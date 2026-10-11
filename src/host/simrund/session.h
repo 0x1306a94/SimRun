@@ -48,4 +48,6 @@ typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 - (void)removeLayerObserver:(id)token;
 // Asks the app for its whole tree again (`simrun inspect --check`: does the live copy match a fresh one?).
 - (void)resyncLayers;
+// Changes a property of one of the app's layers (protocol.h SR_MSG_INSPECT_EDIT); the change comes back as a batch.
+- (BOOL)editLayer:(NSNumber *)nid key:(NSString *)key value:(id)value;
 @end

@@ -425,6 +425,21 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
                           .msgh_remote_port = _scriptPort, .msgh_local_port = port, .msgh_id = SR_MSG_INSPECT_START };
   return mach_msg(&h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof h, 0, MACH_PORT_NULL, 1000, MACH_PORT_NULL) == KERN_SUCCESS;
 }
+- (BOOL)editLayer:(NSNumber *)nid key:(NSString *)key value:(id)value {
+  if (_exited || !_scriptPort || !nid || !key) return NO;
+  NSMutableDictionary *edit = [@{ @"id": nid, @"key": key } mutableCopy];
+  if (value) edit[@"value"] = value;   // none: back to none (a color)
+  NSData *d = [NSPropertyListSerialization dataWithPropertyList:edit format:NSPropertyListBinaryFormat_v1_0 options:0 error:NULL];
+  if (!d) return NO;
+  sr_script_msg_t m = {0};
+  m.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0) | MACH_MSGH_BITS_COMPLEX;
+  m.h.msgh_size = sizeof m; m.h.msgh_remote_port = _scriptPort; m.h.msgh_id = SR_MSG_INSPECT_EDIT;
+  m.b.msgh_descriptor_count = 1;
+  m.data.address = (void *)d.bytes; m.data.size = (mach_msg_size_t)d.length;
+  m.data.deallocate = FALSE; m.data.copy = MACH_MSG_VIRTUAL_COPY; m.data.type = MACH_MSG_OOL_DESCRIPTOR;
+  m.kind = SR_INSPECT_EDIT;
+  return mach_msg(&m.h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof m, 0, MACH_PORT_NULL, 100, MACH_PORT_NULL) == KERN_SUCCESS;
+}
 - (void)resyncLayers { if (_inspectPort && _scriptPort) [self sendInspectStart:_inspectPort]; }
 - (BOOL)startInspecting {
   mach_port_t task = mach_task_self(), port = MACH_PORT_NULL;

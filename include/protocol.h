@@ -12,7 +12,8 @@
 #include <mach/mach.h>
 #define SR_PORT_SLOT_HOST 0
 enum { SR_MSG_HELLO = 0x5352000, SR_MSG_SURFACE, SR_MSG_FRAME, SR_MSG_INPUT, SR_MSG_FRAME_ACK,
-       SR_MSG_SCRIPT_HELLO, SR_MSG_SCRIPT_EVAL, SR_MSG_SCRIPT_OUTPUT, SR_MSG_INSPECT_START, SR_MSG_INSPECT_BATCH };
+       SR_MSG_SCRIPT_HELLO, SR_MSG_SCRIPT_EVAL, SR_MSG_SCRIPT_OUTPUT, SR_MSG_INSPECT_START, SR_MSG_INSPECT_BATCH,
+       SR_MSG_INSPECT_EDIT };
 typedef struct { mach_msg_header_t h; mach_msg_body_t b; mach_msg_port_descriptor_t port; uint32_t w, h_px; float scale; } sr_port_msg_t;
 // surface_id/checksum/present_time are optional (a shorter message has only seq); checksum is sr_surface_checksum()
 // at present time when the sim side runs with SIMFB_CHECK=1, else 0.
@@ -67,4 +68,7 @@ typedef struct { mach_msg_header_t h; mach_msg_body_t b; mach_msg_ool_descriptor
 // SR_MSG_INSPECT_BATCH messages (an sr_script_msg_t; kind SR_INSPECT_BATCH): `data` is a binary property list, first
 // the whole tree, then after each Core Animation commit what changed. It stops when that port dies (the host
 // destroys it to stop watching); a new START replaces the previous watcher.
-enum { SR_INSPECT_BATCH = 1 };
+// SR_MSG_INSPECT_EDIT (host -> app, to the script port; an sr_script_msg_t, kind SR_INSPECT_EDIT): `data` is a binary
+// property list { id: node, key: property, value }, a change to make to that layer (hidden, opacity, masksToBounds,
+// backgroundColor, borderWidth, borderColor, cornerRadius, position, size). The change comes back as a batch.
+enum { SR_INSPECT_BATCH = 1, SR_INSPECT_EDIT };

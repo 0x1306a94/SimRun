@@ -1,5 +1,7 @@
 // layertree.m — see layertree.h. The shown nodes and their shown children are worked out once per reload: in views
-// mode a view's children are the nearest view-backed layers under it, through the layers in between.
+// mode a view's children are the nearest view-backed layers under it, through the layers in between. A view that is a
+// view controller's view gets a row for the controller above it, as in Xcode; that row's item is the view's id
+// negated, so rows stay stable NSNumbers.
 #import "layertree.h"
 #import "layermirror.h"
 
@@ -82,9 +84,13 @@
   return n && (_showsAllLayers || n.props[@"view"]);
 }
 - (NSString *)label:(NSNumber *)nid {
+  if (nid.longLongValue < 0) return SRReadableClassName(_mirror.nodes[@(-nid.longLongValue)].props[@"viewController"]);
   NSDictionary *p = _mirror.nodes[nid].props;
   return SRReadableClassName(p[@"view"] ?: p[@"class"]);
 }
+// The row a shown node appears as under its parent: its view controller's, if it is one's view.
+- (NSNumber *)rowItem:(NSNumber *)nid { return _mirror.nodes[nid].props[@"viewController"] ? @(-nid.longLongValue) : nid; }
+static NSNumber *NodeOf(NSNumber *item) { return item.longLongValue < 0 ? @(-item.longLongValue) : item; }
 // The shown nodes under `nid`: its sublayers that are shown, and the shown ones under those that aren't.
 - (void)collect:(NSNumber *)nid into:(NSMutableArray *)out {
   for (NSNumber *c in _mirror.nodes[nid].props[@"sublayers"]) {
@@ -99,15 +105,20 @@
     if ([n.props[@"mask"] isKindOfClass:NSNumber.class]) parent[n.props[@"mask"]] = nid;
   }];
   _layerParent = parent;
+  NSMutableArray *topNodes = [NSMutableArray array];
+  [self collect:@1 into:topNodes];   // under the screen: the windows
   NSMutableArray *top = [NSMutableArray array];
-  [self collect:@1 into:top];   // under the screen: the windows
+  for (NSNumber *n in topNodes) [top addObject:[self rowItem:n]];
   children[@0] = top;
-  NSMutableArray *todo = [top mutableCopy];
+  NSMutableArray *todo = [topNodes mutableCopy];
   while (todo.count) {
     NSNumber *nid = todo.lastObject; [todo removeLastObject];
+    if (nodes[nid].props[@"viewController"]) children[@(-nid.longLongValue)] = @[ nid ];   // the controller's row holds its view
     NSMutableArray *kids = [NSMutableArray array];
     [self collect:nid into:kids];
-    children[nid] = kids;
+    NSMutableArray *rows = [NSMutableArray array];
+    for (NSNumber *k in kids) [rows addObject:[self rowItem:k]];
+    children[nid] = rows;
     [todo addObjectsFromArray:kids];
   }
   // the filter keeps the rows that match it and the rows above them
@@ -119,9 +130,9 @@
     weakVisit = visit = ^BOOL(NSNumber *nid) {
       BOOL any = NO;
       for (NSNumber *c in children[nid]) any |= weakVisit(c);
-      NSDictionary *p = nodes[nid].props;
-      NSString *hay = [NSString stringWithFormat:@"%@ %@ %@ #%@ %@", [self label:nid], SRReadableClassName(p[@"class"]), p[@"name"] ?: @"", nid,
-                                                 p[@"view"] ?: @""].lowercaseString;
+      NSDictionary *p = nodes[NodeOf(nid)].props;
+      NSString *hay = [NSString stringWithFormat:@"%@ %@ %@ #%@ %@ %@", [self label:nid], SRReadableClassName(p[@"class"]), p[@"name"] ?: @"", NodeOf(nid),
+                                                 p[@"view"] ?: @"", p[@"viewController"] ? SRReadableClassName(p[@"viewController"]) : @""].lowercaseString;
       if (any || [hay containsString:filter]) { [keep addObject:nid]; return YES; }
       return NO;
     };
@@ -174,7 +185,11 @@
   if (_reloadScheduled) [self reloadNow];   // the node may be new
   NSMutableArray *chain = [NSMutableArray array];
   for (NSNumber *a = nid ? [self shownAncestor:nid] : nil; a; a = [self shownAncestor:a]) [chain insertObject:a atIndex:0];
-  for (NSNumber *a in chain) [_outline expandItem:a];
+  for (NSNumber *a in chain) {
+    if (![[self rowItem:a] isEqual:a]) [_outline expandItem:[self rowItem:a]];   // its controller's row first
+    [_outline expandItem:a];
+  }
+  if (nid && ![[self rowItem:nid] isEqual:nid]) [_outline expandItem:[self rowItem:nid]];
   NSInteger row = nid ? [_outline rowForItem:nid] : -1;
   _selecting = YES;
   if (row >= 0) { [_outline selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO]; [_outline scrollRowToVisible:row]; }
@@ -184,7 +199,7 @@
 }
 - (void)outlineViewSelectionDidChange:(NSNotification *)n {
   if (_selecting || !self.onSelect) return;
-  self.onSelect(_outline.selectedRow >= 0 ? [_outline itemAtRow:_outline.selectedRow] : nil);
+  self.onSelect(_outline.selectedRow >= 0 ? NodeOf([_outline itemAtRow:_outline.selectedRow]) : nil);   // a controller's row: its view
 }
 
 // ---------------------------------------------------------------- data source and rows
@@ -220,12 +235,14 @@ static NSString *SymbolFor(NSDictionary *p) {
     [cell addSubview:icon]; [cell addSubview:text];
     cell.imageView = icon; cell.textField = text;
   }
-  NSDictionary *p = _mirror.nodes[nid].props;
-  BOOL hidden = [p[@"hidden"] boolValue] || [p[@"opacity"] doubleValue] == 0 && p[@"opacity"];
-  cell.imageView.image = [NSImage imageWithSystemSymbolName:SymbolFor(p) accessibilityDescription:nil];
+  BOOL controller = nid.longLongValue < 0;
+  NSDictionary *p = _mirror.nodes[NodeOf(nid)].props;
+  BOOL hidden = !controller && ([p[@"hidden"] boolValue] || ([p[@"opacity"] doubleValue] == 0 && p[@"opacity"]));
+  cell.imageView.image = [NSImage imageWithSystemSymbolName:controller ? @"circle.inset.filled" : SymbolFor(p) accessibilityDescription:nil];
+  cell.imageView.contentTintColor = controller ? NSColor.systemYellowColor : NSColor.secondaryLabelColor;   // controllers yellow, as in Xcode
   cell.textField.stringValue = [self label:nid];
   cell.textField.textColor = hidden ? NSColor.tertiaryLabelColor : NSColor.labelColor;
-  cell.toolTip = [_mirror describeNode:nid];
+  cell.toolTip = controller ? SRReadableClassName(p[@"viewController"]) : [_mirror describeNode:nid];
   return cell;
 }
 @end

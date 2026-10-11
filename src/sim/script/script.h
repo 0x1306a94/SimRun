@@ -25,6 +25,8 @@ void SRRunScript(NSString *source, uint32_t flags, void (^emit)(uint32_t kind, N
 // its dead-name notification goes to `notify`, and is handed to SRInspectDeadName.
 void SRInspectStart(mach_port_t host, mach_port_t notify);
 void SRInspectDeadName(mach_port_t name);
+// inspect.m (main thread): a change to a layer from SimRun's inspector (protocol.h SR_MSG_INSPECT_EDIT).
+void SRInspectEdit(NSDictionary *edit);
 
 // ui.m: the app's foreground window scene, and its windows back to front.
 @class UIWindowScene, UIWindow;

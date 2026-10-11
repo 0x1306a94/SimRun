@@ -831,6 +831,12 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
   SRRequest *r = [self instanceMatching:Str(d, @"instance") profile:Str(d, @"profile") error:&err];
   if (!r) { SendReply(c, @{ @"error": err }, nil); return; }
   __weak SRSession *s = r.session;   // it holds the observer, which holds finish
+  NSDictionary *set = [d[@"set"] isKindOfClass:NSDictionary.class] ? d[@"set"] : nil;
+  if (set) {   // --set: change one layer's property (it comes back to watchers as a batch)
+    BOOL ok = [r.session editLayer:set[@"id"] key:set[@"key"] value:set[@"value"]];
+    SendReply(c, ok ? @{ @"ok": @YES } : @{ @"error": [NSString stringWithFormat:@"%@ can't be changed (launched with SCRIPT_DISABLE?)", r.session.title] }, nil);
+    return;
+  }
   BOOL watch = [d[@"watch"] isEqual:@YES], png = [d[@"png"] isEqual:@YES], check = [d[@"check"] isEqual:@YES], explode = [d[@"3d"] isEqual:@YES];
   dispatch_queue_t q = dispatch_queue_create("dev.simrun.inspect-client", DISPATCH_QUEUE_SERIAL);   // writes off the main thread
   __block id token = nil;

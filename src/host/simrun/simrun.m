@@ -36,11 +36,13 @@ static const char kUsage[] =
   "                             run JavaScript in a running app: prints its console output, then its value; exits\n"
   "                             1 if it throws. The script is the argument, the file (- for stdin), or stdin.\n"
   "                             --snapshot: then print the screen as text (app.snapshot()) once the UI has settled\n"
-  "  inspect <pid | app> [-p <profile>] [--watch] [--png <file> [--3d]] [--check]\n"
+  "  inspect <pid | app> [-p <profile>] [--watch] [--png <file> [--3d]] [--check] [--set <id> <key>=<json>]\n"
   "                             print the app's layer tree as SimRun copies it (App > Show Layers draws the copy);\n"
   "                             --watch: then a line per update until Ctrl-C; --png: save the copy as drawn on the\n"
   "                             Mac (--3d: spread out in depth, as in Show Layers' 3D view); --check: compare the\n"
-  "                             live copy with a fresh one (exits 1 if they differ)\n"
+  "                             live copy with a fresh one (exits 1 if they differ); --set: change a layer (hidden,\n"
+  "                             opacity, masksToBounds, backgroundColor, borderWidth, borderColor, cornerRadius,\n"
+  "                             position, size), e.g. --set 21 'backgroundColor=[1,0,0,1]'\n"
   "  profiles [<bundle ID | App.app>]\n"
   "                             apps' data containers: their default one and their profiles\n"
   "  runtimes                   the installed iOS runtimes (* = SimRun's)\n"
@@ -322,15 +324,31 @@ static int Inspect(NSArray<NSString *> *args) {
   BOOL watch = [a containsObject:@"--watch"], check = [a containsObject:@"--check"], explode = [a containsObject:@"--3d"];
   [a removeObject:@"--watch"]; [a removeObject:@"--check"]; [a removeObject:@"--3d"];
   NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *rest = [NSMutableArray array];
+  // --set <id> <key>=<json value>: change a layer's property
+  NSUInteger setAt = [a indexOfObject:@"--set"];
+  NSDictionary *set = nil;
+  if (setAt != NSNotFound) {
+    if (setAt + 2 >= a.count) return Usage();
+    NSString *nid = a[setAt + 1], *assign = a[setAt + 2];
+    NSRange eq = [assign rangeOfString:@"="];
+    if (eq.location == NSNotFound || !nid.integerValue) return Usage();
+    NSString *json = [assign substringFromIndex:NSMaxRange(eq)];
+    id value = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:NSJSONReadingFragmentsAllowed error:NULL] : nil;
+    if (json.length && !value) return Fail(@"--set: %@ isn't JSON (a number, true/false, [r, g, b, a], [x, y]…)", json);
+    set = value ? @{ @"id": @(nid.integerValue), @"key": [assign substringToIndex:eq.location], @"value": value }
+                : @{ @"id": @(nid.integerValue), @"key": [assign substringToIndex:eq.location] };
+    [a removeObjectsInRange:NSMakeRange(setAt, 3)];
+  }
   NSString *err = ParseOptions(a, @{ @"-p": @"profile", @"--profile": @"profile", @"--png": @"png" }, NO, o, rest);
   if (err) { Fail(@"%@", err); return Usage(); }
-  if (rest.count != 1 || (check && (watch || o[@"png"])) || (explode && !o[@"png"])) return Usage();
+  if (rest.count != 1 || (check && (watch || o[@"png"])) || (explode && !o[@"png"]) || (set && (watch || check || o[@"png"]))) return Usage();
   NSMutableDictionary *req = [@{ @"action": @"inspect", @"instance": rest[0] } mutableCopy];
   if (o[@"profile"]) req[@"profile"] = o[@"profile"];
   if (watch) req[@"watch"] = @YES;
   if (check) req[@"check"] = @YES;
   if (o[@"png"]) req[@"png"] = @YES;
   if (explode) req[@"3d"] = @YES;
+  if (set) req[@"set"] = set;
   int s = Connect(NO);
   if (s < 0) return Fail(@"SimRun isn't running");
   if (simrund_send(s, (__bridge CFDictionaryRef)req, NULL, 0)) return Fail(@"send failed");
@@ -338,6 +356,7 @@ static int Inspect(NSArray<NSString *> *args) {
     NSDictionary *msg = CFBridgingRelease(simrund_recv(s, NULL, NULL));
     if (!msg) return watch ? 0 : Fail(@"lost connection to SimRun");
     if ([msg[@"error"] isKindOfClass:NSString.class]) return Fail(@"%@", msg[@"error"]);
+    if (set && msg[@"ok"]) return 0;
     NSString *tree = [msg[@"tree"] isKindOfClass:NSString.class] ? msg[@"tree"] : nil;
     if (tree && check) {
       NSString *before = [msg[@"before"] isKindOfClass:NSString.class] ? msg[@"before"] : @"";
