@@ -1,5 +1,5 @@
 // loctest — the locale, languages and time zone Foundation sees, and what the formatters make of them.
-// Run with scripts/simapp.sh: the result should match the Mac's language & region settings (and time zone).
+// Run with `simrun run build/tests/loctest`: the result should match the Mac's language & region settings (and time zone).
 #import <Foundation/Foundation.h>
 #include <time.h>
 

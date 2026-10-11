@@ -94,11 +94,12 @@ How your Mac maps to an iPhone:
 ### From the terminal
 
 ```bash
-scripts/simapp.sh build/apps/Showcase.app
+build/bin/simrun run build/apps/Showcase.app
 ```
 
 The app opens in a window, and its output appears in your terminal. Press Ctrl-C or close the window to quit it.
-Anything after the app's path is passed to the app as launch arguments.
+Anything after the app's path is passed to the app as launch arguments. `simrun` is also inside the app, at
+`SimRun.app/Contents/Helpers/simrun`; link either one into your `PATH` to type just `simrun`.
 
 If SimRun isn't open, this starts it in the background without the launcher. It quits by itself after 10 minutes
 with no apps running.
@@ -117,16 +118,19 @@ with no apps running.
   features such as the Dynamic Island. From the terminal, set `SIMRUN_DEVICE`:
 
   ```bash
-  SIMRUN_DEVICE="iPhone SE (3rd generation)" scripts/simapp.sh path/to/MyApp.app
+  build/bin/simrun run --device "iPhone SE (3rd generation)" path/to/MyApp.app
   ```
 
   The default is the runtime's 6.3-inch iPhone Pro (402 × 874), or its newest iPhone if it has none. Resizing a
   window only scales the picture; it doesn't change the screen size the app sees.
 - **See your app's `NSLog` and `os_log` messages** in the terminal by adding `OS_ACTIVITY_DT_MODE=1` before
-  `scripts/simapp.sh`.
-- **Manage the background SimRun** with `scripts/simrund.sh status`, `scripts/simrund.sh stop` and
-  `scripts/simrund.sh log`. The log is the first place to look when an app fails to start.
-- **Run an app on its own**, isolated from other apps, with `SIMAPP_STANDALONE=1 scripts/simapp.sh …`.
+  `simrun run`.
+- **Run an app twice with separate data** with profiles: `simrun run --profile alice …` uses the app's container
+  for profile "alice" (created on first use), so it can run next to the app's default container, or another profile.
+  `simrun profiles` lists them.
+- **Manage running apps** with `simrun list`, `simrun quit <app>` and `simrun screenshot <app>`.
+- **Manage the background SimRun** with `simrun status`, `simrun stop` and `simrun log`. The log is the first place
+  to look when an app fails to start. `simrun help` lists every command.
 
 There are many more settings for troubleshooting and debugging. See [Configuration and reference](docs/reference.md).
 

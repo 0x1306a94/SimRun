@@ -234,9 +234,8 @@ finger on the glass, not just those that opt into scroll events.
 
 ## 5. Merge instructions (for the integrator)
 
-- **Drop-in:** append `hid.dylib` to the insert list. `SIMAPP_EXTRA_INSERT=$B/hid/hid.dylib ./simapp.sh App.app`
-  already works.
-- **To fold it into the stack permanently:** add it to `SIMNS_INSERT` in simapp.sh, or compile hid.m into glue.dylib.
+- **Drop-in:** append `hid.dylib` to the insert list. `simrun run --insert $B/hid/hid.dylib App.app` already works.
+- **To fold it into the stack permanently:** add it to `+[SREnvironment injectedLibraries]`, or compile hid.m into glue.dylib.
   It has no dependency on other dylibs: it uses `SRScenesUpdate` only optionally via dlsym, and it includes
   `../viewer/protocol.h`.
 - **Interposers:** only one, `GSEventIsHardwareKeyboardAttached`. No other SimRun dylib interposes it (checked rshim,

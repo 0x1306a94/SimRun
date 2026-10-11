@@ -10,6 +10,9 @@ Measured: 1206x2622 BGRA at about 50–55 fps in steady state (3 s runs give 150
 ./build.sh && ./run.sh      # -> out/{direct,hosted,uikit,simns}/frame_*.png, out/host_*.png
 ```
 
+This is the record of the prototype. Its pieces are gone: gpuhost.m now runs inside SimRun, and `rhost`, `catest`,
+`fakeframes` and `simrun.sh` were removed (they are in the git history).
+
 ## 1. Architecture
 
 ```

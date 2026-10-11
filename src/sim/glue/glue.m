@@ -1,5 +1,6 @@
 // glue.dylib — wires the in-process services together inside the sim app (SIM platform).
-// Inject order: rshim.dylib : glue.dylib : scenes.dylib : hid.dylib : pboard.dylib : drag.dylib : keychain.dylib (see scripts/simapp.sh)
+// Inject order: rshim.dylib : glue.dylib : scenes.dylib : hid.dylib : pboard.dylib : drag.dylib : keychain.dylib : webkit.dylib (see
+// +[SREnvironment injectedLibraries], src/host/simrund/environment.m)
 //   1. constructor: start the sim-QuartzCore render server in-process (what backboardd does), BEFORE scenes.dylib's
 //      constructor probes CARenderServerGetServerPort() (so its no-render-server stopgaps stay off).
 //   2. act as the scene host (SpringBoard's job): a displayable CAContext on the main display whose root is a

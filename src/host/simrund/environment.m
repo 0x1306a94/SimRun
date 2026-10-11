@@ -1,4 +1,4 @@
-// environment.m — see environment.h. Keep in sync with scripts/simrun.sh.
+// environment.m — see environment.h.
 #import "environment.h"
 #include <mach-o/dyld.h>
 #include <pwd.h>
@@ -91,7 +91,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *SimctlRuntimes(void) {
   NSTask *t = [NSTask new];
   t.executableURL = [NSURL fileURLWithPath:@"/usr/bin/xcrun"];
   t.arguments = @[ @"simctl", @"list", @"runtimes", @"--json" ];
-  // a Mac process: none of the sim environment SimRun itself may have been started with (simrun.sh)
+  // a Mac process: none of the sim environment SimRun itself may have been started with
   NSMutableDictionary *env = [NSMutableDictionary dictionary];
   [NSProcessInfo.processInfo.environment enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *stop) {
     if (![k hasPrefix:@"DYLD_"] && ![k hasPrefix:@"SIMULATOR_"] && ![k hasPrefix:@"IPHONE_"] && ![@[ @"CFFIXED_USER_HOME", @"TMPDIR" ] containsObject:k]) env[k] = v;
@@ -170,6 +170,16 @@ static NSMutableDictionary<NSString *, SRDeviceType *> *gDeviceTypes;   // by bu
 }
 + (SRRuntime *)installedRuntimeWithBuild:(NSString *)build {
   for (SRRuntime *r in [self installedRuntimes]) if ([r.build isEqualToString:build]) return r;
+  return nil;
+}
++ (SRRuntime *)runtimeMatching:(NSString *)spec {
+  if (!spec.length) return nil;
+  BOOL dir = NO;
+  if ([NSFileManager.defaultManager fileExistsAtPath:spec isDirectory:&dir] && dir) return [SRRuntime runtimeAtRoot:spec.stringByStandardizingPath];
+  for (SRRuntime *r in [self installedRuntimes])   // newest first
+    if ([r.build caseInsensitiveCompare:spec] == NSOrderedSame || [r.name caseInsensitiveCompare:spec] == NSOrderedSame ||
+        [r.version isEqualToString:spec] || [[@"iOS " stringByAppendingString:r.version] caseInsensitiveCompare:spec] == NSOrderedSame)
+      return r;
   return nil;
 }
 
@@ -307,6 +317,25 @@ static NSArray<NSString *> *ScannedDeviceTypePaths(NSString *version) {
   return c;
 }
 
++ (NSArray<NSString *> *)containerIdentifiers {
+  NSString *containers = [[self dataDirectory] stringByAppendingPathComponent:@"Containers/Data"];
+  NSMutableSet *ids = [NSMutableSet set];
+  for (NSString *sub in @[ @"Application", @"Profiles" ])
+    for (NSString *d in [NSFileManager.defaultManager contentsOfDirectoryAtPath:[containers stringByAppendingPathComponent:sub] error:nil])
+      if (![d hasPrefix:@"."]) [ids addObject:d];
+  return [ids.allObjects sortedArrayUsingSelector:@selector(compare:)];
+}
++ (NSArray<NSString *> *)profilesForIdentifier:(NSString *)identifier {
+  NSFileManager *fm = NSFileManager.defaultManager;
+  NSMutableArray *out = [NSMutableArray array];
+  BOOL dir = NO;
+  if ([fm fileExistsAtPath:[self containerPathForIdentifier:identifier profile:nil] isDirectory:&dir] && dir) [out addObject:@"default"];
+  NSString *profiles = [[[self dataDirectory] stringByAppendingPathComponent:@"Containers/Data/Profiles"] stringByAppendingPathComponent:identifier];
+  for (NSString *p in [[fm contentsOfDirectoryAtPath:profiles error:nil] sortedArrayUsingSelector:@selector(localizedStandardCompare:)])
+    if (![p hasPrefix:@"."] && [fm fileExistsAtPath:[profiles stringByAppendingPathComponent:p] isDirectory:&dir] && dir) [out addObject:p];
+  return out;
+}
+
 + (NSDictionary<NSString *, NSString *> *)simulatorVariablesForRoot:(NSString *)R { return [self simulatorVariablesForRoot:R deviceType:nil]; }
 + (NSDictionary<NSString *, NSString *> *)simulatorVariablesForRoot:(NSString *)R deviceType:(SRDeviceType *)device {
   NSDictionary *env = NSProcessInfo.processInfo.environment;
@@ -338,7 +367,7 @@ static NSArray<NSString *> *ScannedDeviceTypePaths(NSString *version) {
 
 + (NSString *)hostInternationalSettings {
   // The Mac's language & region settings (rshim.dylib applies them in each app). Read from the plist: when SimRun runs
-  // from simrun.sh, HOME and CFFIXED_USER_HOME are the device's, and CFPreferences would read the device's instead.
+  // with a sim environment, HOME and CFFIXED_USER_HOME are the device's, and CFPreferences would read the device's instead.
   NSDictionary *g = [NSDictionary dictionaryWithContentsOfFile:[RealHome() stringByAppendingPathComponent:@"Library/Preferences/.GlobalPreferences.plist"]];
   if (!g) return nil;
   NSMutableDictionary *out = [NSMutableDictionary dictionary];
@@ -378,11 +407,11 @@ static NSArray<NSString *> *ScannedDeviceTypePaths(NSString *version) {
   return InAppBundle() ? [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"lib"]
                        : [[ExecutableDir() stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"lib"];
 }
-+ (NSString *)injectedLibraries {
++ (NSString *)injectedLibraries { return [self injectedLibrariesWithExtra:NSProcessInfo.processInfo.environment[@"SIMAPP_EXTRA_INSERT"]]; }
++ (NSString *)injectedLibrariesWithExtra:(NSString *)extra {
   NSString *d = [self libraryDirectory];
   NSMutableArray *libs = [NSMutableArray array];
   for (NSString *n in @[ @"rshim.dylib", @"glue.dylib", @"scenes.dylib", @"hid.dylib", @"pboard.dylib", @"drag.dylib", @"keychain.dylib", @"webkit.dylib" ]) [libs addObject:[d stringByAppendingPathComponent:n]];
-  NSString *extra = NSProcessInfo.processInfo.environment[@"SIMAPP_EXTRA_INSERT"];
   if (extra.length) [libs addObject:extra];
   return [libs componentsJoinedByString:@":"];
 }

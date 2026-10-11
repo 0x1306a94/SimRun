@@ -5,9 +5,9 @@ is built on it but hasn't been tested on its own. Before this, a web view stayed
 processes could be started.
 
 ```bash
-make tests && scripts/simapp.sh build/apps/WebTest.app                       # inline HTML + JS + a text field
-scripts/simapp.sh build/apps/WebTest.app https://example.com                 # a real page
-WEBKIT_VERBOSE=1 WEBTEST_DUMP=1 scripts/simapp.sh build/apps/WebTest.app     # helper launches; the web view's layer tree
+make tests && build/bin/simrun run build/apps/WebTest.app                       # inline HTML + JS + a text field
+build/bin/simrun run build/apps/WebTest.app https://example.com                 # a real page
+WEBKIT_VERBOSE=1 WEBTEST_DUMP=1 build/bin/simrun run build/apps/WebTest.app     # helper launches; the web view's layer tree
 ```
 
 WebTest prints `[webtest] finished after N s: <title> | <text>` once a navigation has finished, read back through

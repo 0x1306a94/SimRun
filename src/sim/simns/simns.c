@@ -1,4 +1,5 @@
-// simns — minimal launchd_sim replacement (SIM platform). Usage: simrun.sh simns <app-binary> [args...]
+// simns — minimal launchd_sim replacement (SIM platform). SimRun runs it as `simns --serve`; on its own (in a sim
+// environment): simns <app-binary> [args...]
 // Serves the launchd XPC-pipe protocol on a port that becomes the app's TASK_BOOTSTRAP_PORT.
 // Sim libxpc only checks that XPC_SIMULATOR_LAUNCHD_NAME is set and then uses the bootstrap special port.
 //   request: msgh_id 0x40000000|routine (wants reply) / 0x10000000|routine, body = serialized xpc dictionary

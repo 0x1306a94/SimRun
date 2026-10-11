@@ -7,7 +7,7 @@ provide are reimplemented (mostly in-process), and the app appears in an ordinar
 ## How it works
 
 ```
-simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit server: one window per app, input forwarding, and the
+simrun (CLI) ───unix socket──▶ build/bin/simrund   macOS AppKit server: one window per app, input forwarding, and the
   argv, env, stdio fds                   │            host-side "sim2host" services (com.apple.IOSurface.Remote via
                                          │            IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation,
                                          │            dev.simrun.pasteboard: the Mac's NSPasteboard)
@@ -36,11 +36,14 @@ simapp (client) ──unix socket──▶ build/bin/simrund   macOS AppKit serv
                                                              IOSurfaces go to the app's window (include/protocol.h)
 ```
 
-All apps run inside one SimRun process. `simapp` (via `scripts/simapp.sh`) connects to it over a unix socket, passing
-the app's argv, environment and stdio file descriptors; if SimRun.app isn't open, it is started headless and exits
-after 10 idle minutes (`SIMRUND_IDLE`). Each app gets its own window; `simapp.sh` exits with the app's status, and
-Ctrl-C (or closing the window) ends the app. Launching into a running server takes ~0.6 s to first frame (vs ~1.1 s
-standalone, `SIMAPP_STANDALONE=1`, which runs the app in its own private `simrund --run`).
+All apps run inside one SimRun process. The `simrun` command line (`src/host/simrun/`, a Foundation-only client)
+talks to it over a unix socket (`include/simrund_proto.h`): one request per connection, to run an app or to list,
+quit or screenshot running ones, list profiles, runtimes and device types, or stop SimRun. `simrun run` passes the
+app's argv, the terminal's environment and stdio file descriptors; SimRun adds the simulator environment itself (the
+runtime, device type, data container and injected libraries), as for launcher launches. If SimRun.app isn't open, it
+is started headless and exits after 10 idle minutes (`SIMRUND_IDLE`). Each app gets its own window; `simrun run`
+exits with the app's status, and Ctrl-C (or closing the window) ends the app. Launching into a running server takes
+~0.6 s to first frame.
 
 The launcher remembers its library of apps. **File ▸ Add Xcode Simulator Builds** scans
 `~/Library/Developer/Xcode/DerivedData/*/Build/Products/*-iphonesimulator/` for `.app` bundles. An app is accepted
@@ -64,13 +67,12 @@ version, `SRRuntimeBuild` in its user defaults), else the newest installed iOS r
 new choice takes effect when SimRun is reopened; the menu says so while the two differ. Its `simns --serve`, and with
 it the shared daemons (cfprefsd, containermanagerd, trustd, securityd), runs from that runtime.
 
-An app can run on another installed runtime (Launch With… ▸ Info, or `SIMRUN_RUNTIME_ROOT` in a `simapp` client's
-environment). SimRun then starts a second `simns --serve` from that runtime the first time it is needed, publishes the
+An app can run on another installed runtime (Launch With… ▸ Info, or `simrun run --runtime`). SimRun then starts a second `simns --serve` from that runtime the first time it is needed, publishes the
 same host services (IOSurface, Metal, pasteboard) in it, and gives the app a namespace there, so an app never talks to
 another runtime's daemons. Either way the server sets the runtime variables (`DYLD_ROOT_PATH`, `SIMULATOR_ROOT`,
-`SIMULATOR_RUNTIME_VERSION`, …) itself, replacing whatever runtime a client's environment pointed at. Extra simns stay
+`SIMULATOR_RUNTIME_VERSION`, …) itself. Extra simns stay
 until SimRun quits. An app whose executable needs a newer iOS than its runtime (the arm64 slice's minimum OS, which
-dyld enforces) isn't started: the launcher shows why, a `simapp` client prints it. All runtimes share the data directory (app containers, keychain, app groups, preferences); apps on
+dyld enforces) isn't started: the launcher shows why, `simrun run` prints it. All runtimes share the data directory (app containers, keychain, app groups, preferences); apps on
 two runtimes at once means two cfprefsd and containermanagerd instances over the same files.
 
 ## Devices
@@ -86,9 +88,8 @@ display edge info for the device, or from its kind (home-button iPhone, iPad) wh
 The device types an app can use are the ones its runtime supports, as `simctl list runtimes` lists them (without
 simctl: the installed ones whose runtime version range includes the runtime). The default is `SIMRUN_DEVICE`
 (identifier or name) if the runtime supports it, else the newest supported iPhone with a 1206×2622 screen (a 6.3-inch
-Pro, preferably), else the newest supported iPhone. Launch With… ▸ Info picks another for one app. `simrun.sh` makes
-the same choice with `scripts/devicetype.py`, so a `simapp` client's environment carries its device; `scripts/devicetype.py
-<RuntimeRoot> --list` shows a runtime's device types.
+Pro, preferably), else the newest supported iPhone. Launch With… ▸ Info picks another for one app, `simrun run --device` for one launch from
+the terminal; `simrun devices [--runtime …]` lists a runtime's device types.
 
 ## Data containers
 
@@ -100,37 +101,36 @@ the runtime's containermanagerd to apps entitled to the group) and the shared da
 app's menu has App Container ▸ Show in Finder / Reset… (deletes the container; keychain items and app group
 containers are kept). Containers are a convention, not a sandbox: apps run unsandboxed as you.
 
-An app can have more containers than its default one: **profiles**. `scripts/simapp.sh --profile <name>` (or
-`SIMRUN_PROFILE=<name>` in a `simapp` client's environment) runs the app with the container of that profile,
+An app can have more containers than its default one: **profiles**. `simrun run --profile <name>` runs the app with
+the container of that profile,
 `data/Containers/Data/Profiles/<bundle id>/<name>/`, created on first use; no profile (or `default`) is the default
 container. Profiles are per app: two apps' profiles of the same name have nothing to do with each other. So one app
 can run several times at once, one instance per profile, each with its own documents, preferences and caches; each
-gets its own window, titled "<app> — <profile>" (and log). Everything outside the container is still shared between
+gets its own window, titled "<app> — <profile>" (and log), and `SIMRUN_PROFILE=<profile>` in its environment. Everything outside the container is still shared between
 an app's profiles: keychain items, app group containers. The launcher shows and acts on the default profile; ⌘R in a
-profile's window relaunches it in that profile. `scripts/simrund.sh profiles [bundle id]` lists apps' profiles. `scripts/simrun.sh`
-on its own (no SimRun server) still runs a binary with the shared directory as HOME.
+profile's window relaunches it in that profile. `simrun profiles [bundle id]` lists apps' profiles, and `simrun quit`
+and `simrun screenshot` take `--profile` to pick one of an app's instances.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
-| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment, runtimes and device types, host pasteboard, Keychain window), `simapp/` (terminal client), `gpuhost/` (IOSurface + Metal host services) |
+| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment, runtimes and device types, host pasteboard, Keychain window), `simrun/` (the `simrun` command line), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
-| `scripts/` | `simapp.sh` (run an app), `simrund.sh` (server status/stop/log), `simrun.sh` (run any sim binary with the launchd_sim environment), `env.sh`, `capture.sh` (window screenshot), `crash.py` (crash-report backtrace) |
-| `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `rhost.m` (minimal render-test launcher) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`render/catest`, `net/nettest`, `net/nwtest`, `viewer/fakeframes`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
+| `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `crash.py` (crash-report backtrace) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
 | `docs/` | These write-ups |
 
 ## Building
 
 Everything builds into `build/` (`SimRun.app`, `bin/`, `lib/`, `apps/`, `tests/`). `make` builds SimRun.app, the
-client, the tools and the test programs; `make core` only SimRun.app and the client, `make tools` the tools,
+`simrun` command line (`build/bin/simrun`), the tools and the test programs; `make core` only SimRun.app and `simrun`, `make tools` the tools,
 `make test-apps` the test apps (`build/apps/`), `make test-programs` the test programs (`build/tests/`), and
 `make tests` both. Rebuilding while SimRun
 is open is safe (the bundle is assembled in a staging directory and swapped in with a rename); quit and reopen SimRun
-(or `scripts/simrund.sh stop`) to pick up the new build.
+(or `simrun stop`) to pick up the new build.
 
 Requirements: Apple Silicon, SIP disabled, Xcode with an iOS Simulator runtime installed (see [Runtimes](#runtimes)).
 Apps must adopt the UIScene lifecycle. Developed against macOS 27.2, Xcode 27.1, iOS 27.1 runtime; iOS 27.0 and 18.6 also work (the Showcase and Glass test

@@ -1,13 +1,32 @@
-// simrund_proto.h — client (simapp) <-> server (simrund) protocol over a Unix-domain socket. Host (macOS) code only.
+// simrund_proto.h — client (the simrun CLI) <-> server (SimRun.app) protocol over a Unix-domain socket. Host (macOS)
+// code only.
 //
-// Every message is a uint32 length (host byte order) followed by a binary property list (a dictionary).
-//   client -> server  request  { argv: [string], env: [string], cwd: string, title: string }
-//                     The first message carries the client's stdin/stdout/stderr as SCM_RIGHTS, so the app writes
-//                     straight to the client's terminal.
-//   server -> client  { pid: int }            app started
-//                     { exit: int }           app finished; raw wait(2) status
-//                     { error: string }       launch failed
-// Closing the connection before { exit } terminates the app (this is how Ctrl-C on the client propagates).
+// Every message is a uint32 length (host byte order) followed by a binary property list (a dictionary). A client sends
+// one request per connection; `action` says what it is:
+//   run         { argv: [string], env: [string], cwd: string, profile?, runtime?, device?, insert? }
+//               argv[0] is an .app bundle or a sim executable (absolute, or relative to cwd); the rest are the app's
+//               arguments. env is the client's environment, which the app inherits: the server adds the simulator
+//               environment itself (runtime, device, data container, injected libraries). profile: the app's data
+//               container to use (default: its default one); runtime: an installed iOS runtime (build, version, name
+//               or RuntimeRoot; default: SimRun's); device: a device type (identifier or name; default: the runtime's);
+//               insert: an extra sim dylib to inject. The message carries the client's stdin/stdout/stderr as
+//               SCM_RIGHTS, so the app writes straight to the client's terminal.
+//               replies: { pid: int } app started, then { exit: int } app finished (raw wait(2) status); or
+//               { error: string } launch failed. Closing the connection before { exit } terminates the app (this is how
+//               Ctrl-C on the client propagates).
+//   list        -> { instances: [ { pid, title, executable, app?, bundleID?, profile?, runtime, device?, ready } ] }
+//   quit        { instance: string, profile? } -> { ok: true }
+//   screenshot  { instance: string, profile? } -> { png: data } (the app's screen, at its pixel size)
+//               instance: a pid, or an app (name, bundle ID or executable name), among the instances in `profile`
+//               when given; an app running in several profiles needs one.
+//   profiles    { app? } -> { apps: [ { id, profiles: [string] } ] }   the data containers each app has ("default" first)
+//               app: a bundle ID, or the path of an .app or executable
+//   runtimes    -> { runtimes: [ { name, version, build, root, current: bool } ] }   current: what SimRun runs on
+//   devices     { runtime? } -> { runtime: string, devices: [ { identifier, name, width, height, scale, default: bool } ] }
+//   status      -> { pid, runtime, instances: int }
+//   stop        -> { ok: true }, then SimRun quits (ending every app)
+//   show        { open: [string] } (no reply) a second SimRun instance handing over: show the launcher, open these apps
+// Any request can be answered with { error: string } instead.
 #pragma once
 #include <CoreFoundation/CoreFoundation.h>
 #include <pwd.h>
@@ -19,7 +38,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-// The real home directory (simrun.sh points $HOME at the simulated device's data directory).
+// The real home directory, whatever $HOME says.
 static inline const char *simrund_home(void) {
   struct passwd *pw = getpwuid(getuid());
   return pw && pw->pw_dir ? pw->pw_dir : "/tmp";

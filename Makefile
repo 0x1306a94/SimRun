@@ -1,6 +1,6 @@
 # SimRun — build everything into build/.
 #   make            core components, tools and test programs
-#   make core       SimRun.app (server + launcher, simns, injected dylibs, fake SimFramebuffer) and the simapp client
+#   make core       SimRun.app (server + launcher, simns, injected dylibs, fake SimFramebuffer) and the simrun CLI
 #   make test-apps  sample/test apps (build/apps)
 #   make tests      test apps and test programs
 #   make clean
@@ -19,11 +19,11 @@ SIGN    := codesign -s - -f
 HDRS    := $(wildcard include/*.h)
 
 APP   := $(BUILD)/SimRun.app
-CORE  := $(APP) $(BIN)/simapp
-PARTS := $(BIN)/simrund $(BIN)/simapp $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer
-TOOLS := $(BIN)/hostinput $(BIN)/rhost
+CORE  := $(APP) $(BIN)/simrun
+PARTS := $(BIN)/simrund $(BIN)/simrun $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer
+TOOLS := $(BIN)/hostinput
 TEST_APPS  := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/Showcase.app
-TEST_PROGS := $(TBIN)/catest $(TBIN)/catest_uikit $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/fakeframes $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest
+TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest
 
 .PHONY: all core tools test-apps test-programs tests clean $(APP)
 all: core tools test-programs
@@ -40,7 +40,7 @@ $(BIN) $(LIB) $(APPS) $(TBIN):
 SIMRUND_SRC := $(wildcard src/host/simrund/*.m) src/host/gpuhost/gpuhost.m
 $(BIN)/simrund: $(SIMRUND_SRC) $(wildcard src/host/simrund/*.h) $(HDRS) | $(BIN)
 	$(MACCC) -Isrc/host/simrund $(SIMRUND_SRC) -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal \
-	  -framework UniformTypeIdentifiers -o $@
+	  -framework UniformTypeIdentifiers -framework ImageIO -o $@
 
 # App icon: the Icon Composer document compiled into Assets.car (Liquid Glass icon) and AppIcon.icns (fallback).
 ICON := $(BUILD)/icon
@@ -49,7 +49,7 @@ $(ICON)/Assets.car: resources/AppIcon.icon/icon.json resources/AppIcon.icon/Asse
 	xcrun actool resources/AppIcon.icon --compile $(ICON) --platform macosx --minimum-deployment-target 14.0 --app-icon AppIcon \
 	  --output-partial-info-plist $(ICON)/partial.plist >/dev/null
 
-# SimRun.app: the server/launcher executable, helpers (simns, simapp) and the sim-side libraries.
+# SimRun.app: the server/launcher executable, helpers (simns, simrun) and the sim-side libraries.
 # Assembled in a staging bundle and swapped in with a rename, so a SimRun that is running from the old bundle keeps
 # its (unlinked) files instead of having them overwritten underneath it.
 $(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer resources/Info.plist $(ICON)/Assets.car
@@ -58,19 +58,15 @@ $(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)
 	@cp resources/Info.plist $(BUILD)/.SimRun.app.new/Contents/Info.plist
 	@cp $(ICON)/Assets.car $(ICON)/AppIcon.icns $(BUILD)/.SimRun.app.new/Contents/Resources/
 	@cp $(BIN)/simrund $(BUILD)/.SimRun.app.new/Contents/MacOS/SimRun
-	@cp $(BIN)/simns $(BIN)/simapp $(BUILD)/.SimRun.app.new/Contents/Helpers/
+	@cp $(BIN)/simns $(BIN)/simrun $(BUILD)/.SimRun.app.new/Contents/Helpers/
 	@cp $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer $(BUILD)/.SimRun.app.new/Contents/Resources/lib/
 	@$(SIGN) --deep $(BUILD)/.SimRun.app.new 2>/dev/null
 	@if [ -d $@ ]; then mv $@ $(BUILD)/.SimRun.app.old; fi
 	@mv $(BUILD)/.SimRun.app.new $@ && rm -rf $(BUILD)/.SimRun.app.old
 	@echo "built $@"
 
-$(BIN)/simapp: src/host/simapp/simapp.c $(HDRS) | $(BIN)
-	xcrun -sdk macosx clang -arch arm64 -Wall -Iinclude $< -framework CoreFoundation -o $@
-
-$(BIN)/rhost: tools/rhost.m src/host/gpuhost/gpuhost.m $(HDRS) | $(BIN)
-	$(MACCC) tools/rhost.m src/host/gpuhost/gpuhost.m -framework Foundation -framework Metal -framework IOSurface -framework CoreGraphics -framework ImageIO -o $@
-	@$(SIGN) $@ 2>/dev/null
+$(BIN)/simrun: src/host/simrun/simrun.m $(HDRS) | $(BIN)
+	$(MACCC) -Wall $< -framework Foundation -o $@
 
 $(BIN)/hostinput: tools/hostinput.swift | $(BIN)
 	$(MACSWIFT) $< -o $@
@@ -158,14 +154,6 @@ $(APPS)/Showcase.app: $(SHOWCASE_SRC) $(SHOWCASE_ICON) tests/apps/showcase/Info.
 	xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios26.0-simulator -parse-as-library -O $(SHOWCASE_SRC) -o $@/Showcase
 	@$(SIGN) $@ 2>/dev/null
 
-CATEST_FW := -framework Foundation -framework QuartzCore -framework IOSurface -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers
-$(TBIN)/catest: tests/render/catest.m $(HDRS) | $(TBIN)
-	$(SIMCC) $< $(CATEST_FW) -o $@
-	@$(SIGN) $@ 2>/dev/null
-$(TBIN)/catest_uikit: tests/render/catest.m $(HDRS) | $(TBIN)
-	$(SIMCC) -DCATEST_UIKIT=1 $< $(CATEST_FW) -framework UIKit -o $@
-	@$(SIGN) $@ 2>/dev/null
-
 $(TBIN)/nettest: tests/net/nettest.m | $(TBIN)
 	$(SIMCC) $< -framework Foundation -o $@
 	@$(SIGN) $@ 2>/dev/null
@@ -180,9 +168,6 @@ $(TBIN)/kctest: tests/keychain/kctest.m | $(TBIN)
 	@$(SIGN) $@ 2>/dev/null
 $(TBIN)/loctest: tests/locale/loctest.m | $(TBIN)
 	$(SIMCC) $< -framework Foundation -o $@
-	@$(SIGN) $@ 2>/dev/null
-$(TBIN)/fakeframes: tests/viewer/fakeframes.m $(HDRS) | $(TBIN)
-	$(SIMCC) $< -framework Foundation -framework IOSurface -framework CoreGraphics -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 clean:

@@ -30,4 +30,6 @@ typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 // ~/Library/Logs/SimRun/<title>.log. Used for apps launched from the launcher (no terminal).
 - (void)captureOutputFrom:(int)fd;
 - (void)showLog;
+// The app's screen as it last presented it, as PNG at its pixel size; nil before its first frame.
+- (NSData *)screenshotPNG;
 @end

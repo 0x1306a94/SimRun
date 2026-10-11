@@ -6,12 +6,12 @@ items live in a property list in SimRun's data directory, and SimRun's **Keychai
 or Show Keychain Items on an app in the launcher / App menu) lists them with their passwords in plaintext.
 
 ```bash
-make tests && scripts/simapp.sh build/tests/kctest            # self-test (leaves a "demo" item behind)
-scripts/simapp.sh build/tests/kctest set alice hunter2        # store / read / list / delete a generic password
-scripts/simapp.sh build/tests/kctest get alice
-scripts/simapp.sh build/tests/kctest list
-scripts/simapp.sh build/tests/kctest rm alice
-KEYCHAIN_VERBOSE=1 scripts/simapp.sh …                        # trace every SecItem call, the store and access groups
+make tests && build/bin/simrun run build/tests/kctest            # self-test (leaves a "demo" item behind)
+build/bin/simrun run build/tests/kctest set alice hunter2        # store / read / list / delete a generic password
+build/bin/simrun run build/tests/kctest get alice
+build/bin/simrun run build/tests/kctest list
+build/bin/simrun run build/tests/kctest rm alice
+KEYCHAIN_VERBOSE=1 build/bin/simrun run …                        # trace every SecItem call, the store and access groups
 ```
 
 ## Why not the real one

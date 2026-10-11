@@ -1,29 +1,38 @@
 # Configuration and reference
 
-## Scripts
+## Command line
+
+`build/bin/simrun` (also `SimRun.app/Contents/Helpers/simrun`; `simrun help` lists the commands). It talks to SimRun
+over its socket; `run`, `profiles`, `runtimes` and `devices` start SimRun headless if it isn't running.
 
 | Command | Effect |
 |---|---|
-| `scripts/simapp.sh [--profile <name>] <Sim.app \| sim-binary> [args…]` | Run an app in the shared SimRun server (started headless if needed); output goes to the terminal, exits with the app's status. `--profile` (`-p`): run it with that profile's data container ([architecture.md](architecture.md#data-containers)) |
-| `scripts/simrund.sh status \| stop \| log \| profiles [bundle id]` | Show whether the server is running, stop it, follow its log (`~/Library/Logs/SimRun/simrund.log`), or list apps' profiles |
-| `scripts/simrun.sh <sim-binary> [args…]` | Run any sim binary with the environment launchd_sim would set, without the SimRun server (HOME = the shared data directory) |
-| `scripts/capture.sh <pgrep -f pattern> <out.png> [window title]` | Screenshot a process's largest (or titled) window |
-| `scripts/devicetype.py <RuntimeRoot> [--list]` | The device type `simrun.sh` simulates on that runtime, as variables; `--list`: the ones it supports (default marked `*`) |
-| `scripts/crash.py <procname> [n]` | Print the latest crash report backtrace for that process |
+| `simrun run [options] <Sim.app \| sim-binary> [args…]` | Run an app in SimRun; output goes to the terminal, Ctrl-C quits it, exits with the app's status. `-p`/`--profile <name>`: with that profile's data container ([architecture.md](architecture.md#data-containers)); `-r`/`--runtime <build, version or RuntimeRoot>`: on that runtime; `-d`/`--device <name or identifier>`: as that device type; `--insert <dylib>`: inject another sim dylib |
+| `simrun list` | The running apps: pid, app, profile, device, runtime |
+| `simrun quit <pid \| app> [-p <profile>]` | Quit a running app (by name, bundle ID or executable; `-p` picks among its profiles); returns once it has exited |
+| `simrun screenshot <pid \| app> [-p <profile>] [-o <file.png>]` | Save the app's screen as it last drew it, at its pixel size (default `./<app>.png`) |
+| `simrun profiles [<bundle ID \| Sim.app>]` | Apps' data containers: `default` and their profiles |
+| `simrun runtimes` | The installed iOS runtimes (`*`: SimRun's) |
+| `simrun devices [-r <runtime>]` | A runtime's device types (`*`: the default) |
+| `simrun status \| stop \| log` | Whether SimRun is running; quit it and its apps; follow its log (`~/Library/Logs/SimRun/simrund.log`) |
+| `tools/crash.py <procname> [n]` | Print the latest crash report backtrace for that process |
 
 ## Environment variables
 
+SimRun reads its variables (`SIMRUN_*`, `SIMNS_*`, `SIMRUND_*`) when it starts: from `simrun`'s environment when
+`simrun` starts it. An app gets the environment of the `simrun run` that launched it, so the component variables
+(`HID_VERBOSE=1`, `PBOARD_DISABLE=1`, `OS_ACTIVITY_DT_MODE=1`, …) go before `simrun run`; for launcher launches, set
+them in Launch With….
+
 | Variable | Effect |
 |---|---|
-| `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>` | Use this iOS Simulator runtime instead of the one chosen in SimRun ▸ iOS Runtime (default: the newest installed). For SimRun (and `simrun.sh`): its own runtime; in a `simapp` client's environment: that app's runtime |
-| `SIMRUN_DEVICE=<identifier or name>` | Simulate this device type (e.g. `"iPhone SE (3rd generation)"`) when the runtime supports it, instead of the runtime's default ([architecture.md](architecture.md#devices)). For SimRun: the default for launcher launches; for `simrun.sh` / `simapp.sh`: that app's device. `scripts/devicetype.py <RuntimeRoot> --list` lists them |
+| `SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>` | SimRun's own runtime, instead of the one chosen in SimRun ▸ iOS Runtime (default: the newest installed): its shared services', and apps' unless they have their own (Launch With…, `simrun run --runtime`) |
+| `SIMRUN_DEVICE=<identifier or name>` | The device type apps run as unless they have their own (Launch With…, `simrun run --device`), e.g. `"iPhone SE (3rd generation)"`, when their runtime supports it; else the runtime's default ([architecture.md](architecture.md#devices)). `simrun devices` lists them |
 | `SIMRUN_DATA=dir` | Shared data directory (default `~/Library/Developer/SimRun/data`) |
-| `SIMRUN_PROFILE=name` | In a `simapp` client's environment (what `simapp.sh --profile` sets): run the app in that profile, another data container of the app's; `default` or empty: its default container |
-| `SIMNS_QUIET=1` | Hide simns's log (in the server log, `simrund.sh log`, for shared launches) of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
+| `SIMNS_QUIET=1` | Hide simns's log (in SimRun's log, `simrun log`) of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
 | `SIMNS_DAEMONS=a,b` / `none` | Labels of real sim daemons simns may launch on demand |
-| `SIMAPP_EXTRA_INSERT=x.dylib` | Inject an extra sim dylib into the app |
-| `SIMAPP_STANDALONE=1` | Run the app in its own private `simrund --run` instead of the shared server |
-| `SIMRUND_IDLE=secs` | Shared server exits after this long without apps (default 600, 0 = never); set when it starts |
+| `SIMAPP_EXTRA_INSERT=x.dylib` | Inject an extra sim dylib into apps launched from the launcher (`simrun run --insert` for one launch) |
+| `SIMRUND_IDLE=secs` | SimRun, started headless by `simrun`, quits after this long without apps (default 600, 0 = never) |
 | `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
 | `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default: the device type's screen); SimRun sizes the display (`SIMULATOR_MAINSCREEN_*`) and window to match |
 | `HID_VERBOSE=1`, `RSHIM_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1`, `PBOARD_VERBOSE=1`, `DRAG_VERBOSE=1`, `KEYCHAIN_VERBOSE=1`, `WEBKIT_VERBOSE=1` | Component tracing (`SIMFB_VERBOSE` also reports the frame-copy latency) |

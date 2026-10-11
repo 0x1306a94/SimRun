@@ -7,12 +7,12 @@
 // runtime's simns and a window (SRSession).
 //
 //   SimRun [app.app ...]         GUI: the launcher window (drop .app bundles to add + launch them); also serves
-//                                `simapp` clients on the Unix socket. If another instance already serves the socket,
-//                                it is asked to show its launcher (and open the given apps) and this one exits.
-//   SimRun --serve               headless server for `simapp` clients (scripts/simapp.sh starts it on demand); shows the
-//                                launcher when asked; exits after SIMRUND_IDLE seconds (default 600, 0 = never) without
-//                                apps unless the launcher was used
-//   SimRun --run <exe> [args]    standalone: launch one app with this process's environment/stdio, exit with its status
+//                                `simrun` clients on the Unix socket (simrund_proto.h). If another instance already
+//                                serves the socket, it is asked to show its launcher (and open the given apps) and this
+//                                one exits.
+//   SimRun --serve               headless server for `simrun` clients (simrun starts it on demand); shows the launcher
+//                                when asked; exits after SIMRUND_IDLE seconds (default 600, 0 = never) without apps
+//                                unless the launcher was used
 #import <Cocoa/Cocoa.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -32,7 +32,7 @@
 #include "gpuhost.h"
 #include "pboard.h"
 
-typedef NS_ENUM(NSInteger, SRMode) { SRModeGUI, SRModeServe, SRModeRun };
+typedef NS_ENUM(NSInteger, SRMode) { SRModeGUI, SRModeServe };
 
 static void LOG(NSString *fmt, ...) {
   va_list ap; va_start(ap, fmt); NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap]; va_end(ap);
@@ -42,7 +42,9 @@ static void LOG(NSString *fmt, ...) {
 // A pending/active launch request.
 @interface SRRequest : NSObject
 @property NSArray<NSString *> *argv, *env; @property NSString *cwd, *title, *appPath;
+@property NSString *bundleID;                      // the app's (nil for a bare binary)
 @property NSString *runtimeRoot;                   // the iOS runtime it runs on
+@property SRDeviceType *device;                    // the device type it runs as
 @property NSString *profile;                       // the app's profile (data container) it runs in; nil = its default one
 @property int sock; @property int fd0, fd1, fd2;   // client connection (-1 if none) and the app's stdio (-1 = inherit)
 @property int captureFD;                           // read end of the app's output pipe (launcher launches), or -1
@@ -96,7 +98,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
 }
 
 // ---------------------------------------------------------------- app lifecycle
-- (void)applicationWillFinishLaunching:(NSNotification *)n { if (_mode != SRModeRun) [self buildMenus]; }
+- (void)applicationWillFinishLaunching:(NSNotification *)n { [self buildMenus]; }
 
 - (void)application:(NSApplication *)app openURLs:(NSArray<NSURL *> *)urls {   // Dock drop, "Open With", `open -a SimRun x.app`
   NSMutableArray *paths = [NSMutableArray array];
@@ -123,7 +125,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
     }
     LOG(@"no iOS Simulator runtime found"); exit(1);
   }
-  if (_mode != SRModeRun && ![self startListening]) {
+  if (![self startListening]) {
     if (_mode == SRModeGUI) [self forwardToRunningInstance];   // another instance serves: hand over and quit
     exit(0);
   }
@@ -131,16 +133,6 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   if (![self simnsForRoot:SREnvironment.runtimeRoot]) { LOG(@"cannot start simns"); exit(1); }
   _launched = YES;
 
-  if (_mode == SRModeRun) {
-    SRRequest *r = [SRRequest new];
-    r.argv = _args; r.runtimeRoot = SREnvironment.runtimeRoot;
-    r.profile = [SREnvironment normalizedProfile:NSProcessInfo.processInfo.environment[@"SIMRUN_PROFILE"]];
-    r.env = [SREnvironment environment:[SREnvironment processEnvironment] withOverrides:[SREnvironment runtimeVariablesForRoot:r.runtimeRoot]];
-    r.cwd = NSFileManager.defaultManager.currentDirectoryPath;
-    r.title = NSProcessInfo.processInfo.environment[@"SIMRUN_TITLE"] ?: _args.firstObject.lastPathComponent;
-    [self enqueue:r];
-    return;
-  }
   if (_mode == SRModeGUI) {
     _interactive = YES;
     [_launcher show];
@@ -296,7 +288,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
 
 // ---------------------------------------------------------------- SRLauncherDelegate
 // The launcher shows (and acts on) each app in its default profile; it can also run in its other profiles at once, one
-// instance per profile from here (simapp clients may start more).
+// instance per profile from here (simrun clients may start more).
 - (SRRequest *)requestForApp:(SRAppInfo *)app profile:(NSString *)profile {
   for (SRRequest *r in _active) if ([r.appPath isEqualToString:app.path] && SameProfile(r.profile, profile)) return r;
   for (SRRequest *r in _pending) if ([r.appPath isEqualToString:app.path] && SameProfile(r.profile, profile)) return r;
@@ -386,17 +378,25 @@ static BOOL ProcessGone(pid_t pid) {
   }
   SRRequest *r = [SRRequest new];
   r.argv = [@[ app.executablePath ] arrayByAddingObjectsFromArray:o.launchArguments];
-  r.cwd = app.path; r.title = app.name; r.appPath = app.path; r.runtimeRoot = root; r.profile = profile;
-  NSMutableDictionary *vars = [[SREnvironment simulatorVariablesForRoot:root deviceType:device] mutableCopy];
-  vars[@"SIMNS_INSERT"] = [SREnvironment injectedLibraries];
-  vars[@"SIMULATOR_FRAMEBUFFER_FRAMEWORK"] = [SREnvironment framebufferFramework];
-  vars[@"SIMRUN_TITLE"] = app.name;
-  [vars addEntriesFromDictionary:o.environmentVariables];
-  r.env = [SREnvironment environment:[SREnvironment processEnvironment] withOverrides:vars];
+  r.cwd = app.path; r.title = app.name; r.appPath = app.path; r.bundleID = app.bundleIdentifier; r.runtimeRoot = root; r.profile = profile;
+  r.device = device ?: [SREnvironment defaultDeviceTypeForRuntime:[SRRuntime runtimeAtRoot:root]];
+  r.env = [self environmentFrom:[SREnvironment processEnvironment] for:r libraries:[SREnvironment injectedLibraries]
+                      overrides:o.environmentVariables];
   // no terminal: stdout/stderr go to the session's log window
   int p[2]; pipe(p);
   r.fd0 = open("/dev/null", O_RDONLY); r.fd1 = p[1]; r.fd2 = dup(p[1]); r.captureFD = p[0];
   [self enqueue:r];
+}
+
+// `base` (the launcher's environment, or a client's) with the simulator environment for `r`'s runtime and device, the
+// libraries to inject (SIMNS_INSERT) and SimRun's framebuffer; then `overrides`.
+- (NSArray<NSString *> *)environmentFrom:(NSArray<NSString *> *)base for:(SRRequest *)r libraries:(NSString *)libraries
+                               overrides:(NSDictionary<NSString *, NSString *> *)overrides {
+  NSMutableDictionary *vars = [[SREnvironment simulatorVariablesForRoot:r.runtimeRoot deviceType:r.device] mutableCopy];
+  vars[@"SIMNS_INSERT"] = libraries;
+  vars[@"SIMULATOR_FRAMEBUFFER_FRAMEWORK"] = [SREnvironment framebufferFramework];
+  if (overrides) [vars addEntriesFromDictionary:overrides];
+  return [SREnvironment environment:base withOverrides:vars];
 }
 
 // ---------------------------------------------------------------- simns (shared namespace + daemons), one per runtime
@@ -557,8 +557,8 @@ static BOOL ProcessGone(pid_t pid) {
   NSString *min = [SRAppInfo minimumOSVersionOfExecutable:exe];
   if (!min || [min compare:rt.version options:NSNumericSearch] != NSOrderedDescending) return nil;
   NSString *name = r.title ?: r.argv.firstObject.lastPathComponent;
-  NSString *how = r.sock >= 0 || _mode == SRModeRun
-      ? @"Run it on a newer runtime with SIMRUN_RUNTIME_ROOT=<…/RuntimeRoot>, or choose one in SimRun ▸ iOS Runtime."
+  NSString *how = r.sock >= 0
+      ? @"Run it on a newer runtime with simrun run --runtime (simrun runtimes lists them)."
       : @"Choose a newer runtime for it with Launch With… (hold Option in its menu in the launcher), or for SimRun in "
          "SimRun ▸ iOS Runtime.";
   return [NSString stringWithFormat:@"%@ requires iOS %@ or later, but it would run on %@. %@", name, min, rt.name, how];
@@ -590,8 +590,7 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
   NSString *err = nil;
   mach_port_t ns = MACH_PORT_NULL;
   SRRuntime *rt = [SRRuntime runtimeAtRoot:r.runtimeRoot];
-  if ((err = [SREnvironment problemWithProfileName:r.profile])) {}
-  else if (!rt) err = [NSString stringWithFormat:@"Not an iOS Simulator runtime: %@", r.runtimeRoot];
+  if (!rt) err = [NSString stringWithFormat:@"Not an iOS Simulator runtime: %@", r.runtimeRoot];
   else if ((err = [self runtimeProblemFor:r runtime:rt])) {}
   else ns = [self newNamespaceIn:_simns[r.runtimeRoot.stringByStandardizingPath]];
   int fds[3] = { r.fd0, r.fd1, r.fd2 };
@@ -605,7 +604,6 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
     if (r.captureFD >= 0) { close(r.captureFD); r.captureFD = -1; }
     [self reply:r dict:@{ @"error": err ?: @"simns did not create a namespace" }];
     [s terminate]; [_active removeObject:r]; [self closeClient:r];
-    if (_mode == SRModeRun) exit(1);
     if (r.sock < 0) {
       NSAlert *al = [NSAlert new]; al.messageText = [NSString stringWithFormat:@"Couldn't launch %@", r.title];
       al.informativeText = err ?: @"The SimRun helper (simns) did not respond."; [al runModal];
@@ -624,7 +622,6 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
   [self reply:r dict:@{ @"exit": @(status) }];
   [self closeClient:r];
   [_active removeObject:r];
-  if (_mode == SRModeRun) exit(WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status));
   [_launcher reloadState];
   [self scheduleIdleCheck];
 }
@@ -665,6 +662,18 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
   close(s);
 }
 
+static NSString *Str(NSDictionary *d, NSString *key) { id v = d[key]; return [v isKindOfClass:NSString.class] && [v length] ? v : nil; }
+
+// Sends `reply` to client `c` and closes the connection, off the main thread (a screenshot can be megabytes); then
+// runs `then` on the main thread.
+static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    simrund_send(c, (__bridge CFDictionaryRef)reply, NULL, 0);
+    close(c);
+    if (then) dispatch_async(dispatch_get_main_queue(), then);
+  });
+}
+
 - (void)readRequestFrom:(int)c {
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     int fds[3] = { -1, -1, -1 }, nfds = 0;
@@ -673,8 +682,10 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
     dispatch_async(dispatch_get_main_queue(), ^{
       int got[3] = { f0, f1, f2 };
       NSDictionary *d = CFBridgingRelease(req);
-      if ([d[@"action"] isEqual:@"show"]) {   // another SimRun instance handed over
-        for (int i = 0; i < nfds; i++) close(got[i]);
+      NSString *action = [d[@"action"] isKindOfClass:NSString.class] ? d[@"action"] : nil;
+      if ([action isEqual:@"run"] && nfds == 3) { [self runRequest:d client:c fds:got]; return; }
+      for (int i = 0; i < nfds; i++) close(got[i]);
+      if ([action isEqual:@"show"]) {   // another SimRun instance handed over
         close(c);
         self->_interactive = YES; [self->_idleTimer invalidate]; self->_idleTimer = nil;
         [self->_launcher show];
@@ -682,36 +693,183 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
         if ([open isKindOfClass:NSArray.class] && open.count) [self->_launcher openPaths:open];
         return;
       }
-      NSArray *argv = d[@"argv"];
-      if (![argv isKindOfClass:NSArray.class] || !argv.count || nfds != 3) {
-        for (int i = 0; i < nfds; i++) close(got[i]);
-        close(c); return;
+      if ([action isEqual:@"quit"]) {   // replies once the app has exited
+        NSString *err = nil;
+        SRRequest *r = [self instanceMatching:Str(d, @"instance") profile:Str(d, @"profile") error:&err];
+        if (!r) { SendReply(c, @{ @"error": err }, nil); return; }
+        SRSessionExitHandler old = r.session.onExit;
+        r.session.onExit = ^(SRSession *session, int status) { if (old) old(session, status); SendReply(c, @{ @"ok": @YES }, nil); };
+        [r.session terminate];
+        return;
       }
-      SRRequest *r = [SRRequest new];
-      r.argv = argv; r.cwd = d[@"cwd"]; r.title = d[@"title"];
-      // The runtime: the client's SIMRUN_RUNTIME_ROOT, else SimRun's; its variables replace whatever runtime the
-      // client's environment points at, so the app and the daemons it talks to (that runtime's simns) always match.
-      NSArray *env = [d[@"env"] isKindOfClass:NSArray.class] ? d[@"env"] : @[];
-      NSString *root = nil, *profile = nil;
-      for (NSString *kv in env) {
-        if ([kv hasPrefix:@"SIMRUN_RUNTIME_ROOT="] && kv.length > 20) root = [kv substringFromIndex:20];
-        if ([kv hasPrefix:@"SIMRUN_PROFILE="]) profile = [kv substringFromIndex:15];   // its container (simapp.sh --profile)
+      if ([action isEqual:@"stop"]) {
+        SendReply(c, @{ @"ok": @YES }, ^{ LOG(@"stopped by a client"); [NSApp terminate:nil]; });
+        return;
       }
-      r.runtimeRoot = root ?: SREnvironment.runtimeRoot;
-      r.profile = [SREnvironment normalizedProfile:profile];
-      r.env = [SREnvironment environment:env withOverrides:[SREnvironment runtimeVariablesForRoot:r.runtimeRoot]];
-      NSString *dir = [argv.firstObject stringByDeletingLastPathComponent];
-      if ([dir.pathExtension isEqualToString:@"app"]) r.appPath = dir;   // lets the launcher show it as running
-      r.sock = c; r.fd0 = got[0]; r.fd1 = got[1]; r.fd2 = got[2];
-      // client gone (e.g. Ctrl-C) before the app exited -> terminate the app
-      dispatch_source_t eof = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, c, 0, dispatch_get_main_queue());
-      dispatch_source_set_event_handler(eof, ^{
-        char b; if (recv(c, &b, 1, MSG_PEEK | MSG_DONTWAIT) == 0) { dispatch_source_cancel(eof); [r.session terminate]; }
-      });
-      dispatch_resume(eof); r.eofSource = eof;
-      [self enqueue:r];
+      if (d) SendReply(c, [self answer:action request:d], nil); else close(c);
     });
   });
+}
+
+// `run`: launch an app for a client, its output going to the client's terminal (`fds`).
+- (void)runRequest:(NSDictionary *)d client:(int)c fds:(const int[3])fds {
+  SRRequest *r = [SRRequest new];
+  r.sock = c; r.fd0 = fds[0]; r.fd1 = fds[1]; r.fd2 = fds[2];
+  NSString *err = [self prepareClientRun:r request:d];
+  if (err) {
+    LOG(@"launch failed: %@", err);
+    [self reply:r dict:@{ @"error": err }];
+    for (int i = 0; i < 3; i++) close(fds[i]);
+    [self closeClient:r];
+    return;
+  }
+  // client gone (e.g. Ctrl-C) before the app exited -> terminate the app
+  dispatch_source_t eof = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, c, 0, dispatch_get_main_queue());
+  dispatch_source_set_event_handler(eof, ^{
+    char b; if (recv(c, &b, 1, MSG_PEEK | MSG_DONTWAIT) == 0) { dispatch_source_cancel(eof); [r.session terminate]; }
+  });
+  dispatch_resume(eof); r.eofSource = eof;
+  [self enqueue:r];
+}
+
+// Fills in `r` from a client's `run` request: the app, its profile, runtime and device, and its environment (the
+// client's, with the simulator environment for those). Returns why it can't run, or nil.
+- (NSString *)prepareClientRun:(SRRequest *)r request:(NSDictionary *)d {
+  NSArray *argv = d[@"argv"];
+  if (![argv isKindOfClass:NSArray.class] || !argv.count) return @"Nothing to run";
+  for (id a in argv) if (![a isKindOfClass:NSString.class]) return @"Bad request";
+  r.cwd = Str(d, @"cwd") ?: @"/";
+  NSString *target = argv.firstObject;
+  if (!target.absolutePath) target = [r.cwd stringByAppendingPathComponent:target];
+  target = target.stringByStandardizingPath;
+  BOOL dir = NO;
+  if (![NSFileManager.defaultManager fileExistsAtPath:target isDirectory:&dir]) return [NSString stringWithFormat:@"No such file: %@", target];
+  NSString *exe = target;
+  if (dir) {
+    if (![target.pathExtension isEqualToString:@"app"]) return [NSString stringWithFormat:@"Not an app or an executable: %@", target];
+    NSString *problem = [SRAppInfo problemWithAppAtPath:target];
+    if (problem) return problem;
+    r.appPath = target;
+    exe = [SRAppInfo infoWithPath:target].executablePath;
+  } else if ([target.stringByDeletingLastPathComponent.pathExtension isEqualToString:@"app"]) {
+    r.appPath = target.stringByDeletingLastPathComponent;   // lets the launcher show it as running
+  }
+  if (r.appPath) { SRAppInfo *info = [SRAppInfo infoWithPath:r.appPath]; r.title = info.name; r.bundleID = info.bundleIdentifier.length ? info.bundleIdentifier : nil; }
+  else r.title = exe.lastPathComponent;
+  r.argv = [@[ exe ] arrayByAddingObjectsFromArray:[argv subarrayWithRange:NSMakeRange(1, argv.count - 1)]];
+
+  NSString *err = [SREnvironment problemWithProfileName:Str(d, @"profile")];
+  if (err) return err;
+  r.profile = [SREnvironment normalizedProfile:Str(d, @"profile")];
+  NSString *rtSpec = Str(d, @"runtime"), *devSpec = Str(d, @"device");
+  SRRuntime *rt = rtSpec ? [SREnvironment runtimeMatching:rtSpec] : [SRRuntime runtimeAtRoot:SREnvironment.runtimeRoot];
+  if (!rt) return [NSString stringWithFormat:@"No installed iOS runtime matches \"%@\" (simrun runtimes lists them)", rtSpec];
+  r.runtimeRoot = rt.root;
+  r.device = devSpec ? [SREnvironment deviceTypeWithIdentifier:devSpec runtime:rt] : [SREnvironment defaultDeviceTypeForRuntime:rt];
+  if (devSpec && !r.device)
+    return [NSString stringWithFormat:@"%@ has no device type \"%@\" (simrun devices --runtime %@ lists them)", rt.name, devSpec, rt.build];
+  NSMutableArray *env = [NSMutableArray array];
+  if ([d[@"env"] isKindOfClass:NSArray.class]) for (id kv in d[@"env"]) if ([kv isKindOfClass:NSString.class]) [env addObject:kv];
+  r.env = [self environmentFrom:env for:r libraries:[SREnvironment injectedLibrariesWithExtra:Str(d, @"insert")] overrides:nil];
+  return nil;
+}
+
+// ---------------------------------------------------------------- client queries
+- (NSDictionary *)describeInstance:(SRRequest *)r {
+  NSMutableDictionary *m = [@{ @"pid": @(r.session.pid), @"title": r.title ?: @"", @"executable": r.argv.firstObject ?: @"",
+                               @"runtime": [SRRuntime runtimeAtRoot:r.runtimeRoot].name ?: r.runtimeRoot ?: @"",
+                               @"ready": @(r.session.isReady) } mutableCopy];
+  if (r.appPath) m[@"app"] = r.appPath;
+  if (r.bundleID) m[@"bundleID"] = r.bundleID;
+  if (r.profile) m[@"profile"] = r.profile;
+  if (r.device.name) m[@"device"] = r.device.name;
+  return m;
+}
+- (NSArray<SRRequest *> *)runningInstances {
+  NSMutableArray *a = [NSMutableArray array];
+  for (SRRequest *r in _active) if (r.session.pid > 0) [a addObject:r];
+  return a;
+}
+
+// The running instance `spec` names: a pid, or an app (its name, bundle ID, executable name or path); among those in
+// `profile` if one is given ("default" too). Several matching instances are an error.
+- (SRRequest *)instanceMatching:(NSString *)spec profile:(NSString *)profile error:(NSString **)err {
+  if (!spec) { *err = @"Which app? Give a pid or an app (simrun list shows them)"; return nil; }
+  BOOL byPid = [spec rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location == NSNotFound;
+  NSString *want = [SREnvironment normalizedProfile:profile];
+  NSMutableArray<SRRequest *> *found = [NSMutableArray array];
+  for (SRRequest *r in [self runningInstances]) {
+    if (profile && !SameProfile(r.profile, want)) continue;
+    NSString *exe = r.argv.firstObject;
+    BOOL match = byPid ? r.session.pid == spec.intValue
+                       : [r.title caseInsensitiveCompare:spec] == NSOrderedSame || [r.bundleID caseInsensitiveCompare:spec] == NSOrderedSame ||
+                         [exe.lastPathComponent isEqualToString:spec] || [exe isEqualToString:spec] || [r.appPath isEqualToString:spec.stringByStandardizingPath];
+    if (match) [found addObject:r];
+  }
+  if (found.count == 1) return found[0];
+  NSString *where = profile ? [NSString stringWithFormat:@" in profile %@", want ?: @"default"] : @"";
+  if (!found.count) *err = [NSString stringWithFormat:@"No running app matches \"%@\"%@ (simrun list shows them)", spec, where];
+  else *err = [NSString stringWithFormat:@"%@ is running %lu times%@ (pids %@): give a pid%@", spec, (unsigned long)found.count, where,
+               [[found valueForKeyPath:@"session.pid"] componentsJoinedByString:@", "], profile ? @"" : @" or --profile"];
+  return nil;
+}
+
+// The reply to a request other than run, show, quit and stop.
+- (NSDictionary *)answer:(NSString *)action request:(NSDictionary *)d {
+  NSString *err = nil;
+  if ([action isEqual:@"list"]) {
+    NSMutableArray *list = [NSMutableArray array];
+    for (SRRequest *r in [self runningInstances]) [list addObject:[self describeInstance:r]];
+    return @{ @"instances": list };
+  }
+  if ([action isEqual:@"screenshot"]) {
+    SRRequest *r = [self instanceMatching:Str(d, @"instance") profile:Str(d, @"profile") error:&err];
+    if (!r) return @{ @"error": err };
+    NSData *png = [r.session screenshotPNG];
+    return png ? @{ @"png": png } : @{ @"error": [NSString stringWithFormat:@"%@ hasn't shown anything yet", r.session.title] };
+  }
+  if ([action isEqual:@"profiles"]) {
+    NSString *app = Str(d, @"app");
+    NSArray *ids = [SREnvironment containerIdentifiers];
+    if (app) {
+      BOOL dir = NO;
+      NSString *path = app.absolutePath ? app.stringByStandardizingPath : nil;
+      if (path && [NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&dir])
+        app = [SREnvironment containerIdentifierForExecutable:dir ? [SRAppInfo infoWithPath:path].executablePath : path];
+      ids = @[ app ];
+    }
+    NSMutableArray *apps = [NSMutableArray array];
+    for (NSString *ident in ids) [apps addObject:@{ @"id": ident, @"profiles": [SREnvironment profilesForIdentifier:ident] }];
+    return @{ @"apps": apps };
+  }
+  if ([action isEqual:@"runtimes"]) {
+    SRRuntime *current = [SRRuntime runtimeAtRoot:SREnvironment.runtimeRoot];
+    NSMutableArray *list = [NSMutableArray array];
+    BOOL listed = NO;
+    for (SRRuntime *rt in SREnvironment.installedRuntimes) {
+      BOOL cur = [rt.build isEqualToString:current.build];
+      listed |= cur;
+      [list addObject:@{ @"name": rt.name, @"version": rt.version, @"build": rt.build, @"root": rt.root, @"current": @(cur) }];
+    }
+    if (current && !listed)   // SIMRUN_RUNTIME_ROOT outside the installed ones
+      [list addObject:@{ @"name": current.name, @"version": current.version, @"build": current.build, @"root": current.root, @"current": @YES }];
+    return @{ @"runtimes": list };
+  }
+  if ([action isEqual:@"devices"]) {
+    NSString *spec = Str(d, @"runtime");
+    SRRuntime *rt = spec ? [SREnvironment runtimeMatching:spec] : [SRRuntime runtimeAtRoot:SREnvironment.runtimeRoot];
+    if (!rt) return @{ @"error": [NSString stringWithFormat:@"No installed iOS runtime matches \"%@\" (simrun runtimes lists them)", spec] };
+    SRDeviceType *def = [SREnvironment defaultDeviceTypeForRuntime:rt];
+    NSMutableArray *list = [NSMutableArray array];
+    for (SRDeviceType *t in [SREnvironment deviceTypesForRuntime:rt])
+      [list addObject:@{ @"identifier": t.identifier, @"name": t.name, @"width": @(t.screenWidth), @"height": @(t.screenHeight),
+                         @"scale": @(t.screenScale), @"default": @([t.identifier isEqualToString:def.identifier]) }];
+    return @{ @"runtime": rt.name, @"devices": list };
+  }
+  if ([action isEqual:@"status"])
+    return @{ @"pid": @(getpid()), @"runtime": [SRRuntime runtimeAtRoot:SREnvironment.runtimeRoot].name ?: SREnvironment.runtimeRoot ?: @"",
+              @"instances": @([self runningInstances].count) };
+  return @{ @"error": [NSString stringWithFormat:@"Unknown request \"%@\" (is SimRun older than this simrun?)", action ?: @""] };
 }
 
 - (void)reply:(SRRequest *)r dict:(NSDictionary *)d {
@@ -740,8 +898,6 @@ int main(int argc, char **argv) {
     SRMode mode = SRModeGUI;
     NSMutableArray *rest = [NSMutableArray array];
     if (argc >= 2 && !strcmp(argv[1], "--serve")) mode = SRModeServe;
-    else if (argc >= 3 && !strcmp(argv[1], "--run")) { mode = SRModeRun; for (int i = 2; i < argc; i++) [rest addObject:@(argv[i])]; }
-    else if (argc >= 2 && !strcmp(argv[1], "--run")) { fprintf(stderr, "usage: SimRun --run <sim-binary> [args...]\n"); return 2; }
     else for (int i = 1; i < argc; i++)   // GUI: app bundles to open; skip LaunchServices/AppKit flags (-psn_…, -NSFoo YES)
       if (argv[i][0] == '-') { if (strncmp(argv[i], "-psn_", 5) && i + 1 < argc && argv[i + 1][0] != '-') i++; }
       else [rest addObject:[@(argv[i]) stringByStandardizingPath]];

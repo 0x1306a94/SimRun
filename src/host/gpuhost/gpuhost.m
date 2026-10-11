@@ -3,10 +3,7 @@
 #import <Metal/Metal.h>
 #include <xpc/xpc.h>
 #include <dlfcn.h>
-#include <spawn.h>
-#include <sys/wait.h>
 #include "gpuhost.h"
-extern char **environ;
 
 @interface IOSurfaceRemoteServer : NSObject
 - (instancetype)initWithListener:(xpc_connection_t)listener options:(NSDictionary *)options;
@@ -54,26 +51,5 @@ int srgpu_host_start(mach_port_t *ios_port, mach_port_t *mtl_port) {
   fprintf(stderr, "[gpuhost] IOSurface listener port %#x, Metal listener port %#x (device %s, registryID %#llx)\n",
           *ios_port, *mtl_port, dev.name.UTF8String, dev.registryID);
   return (*ios_port && *mtl_port) ? 0 : -3;
-}
-
-// Environment a sim process gets from simrun.sh (by running `simrun.sh /usr/bin/env -0`), plus DYLD_INSERT_LIBRARIES=insert.
-char **srgpu_sim_environment(const char *simrun, const char *insert) {
-  int fds[2]; pipe(fds);
-  posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
-  posix_spawn_file_actions_adddup2(&fa, fds[1], 1); posix_spawn_file_actions_addclose(&fa, fds[0]);
-  unsetenv("SIMRUN_INSERT");
-  char *args[] = { (char *)simrun, "/usr/bin/env", "-0", NULL };
-  pid_t pid; if (posix_spawn(&pid, simrun, &fa, NULL, args, environ)) { perror("spawn simrun"); exit(1); }
-  close(fds[1]);
-  NSMutableData *d = [NSMutableData data]; char buf[4096]; ssize_t n;
-  while ((n = read(fds[0], buf, sizeof buf)) > 0) [d appendBytes:buf length:n];
-  close(fds[0]); int st; waitpid(pid, &st, 0);
-  NSMutableArray *vars = [NSMutableArray array];
-  for (NSString *kv in [[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] componentsSeparatedByString:@"\0"])
-    if (kv.length && ![kv hasPrefix:@"DYLD_INSERT_LIBRARIES="]) [vars addObject:kv];
-  if (insert && *insert) [vars addObject:[NSString stringWithFormat:@"DYLD_INSERT_LIBRARIES=%s", insert]];
-  char **env = calloc(vars.count + 1, sizeof(char *));
-  for (NSUInteger i = 0; i < vars.count; i++) env[i] = strdup([vars[i] UTF8String]);
-  return env;
 }
 

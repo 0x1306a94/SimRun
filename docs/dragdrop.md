@@ -7,8 +7,8 @@ from one place in an app to another. The lifted item floats under the finger, dr
 providers. Dragging between two SimRun apps, or between a sim app and the Mac, is not supported.
 
 ```bash
-make tests && DRAGTEST_AUTO=1 scripts/simapp.sh build/apps/DragTest.app   # scripted: a cancelled drag, a drop, a text drop
-scripts/simapp.sh build/apps/DragTest.app                                 # by hand
+make tests && DRAGTEST_AUTO=1 build/bin/simrun run build/apps/DragTest.app   # scripted: a cancelled drag, a drop, a text drop
+build/bin/simrun run build/apps/DragTest.app                                 # by hand
 DRAG_VERBOSE=1 …                                                          # trace sessions
 ```
 

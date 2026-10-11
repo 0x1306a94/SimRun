@@ -8,5 +8,3 @@
 #define SR_PORT_SLOT_METAL     2   // mach_ports_register slot: com.apple.metal.simulator listener port
 // Starts both services in this (host) process. Returns send rights to the listener ports (0 on failure).
 int srgpu_host_start(mach_port_t *iosurface_port, mach_port_t *metal_port);
-// Environment for spawning a sim binary directly (computed via simrun.sh), with DYLD_INSERT_LIBRARIES=insert (may be NULL).
-char **srgpu_sim_environment(const char *simrun_sh, const char *insert);

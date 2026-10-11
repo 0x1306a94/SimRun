@@ -2,6 +2,7 @@
 #import "session.h"
 #import <QuartzCore/QuartzCore.h>
 #import <IOSurface/IOSurface.h>
+#import <ImageIO/ImageIO.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -214,7 +215,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 
 - (void)captureOutputFrom:(int)fd {
   _log = [NSMutableString string];
-  struct passwd *pw = getpwuid(getuid());   // not $HOME: under simrun.sh that is the simulated device's data dir
+  struct passwd *pw = getpwuid(getuid());   // not $HOME, which may be the simulated device's data dir
   NSString *dir = [@(pw ? pw->pw_dir : "/tmp") stringByAppendingPathComponent:@"Library/Logs/SimRun"];
   [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
   NSString *path = [dir stringByAppendingPathComponent:[_title stringByAppendingPathExtension:@"log"]];
@@ -312,6 +313,34 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
     if (frames % 60 == 0) fprintf(stderr, "[frame-check] %llu frames, %llu overwritten while on screen\n", frames, overwritten);
   }
   _shownSurfaceID = f->surface_id; _shownChecksum = f->checksum; _shownSince = mach_absolute_time();
+}
+
+- (NSData *)screenshotPNG {
+  if (!_sawFrame || !_surface) return nil;
+  IOSurfaceRef s = (IOSurfaceRef)CFRetain(_surface);
+  // the presented content can be smaller than the display buffer
+  CGFloat sc = _surfaceLayer.contentsScale ?: 1;
+  size_t w = MIN(IOSurfaceGetWidth(s), (size_t)lround(_contentSize.width * sc) ?: IOSurfaceGetWidth(s));
+  size_t h = MIN(IOSurfaceGetHeight(s), (size_t)lround(_contentSize.height * sc) ?: IOSurfaceGetHeight(s));
+  NSMutableData *png = nil;
+  if (IOSurfaceGetPixelFormat(s) == 'BGRA' && IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL) == kIOReturnSuccess) {
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef bm = CGBitmapContextCreate(IOSurfaceGetBaseAddress(s), w, h, 8, IOSurfaceGetBytesPerRow(s), cs,
+                                            kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst);
+    CGImageRef img = bm ? CGBitmapContextCreateImage(bm) : NULL;   // copies the pixels
+    IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
+    if (img) {
+      png = [NSMutableData data];
+      CGImageDestinationRef dst = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, CFSTR("public.png"), 1, NULL);
+      CGImageDestinationAddImage(dst, img, NULL);
+      if (!CGImageDestinationFinalize(dst)) png = nil;
+      CFRelease(dst); CGImageRelease(img);
+    }
+    if (bm) CGContextRelease(bm);
+    CGColorSpaceRelease(cs);
+  }
+  CFRelease(s);
+  return png;
 }
 
 - (void)drain {

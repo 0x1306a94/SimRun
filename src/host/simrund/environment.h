@@ -1,5 +1,5 @@
-// environment.h — what scripts/simrun.sh does, natively: the environment a sim process expects from launchd_sim,
-// plus where SimRun's own pieces live (inside SimRun.app, or next to a plain build in build/bin).
+// environment.h — the environment a sim process expects from launchd_sim (runtime, device, data container), plus where
+// SimRun's own pieces live (inside SimRun.app, or next to a plain build in build/bin).
 #pragma once
 #import <Foundation/Foundation.h>
 
@@ -31,6 +31,9 @@
 + (NSArray<SRRuntime *> *)installedRuntimes;
 + (void)reloadInstalledRuntimes;
 + (SRRuntime *)installedRuntimeWithBuild:(NSString *)build;
+// The runtime `spec` names: a RuntimeRoot, or an installed runtime's build ("23A343"), name ("iOS 26.0 (23A343)") or
+// version ("26.0"; the newest such build); nil if none.
++ (SRRuntime *)runtimeMatching:(NSString *)spec;
 // The runtime chosen in SimRun ▸ iOS Runtime (its build version; nil = the newest installed). Takes effect the next
 // time SimRun starts: runtimeRoot is read once.
 @property (class, copy) NSString *preferredRuntimeBuild;
@@ -67,6 +70,10 @@
 + (NSString *)containerIdentifierForExecutable:(NSString *)executable;
 + (NSString *)containerPathForIdentifier:(NSString *)identifier profile:(NSString *)profile;
 + (NSString *)createContainerForIdentifier:(NSString *)identifier profile:(NSString *)profile;   // the path, with Documents/, Library/, tmp/ made
+// The apps that have a data container (identifiers, sorted), and an app's profiles: "default" (if it has its default
+// container) first, then the others by name.
++ (NSArray<NSString *> *)containerIdentifiers;
++ (NSArray<NSString *> *)profilesForIdentifier:(NSString *)identifier;
 // `base` ("KEY=VALUE" strings, e.g. this process's environment) with `overrides` applied.
 + (NSArray<NSString *> *)environment:(NSArray<NSString *> *)base withOverrides:(NSDictionary<NSString *, NSString *> *)overrides;
 + (NSArray<NSString *> *)processEnvironment;
@@ -76,6 +83,7 @@
 
 + (NSString *)simnsPath;                 // the simns helper
 + (NSString *)libraryDirectory;          // rshim/glue/scenes/hid/pboard/drag/keychain dylibs + SimFramebuffer
-+ (NSString *)injectedLibraries;         // SIMNS_INSERT value for apps
++ (NSString *)injectedLibraries;         // SIMNS_INSERT value for apps (+ SIMAPP_EXTRA_INSERT)
++ (NSString *)injectedLibrariesWithExtra:(NSString *)extra;   // ... + this dylib instead
 + (NSString *)framebufferFramework;      // SIMULATOR_FRAMEBUFFER_FRAMEWORK value
 @end

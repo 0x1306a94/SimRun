@@ -6,11 +6,11 @@ images (PNG/JPEG) and URLs are covered. Named pasteboards (`UIPasteboard(name:cr
 but kept off the Mac's general pasteboard.
 
 ```bash
-make tests && scripts/simapp.sh build/tests/pbtest            # self-test against the Mac pasteboard
-scripts/simapp.sh build/tests/pbtest get                      # what an app sees now (types per item, string)
-scripts/simapp.sh build/tests/pbtest set "hi" && pbpaste      # sim -> Mac
-scripts/simapp.sh build/tests/pbtest watch 30                 # prints changes made by Mac or other sim apps
-PBOARD_VERBOSE=1 scripts/simapp.sh …                          # trace reads/loads/saves/changes
+make tests && build/bin/simrun run build/tests/pbtest            # self-test against the Mac pasteboard
+build/bin/simrun run build/tests/pbtest get                      # what an app sees now (types per item, string)
+build/bin/simrun run build/tests/pbtest set "hi" && pbpaste      # sim -> Mac
+build/bin/simrun run build/tests/pbtest watch 30                 # prints changes made by Mac or other sim apps
+PBOARD_VERBOSE=1 build/bin/simrun run …                          # trace reads/loads/saves/changes
 ```
 
 ## How UIKit talks to the pasteboard (iOS 27.1 runtime)
@@ -60,7 +60,7 @@ app process                                                      simrund (macOS)
   - `changeCount`s are per-pasteboard and our own (one step per change seen), not the Mac's.
   - URLs: iOS encodes `public.url`/`public.file-url` as a binary plist `[string, base]`, the Mac as bare UTF-8. The
     host path converts both ways.
-  - No simrund (e.g. `simrun.sh simns <app>`)? It falls back to an in-memory pasteboard private to the app.
+  - No simrund (an app run outside SimRun)? It falls back to an in-memory pasteboard private to the app.
   - The edit menu's Paste item is a secure paste control. Its presentation
     (`-[_UIEditMenuContentPresentation wantsPasteTouchAuthenticationInEditMenuListView:]`) asks for touch
     authentication, meaning a tap only counts if backboardd signed the touch. SimRun's HID touches carry no
