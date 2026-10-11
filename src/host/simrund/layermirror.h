@@ -10,8 +10,8 @@
 // bounds are the screen in points.
 @property (readonly) CALayer *rootLayer;
 @property (readonly) NSUInteger nodeCount, batchCount;
-// Stand-ins for what isn't copied: a blue tint where a layer has contents (what it drew, images), an orange one on
-// layers the Mac can't draw at all (backdrops, portals, SDF, Metal, video…). On by default.
+// Stand-ins for what isn't copied: a blue tint where a layer has contents that didn't come across, frosted white on
+// blurs (backdrop layers), orange on other layers the Mac can't draw (portals, SDF, Metal, video…). On by default.
 @property (nonatomic) BOOL showsPlaceholders;
 // Applies a batch (a dictionary from the app). Returns what changed: { full: YES (it replaced everything),
 // added: [ids], changed: { id: [properties] }, removed: [ids] }.
@@ -20,7 +20,7 @@
 - (NSString *)treeDescription;
 // A line about what applyBatch: returned.
 - (NSString *)describeChanges:(NSDictionary *)changes;
-// The copy drawn by Core Animation (CALayer -renderInContext:) at `scale` pixels per point; nil before the first batch.
+// The copy drawn by Core Animation, offscreen (SRRenderPNG), at `scale` pixels per point; nil before the first batch.
 - (NSData *)PNGWithScale:(CGFloat)scale;
 // The node drawn at `p` (in `layer`'s coordinates; the flat copy, hit-tested by Core Animation); nil for none.
 - (NSNumber *)nodeAtPoint:(CGPoint)p fromLayer:(CALayer *)layer;
@@ -40,6 +40,7 @@
 @end
 @interface SRLayerMirror (Nodes)
 @property (readonly) NSDictionary<NSNumber *, SRMirrorNode *> *nodes;   // by id; 1 is the screen
+- (CGImageRef)imageNamed:(NSString *)name;   // a node's contentsImage, if the app has sent it
 @end
 // A Core Animation layer of the class a node's `kind` needs.
 CALayer *SRNewMirrorLayer(NSString *kind);
@@ -49,5 +50,8 @@ CALayer *SRNewMirrorLayer(NSString *kind);
 void SRApplyGeometry(CALayer *layer, NSDictionary *props, BOOL depth);
 void SRApplyAppearance(CALayer *layer, NSDictionary *props, BOOL opacity);
 // The stand-in sublayer for what `layer` would draw but isn't copied (nil when there's none to show, or `on` is NO):
-// `standIn` updated, or a new one.
+// `standIn` updated, or a new one. Set the layer's contents first: copied contents need no stand-in.
 CALayer *SRUpdateStandIn(CALayer *layer, CALayer *standIn, NSDictionary *props, BOOL on);
+// `view` (frame origin 0, size in pixels) drawn by Core Animation as a window would draw it, as PNG: with CARenderer into
+// a Metal texture. -renderInContext: would leave out 3D, filters, backdrops, SDF layers and portals.
+NSData *SRRenderPNG(CALayer *view);

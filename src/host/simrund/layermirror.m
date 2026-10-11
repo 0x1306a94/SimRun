@@ -3,6 +3,7 @@
 // nodes the screen can no longer reach (inspect.m forgets the same ones, so they are sent whole if they come back).
 #import "layermirror.h"
 #import <ImageIO/ImageIO.h>
+#import <Metal/Metal.h>
 
 @implementation SRMirrorNode
 @end
@@ -51,15 +52,64 @@ static CGPathRef Path(id v) {
 }
 
 // Kinds (inspect.m SRKind) the Mac can't draw: they get the orange stand-in.
+// The Mac's class for a kind (inspect.m SRKind): the special classes are private, but the Mac's QuartzCore has them too.
+static Class ClassForKind(NSString *kind) {
+  static NSDictionary *classes;
+  if (!classes) {
+    NSMutableDictionary *m = [@{ @"gradient": CAGradientLayer.class, @"shape": CAShapeLayer.class, @"transform": CATransformLayer.class,
+                                 @"text": CATextLayer.class } mutableCopy];
+    NSDictionary *special = @{ @"backdrop": @"CABackdropLayer", @"portal": @"CAPortalLayer", @"sdf": @"CASDFLayer", @"sdfElement": @"CASDFElementLayer" };
+    [special enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *name, BOOL *stop) { Class c = NSClassFromString(name); if (c) m[k] = c; }];
+    classes = m;
+  }
+  return classes[kind];
+}
+// Kinds the Mac can't draw (other processes' layers, Metal, video, …): they get a stand-in.
 static BOOL IsForeign(NSString *kind) {
-  static NSSet *s; if (!s) s = [NSSet setWithArray:@[ @"backdrop", @"portal", @"host", @"sdf", @"metal", @"video", @"emitter", @"replicator" ]];
-  return [s containsObject:kind];
+  static NSSet *s; if (!s) s = [NSSet setWithArray:@[ @"backdrop", @"portal", @"host", @"sdf", @"sdfElement", @"metal", @"video", @"emitter", @"replicator" ]];
+  return [s containsObject:kind] && !ClassForKind(kind);
 }
 
-CALayer *SRNewMirrorLayer(NSString *kind) {
-  Class c = [kind isEqual:@"gradient"] ? CAGradientLayer.class : [kind isEqual:@"shape"] ? CAShapeLayer.class
-          : [kind isEqual:@"transform"] ? CATransformLayer.class : [kind isEqual:@"text"] ? CATextLayer.class : CALayer.class;
-  return [c layer];
+CALayer *SRNewMirrorLayer(NSString *kind) { return [ClassForKind(kind) ?: CALayer.class layer]; }
+
+// A node's `extras` (inspect.m SRExtras): filters and the special classes' properties, unarchived into the same classes.
+// The archive comes from the app, so only these classes may come out of it.
+static NSDictionary *Extras(id data) {
+  if (![data isKindOfClass:NSData.class]) return nil;
+  static NSSet *allowed;
+  if (!allowed) {
+    NSMutableSet *m = [NSMutableSet setWithArray:@[ NSDictionary.class, NSArray.class, NSString.class, NSNumber.class, NSValue.class, NSData.class, NSNull.class ]];
+    for (NSString *name in @[ @"CAFilter", @"CASDFEffect", @"CASDFGlassDisplacementEffect", @"CASDFGlassHighlightEffect", @"CASDFShadowEffect",
+                              @"CASDFColorEffect", @"CASDFEffectGroup", @"CASDFLayerEffect" ]) {
+      Class c = NSClassFromString(name); if (c) [m addObject:c];
+    }
+    allowed = m;
+  }
+  @try {
+    NSError *err = nil;
+    NSDictionary *d = [NSKeyedUnarchiver unarchivedObjectOfClasses:allowed fromData:data error:&err];
+    if (!d) { static int logged; if (logged++ < 5) NSLog(@"[layers] can't unarchive extras: %@", err.localizedDescription); }
+    return [d isKindOfClass:NSDictionary.class] ? d : nil;
+  } @catch (NSException *e) { return nil; }
+}
+
+static void ApplyExtras(CALayer *l, NSDictionary *p) {
+  NSDictionary *extras = Extras(p[@"extras"]);
+  l.filters = extras[@"filters"];
+  l.backgroundFilters = extras[@"backgroundFilters"];
+  l.compositingFilter = extras[@"compositingFilter"];
+  [extras enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *stop) {
+    if ([k isEqual:@"filters"] || [k isEqual:@"backgroundFilters"] || [k isEqual:@"compositingFilter"]) return;
+    if ([v isKindOfClass:NSDictionary.class] && [v[@"$type"] isKindOfClass:NSString.class]) {   // a struct: its type and bytes
+      NSUInteger size = 0; const char *type = [v[@"$type"] UTF8String];
+      NSGetSizeAndAlignment(type, &size, NULL);
+      NSData *bytes = v[@"$bytes"];
+      if (![bytes isKindOfClass:NSData.class] || bytes.length != size) return;
+      v = [NSValue valueWithBytes:bytes.bytes objCType:type];
+    }
+    if (![l respondsToSelector:NSSelectorFromString(k)]) return;   // not on the Mac's version of the class
+    @try { [l setValue:v forKey:k]; } @catch (NSException *e) {}
+  }];
 }
 
 void SRApplyGeometry(CALayer *l, NSDictionary *p, BOOL depth) {
@@ -73,6 +123,7 @@ void SRApplyGeometry(CALayer *l, NSDictionary *p, BOOL depth) {
 }
 
 void SRApplyAppearance(CALayer *l, NSDictionary *p, BOOL opacity) {
+  l.name = Str(p[@"name"], nil);   // filters and Liquid Glass find their sibling layers by name ("@0", "@1"…)
   if (opacity) {
     l.opacity = Num(p[@"opacity"], 1);
     l.allowsGroupOpacity = Bool(p[@"allowsGroupOpacity"], YES);
@@ -121,23 +172,30 @@ void SRApplyAppearance(CALayer *l, NSDictionary *p, BOOL opacity) {
   } else if ([l isKindOfClass:CATextLayer.class]) {
     ((CATextLayer *)l).string = Str(p[@"string"], nil);
   }
+  ApplyExtras(l, p);
 }
 
 CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on) {
   NSString *kind = Str(p[@"kind"], @"layer");
   BOOL foreign = IsForeign(kind);
-  if (!on || !(p[@"contents"] || foreign)) return nil;
+  BOOL uncopied = p[@"contents"] && !l.contents && ![p[@"contents"] isEqual:@"backingStore (empty)"];   // copied contents need none
+  if (!on || !(uncopied || foreign)) return nil;
   if (!standIn) { standIn = [CALayer layer]; standIn.anchorPoint = CGPointZero; }
-  NSColor *tint = foreign ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
   standIn.position = l.bounds.origin; standIn.bounds = (CGRect){ CGPointZero, l.bounds.size };
-  standIn.backgroundColor = [tint colorWithAlphaComponent:foreign ? 0.3 : 0.15].CGColor;
-  standIn.borderColor = [tint colorWithAlphaComponent:0.6].CGColor; standIn.borderWidth = 0.5;
+  if ([kind isEqual:@"backdrop"]) {   // a blur: frosted white is closer than a warning color
+    standIn.backgroundColor = [NSColor colorWithWhite:1 alpha:0.45].CGColor; standIn.borderWidth = 0;
+  } else {
+    NSColor *tint = foreign ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
+    standIn.backgroundColor = [tint colorWithAlphaComponent:foreign ? 0.3 : 0.15].CGColor;
+    standIn.borderColor = [tint colorWithAlphaComponent:0.6].CGColor; standIn.borderWidth = 0.5;
+  }
   standIn.cornerRadius = l.cornerRadius; standIn.cornerCurve = l.cornerCurve; standIn.maskedCorners = l.maskedCorners;
   return standIn;
 }
 
 @implementation SRLayerMirror {
   NSMutableDictionary<NSNumber *, SRMirrorNode *> *_nodes;
+  NSMutableDictionary<NSString *, id> *_images;   // pictures by name (inspect.m): CGImages
   NSMapTable<CALayer *, NSNumber *> *_layerNodes;   // layer (or stand-in) -> its node, for picking
 }
 
@@ -145,6 +203,7 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
   if (!(self = [super init])) return nil;
   _nodes = [NSMutableDictionary dictionary];
   _layerNodes = [NSMapTable weakToStrongObjectsMapTable];
+  _images = [NSMutableDictionary dictionary];
   _showsPlaceholders = YES;
   _rootLayer = [CALayer layer];
   _rootLayer.geometryFlipped = YES;   // y down, as the app's screen
@@ -155,6 +214,7 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
 }
 - (void)reset {
   [_nodes removeAllObjects];
+  [_images removeAllObjects];
   SRMirrorNode *screen = [SRMirrorNode new];
   screen.nid = @1; screen.props = [NSMutableDictionary dictionary]; screen.layer = _rootLayer;
   [_layerNodes setObject:@1 forKey:_rootLayer];
@@ -173,6 +233,20 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
   SRMirrorNode *n = _nodes[nid];
   return n ? [n.layer convertRect:n.layer.bounds toLayer:_rootLayer] : CGRectNull;
 }
+- (CGImageRef)imageNamed:(NSString *)name { return [name isKindOfClass:NSString.class] ? (__bridge CGImageRef)_images[name] : NULL; }
+
+// A picture from a batch: BGRA, premultiplied, sRGB, rows top down.
+static CGImageRef NewPicture(NSDictionary *d) {
+  size_t w = [d[@"width"] unsignedLongValue], h = [d[@"height"] unsignedLongValue];
+  NSData *px = [d[@"pixels"] isKindOfClass:NSData.class] ? d[@"pixels"] : nil;
+  if (!w || !h || px.length < w * h * 4) return NULL;
+  static CGColorSpaceRef srgb; if (!srgb) srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)px);
+  CGImageRef img = CGImageCreate(w, h, 8, 32, w * 4, srgb, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little, dp, NULL, NO, kCGRenderingIntentDefault);
+  CGDataProviderRelease(dp);
+  return img;
+}
+
 - (NSString *)describeNode:(NSNumber *)nid { SRMirrorNode *n = _nodes[nid]; return n ? [self lineFor:n] : nil; }
 
 - (SRMirrorNode *)newNode:(NSNumber *)nid kind:(NSString *)kind {
@@ -195,6 +269,7 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
   SRApplyGeometry(l, p, YES);
   l.hidden = Bool(p[@"hidden"], NO);
   SRApplyAppearance(l, p, YES);
+  l.contents = (__bridge id)[self imageNamed:p[@"contentsImage"]];
   CALayer *standIn = SRUpdateStandIn(l, n.placeholder, p, _showsPlaceholders);
   BOOL changed = standIn != n.placeholder;
   if (changed && standIn) [_layerNodes setObject:n.nid forKey:standIn];
@@ -211,6 +286,11 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
   NSNumber *m = n.props[@"mask"];
   CALayer *mask = [m isKindOfClass:NSNumber.class] ? _nodes[m].layer : nil;
   if (n.layer.mask != mask) { [mask removeFromSuperlayer]; n.layer.mask = mask; }
+  if ([n.layer respondsToSelector:NSSelectorFromString(@"sourceLayer")]) {   // a portal shows another node's layer
+    NSNumber *src = n.props[@"portalSource"];
+    CALayer *sl = [src isKindOfClass:NSNumber.class] ? _nodes[src].layer : nil;
+    @try { [n.layer setValue:sl forKey:@"sourceLayer"]; } @catch (NSException *e) {}
+  }
 }
 
 - (NSDictionary *)applyBatch:(NSDictionary *)batch {
@@ -220,6 +300,11 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   if ([batch[@"full"] isEqual:@YES]) { [self reset]; summary[@"full"] = @YES; }
+  NSDictionary *pictures = [batch[@"images"] isKindOfClass:NSDictionary.class] ? batch[@"images"] : nil;
+  [pictures enumerateKeysAndObjectsUsingBlock:^(NSString *name, NSDictionary *d, BOOL *stop) {
+    CGImageRef img = [d isKindOfClass:NSDictionary.class] ? NewPicture(d) : NULL;
+    if (img) self->_images[name] = CFBridgingRelease(img);
+  }];
   NSMutableArray<SRMirrorNode *> *restructure = [NSMutableArray array];
   NSArray *nodes = [batch[@"nodes"] isKindOfClass:NSArray.class] ? batch[@"nodes"] : @[];
   for (NSDictionary *d in nodes) {
@@ -237,7 +322,8 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
     }];
     if (!fresh) changed[nid] = keys;
     BOOL placeholderChanged = [self configure:n];
-    if (fresh || placeholderChanged || [keys containsObject:@"sublayers"] || [keys containsObject:@"mask"]) [restructure addObject:n];
+    if (fresh || placeholderChanged || [keys containsObject:@"sublayers"] || [keys containsObject:@"mask"] || [keys containsObject:@"portalSource"])
+      [restructure addObject:n];
   }
   for (SRMirrorNode *n in restructure) [self restructure:n];
 
@@ -254,6 +340,12 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
   }
   for (NSNumber *nid in _nodes.allKeys)
     if (![reach containsObject:nid]) { [_nodes[nid].layer removeFromSuperlayer]; [_nodes removeObjectForKey:nid]; [removed addObject:nid]; }
+  // and the pictures no node names any more (inspect.m drops the same ones)
+  if (_images.count) {
+    NSMutableSet *used = [NSMutableSet set];
+    for (SRMirrorNode *n in _nodes.allValues) if (n.props[@"contentsImage"]) [used addObject:n.props[@"contentsImage"]];
+    for (NSString *name in _images.allKeys) if (![used containsObject:name]) [_images removeObjectForKey:name];
+  }
   [CATransaction commit];
   _batchCount++;
   summary[@"added"] = added; summary[@"changed"] = changed; summary[@"removed"] = removed;
@@ -298,6 +390,7 @@ static NSString *Hex(id v) {
   if (p[@"contents"]) {
     [s appendFormat:@" contents=%@", p[@"contents"]];
     NSArray *cs = p[@"contentsSize"]; if (cs.count == 2) [s appendFormat:@" %@x%@", cs[0], cs[1]];
+    if (p[@"contentsImage"]) [s appendString:[self imageNamed:p[@"contentsImage"]] ? @" (copied)" : @" (picture missing)"];
   }
   if ([p[@"colors"] count]) [s appendFormat:@" gradient=%lu colors", (unsigned long)[p[@"colors"] count]];
   if (p[@"path"]) [s appendFormat:@" path=%lu elements fill=%@", (unsigned long)[p[@"path"] count], Hex(p[@"fillColor"] ?: @[ @0, @0, @0, @1 ])];
@@ -305,6 +398,10 @@ static NSString *Hex(id v) {
   if (p[@"backgroundFilters"]) [s appendFormat:@" backgroundFilters=%@", [p[@"backgroundFilters"] componentsJoinedByString:@","]];
   if (p[@"compositingFilter"]) [s appendFormat:@" compositing=%@", p[@"compositingFilter"]];
   if (p[@"string"]) [s appendFormat:@" string=\"%@\"", p[@"string"]];
+  NSMutableArray *extras = [[Extras(p[@"extras"]) allKeys] mutableCopy];
+  [extras removeObjectsInArray:@[ @"filters", @"backgroundFilters", @"compositingFilter" ]];   // listed above
+  if (extras.count) [s appendFormat:@" {%@}", [[extras sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]];
+  if (p[@"extras"] && !Extras(p[@"extras"])) [s appendString:@" {extras unreadable}"];
   return s;
 }
 - (void)describe:(NSNumber *)nid depth:(int)depth prefix:(NSString *)prefix into:(NSMutableString *)out {
@@ -335,20 +432,66 @@ static NSString *Hex(id v) {
 }
 
 // ---------------------------------------------------------------- picture
+// A separate copy of this copy (same nodes, sharing the pictures), for drawing offscreen: the window may be showing this
+// one's layers, and a layer can only be in one tree.
+- (SRLayerMirror *)clone {
+  SRLayerMirror *c = [SRLayerMirror new];
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  c->_showsPlaceholders = _showsPlaceholders;
+  [c->_images addEntriesFromDictionary:_images];
+  [_nodes enumerateKeysAndObjectsUsingBlock:^(NSNumber *nid, SRMirrorNode *n, BOOL *stop) {
+    SRMirrorNode *m = [nid isEqual:@1] ? c->_nodes[@1] : [c newNode:nid kind:Str(n.props[@"kind"], @"layer")];
+    m.props = [n.props mutableCopy];
+    c->_nodes[nid] = m;
+  }];
+  for (SRMirrorNode *m in c->_nodes.allValues) [c configure:m];
+  for (SRMirrorNode *m in c->_nodes.allValues) [c restructure:m];
+  [CATransaction commit];
+  return c;
+}
+
 - (NSData *)PNGWithScale:(CGFloat)scale {
   CGSize size = _rootLayer.bounds.size;
   size_t w = (size_t)lround(size.width * scale), h = (size_t)lround(size.height * scale);
   if (!w || !h) return nil;
+  SRLayerMirror *c = [self clone];
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  CALayer *view = [CALayer layer];
+  view.frame = CGRectMake(0, 0, w, h);
+  c.rootLayer.position = CGPointMake(w / 2.0, h / 2.0);
+  c.rootLayer.transform = CATransform3DMakeScale(scale, scale, 1);
+  [view addSublayer:c.rootLayer];
+  [CATransaction commit];
+  return SRRenderPNG(view);
+}
+
+NSData *SRRenderPNG(CALayer *view) {
+  size_t w = (size_t)view.bounds.size.width, h = (size_t)view.bounds.size.height;
+  id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+  if (!w || !h || !dev) return nil;
+  MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+  td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModeShared;
+  id<MTLTexture> tex = [dev newTextureWithDescriptor:td];
+  id<MTLCommandQueue> queue = [dev newCommandQueue];
+  CARenderer *r = [CARenderer rendererWithMTLTexture:tex options:@{ kCARendererMetalCommandQueue: queue }];
+  r.layer = view; r.bounds = view.bounds;
+  [CATransaction flush];   // the renderer only sees what is committed after the layer is given to it
+  [r beginFrameAtTime:CACurrentMediaTime() timeStamp:NULL];
+  [r addUpdateRect:r.bounds];
+  [r render];
+  [r endFrame];
+  id<MTLCommandBuffer> done = [queue commandBuffer]; [done commit]; [done waitUntilCompleted];   // after the renderer's work
+  NSMutableData *px = [NSMutableData dataWithLength:w * h * 4];
+  [tex getBytes:px.mutableBytes bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+  uint8_t *b = px.mutableBytes, *tmp = malloc(w * 4);   // rows come bottom-up
+  for (size_t y = 0; y < h / 2; y++) { memcpy(tmp, b + y * w * 4, w * 4); memcpy(b + y * w * 4, b + (h - 1 - y) * w * 4, w * 4); memcpy(b + (h - 1 - y) * w * 4, tmp, w * 4); }
+  free(tmp);
   CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-  CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, 0, cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  CGContextRef ctx = CGBitmapContextCreate(b, w, h, 8, w * 4, cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
   CGColorSpaceRelease(cs);
-  if (!ctx) return nil;
-  // the bitmap is y up; the root's geometry is flipped (y down)
-  CGContextTranslateCTM(ctx, 0, h);
-  CGContextScaleCTM(ctx, scale, -scale);
-  [_rootLayer renderInContext:ctx];
-  CGImageRef img = CGBitmapContextCreateImage(ctx);
-  CGContextRelease(ctx);
+  CGImageRef img = ctx ? CGBitmapContextCreateImage(ctx) : NULL;
+  if (ctx) CGContextRelease(ctx);
+  if (!img) return nil;
   NSMutableData *png = [NSMutableData data];
   CGImageDestinationRef dst = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, CFSTR("public.png"), 1, NULL);
   CGImageDestinationAddImage(dst, img, NULL);

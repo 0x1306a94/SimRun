@@ -1,20 +1,29 @@
 # inspect — the layer tree, live
 
-**Status: steps 1–3 of 5 work.** SimRun keeps a live copy of a running app's layer tree on the Mac, without
+**Status: steps 1–4 of 5 work.** SimRun keeps a live copy of a running app's layer tree on the Mac, without
 pausing the app. The copy is made of real Mac `CALayer`s with the app's geometry, colors, borders, corners, shadows,
 masks, gradients and shapes, so the Mac's Core Animation draws it as the app's does. App ▸ Show Layers (⌥⌘I) shows the
 copy next to the app's window, flat or spread out in 3D as in Xcode's view debugger, live; `simrun inspect` prints it
 as text.
 
-What isn't copied yet is what layers *drew* (text, images, `drawRect:`): those layers get a blue stand-in. Layers the
-Mac can't draw at all (blur and other backdrops, portals, Liquid Glass SDF layers, Metal, video) get an orange one.
+Contents are copied too: what layers drew (text, `drawRect:`, SwiftUI drawing) and the images they show, so the copy
+looks like the app. Sampled on a grid against a screenshot, 1 point in 8,250 differs noticeably on Showcase's home
+screen.
+
+The special layers that the Mac's QuartzCore has too are copied as themselves, filters and all: blurs and other
+backdrops, portals, Liquid Glass's SDF layers, and per-corner radii. Measured on the 466×678 grid against screenshots:
+- The SwiftUI test app, glass switch included: no point differs noticeably.
+- Showcase's Keyboard page: 12 of 8,814 points differ, on the faint glass capsules behind its buttons.
+
+Only layers of other processes, Metal and video get an orange stand-in. A blue stand-in means contents that didn't
+come across.
 
 The plan, toward a view debugger like Xcode's but live:
 
 1. ✅ The data: the whole tree, then what changed after each commit.
 2. ✅ The flat copy on the Mac, next to the real window (the best check that the data is right).
 3. ✅ The 3D view: every layer a plane spread out in depth, a camera, picking, clipping as a switch.
-4. Contents: the backing stores' IOSurfaces shown without copying, images copied once.
+4. ✅ Contents: what layers drew and the images they show, sent as pictures, once each.
 5. The tree and inspector panels, editing, animations.
 
 ```bash
@@ -83,6 +92,69 @@ isn't swizzled until someone first does.
   stand in for (`backdrop`, `portal`, `host`, `sdf`, `metal`, `video`, `emitter`, `replicator`).
 - `contents` is `image` (a CGImage, with `contentsSize` in pixels), `backingStore` (what the layer drew:
   `CABackingStore`, a CF type), or another class (`CATintedImage`, an SF Symbol's image).
+
+### Contents
+
+A layer's contents become a **picture**, a plain bitmap (BGRA, premultiplied, sRGB, rows top down, at most 4 million
+pixels), drawn in the app as Core Animation would show it:
+
+- **Getting the image.**
+  - A `CGImage` is used as it is.
+  - A backing store (what `-drawRect:`/`-drawInContext:` and SwiftUI drew into; `CABackingStore`, a CF type) gives
+    its image through QuartzCore's `CABackingStoreCopyCGImage`. It is looked up with `dlsym`, being private.
+  - SF Symbols are `CATintedImage`: their `-image` and `-tint` (a `CGImage` and a `CGColor`, called directly:
+    KVC throws on them).
+- **Painting it.**
+  - Alpha-only images (masks: text, symbols) are painted white, or in their tint (`CABackingStoreCopyTintColor` for
+    text).
+  - A color image with a tint is a template, painted in it.
+  - Then everything is multiplied by the layer's private `contentsMultiplyColor`, which is where SwiftUI puts a
+    symbol's color.
+- **Naming.** A picture is named after the image object (plus tint and multiply color). `CABackingStoreCopyCGImage`
+  keeps returning the same `CGImage` until the layer draws again. So a node's `contentsImage` changes exactly when
+  its pixels do, with no hashing, and layers showing one image share one picture. The app keeps the images it has
+  named alive, so an address isn't reused while its name is in use.
+- **Sending.** A batch carries the pictures its nodes name that the Mac doesn't have yet (`images: { name: { width,
+  height, pixels } }`). Both sides drop pictures no node names any more after each batch, by the same rule as nodes.
+  A backing store with nothing in it yet (no image) gets no stand-in.
+- **On the Mac,** a picture becomes the layer's `contents` (and the 3D skin's), under the app's `contentsGravity`,
+  `contentsRect`, `contentsCenter` and `contentsScale`. It comes out the right way up under the flipped screen layer,
+  with nothing to correct.
+- **Cost, in the app's main thread.** Showcase's whole tree with 23 pictures takes 5 ms. Typing and taps take 1–2 ms.
+  A page push with many new pictures takes up to 12 ms. `simrun inspect` marks each contents as `(copied)` or
+  `(picture missing)`, so `--check` covers pictures too.
+
+### Filters and special layers
+
+Many of the layers that look most "iOS" are private Core Animation classes, and the Mac's QuartzCore has the same ones:
+- `CABackdropLayer` (blurs: `NSVisualEffectView` is built on it).
+- `CAPortalLayer`.
+- `CASDFLayer` and `CASDFElementLayer` (Liquid Glass).
+- `CAFilter`, with the same 44 filter types: `gaussianBlur`, `colorMatrix`, `glassBackground`, `displacementMap`,
+  `vibrantColorMatrix`, `opacityPair`…
+
+So they're copied as themselves:
+- **`extras`** is a keyed archive (`NSKeyedArchiver`, secure coding) of a layer's `filters`, `backgroundFilters` and
+  `compositingFilter`. `CAFilter` supports secure coding, so every filter's type and parameters come across without
+  knowing their keys.
+- It also holds the special classes' own properties, read with key-value coding:
+  - Backdrops: scale, group name, zoom, margin…
+  - SDF layers: their effect object, blur radius, smoothness…
+  - SDF elements: operation, mode, distances.
+  - Portals: what they match and hide.
+  
+  A portal's `sourceLayer` goes as a node id (`portalSource`) and is resolved to that node's layer on the Mac.
+- **`cornerRadii`**: the per-corner radii behind capsules and other corner configurations (iOS 26 uses them for list
+  sections and the glass switch knob). It's a 64-byte struct, sent as its type encoding and bytes (`$type`, `$bytes`):
+  secure coding refuses an `NSValue` holding an arbitrary struct.
+- **On the Mac,** the layer is made of the same class, and the values are set with `-setValue:forKey:`. A key the
+  Mac's class lacks is skipped. The archive comes from the app, so it is unarchived with secure coding and a fixed list
+  of allowed classes: plist types, `NSValue`, `CAFilter`, the `CASDF…Effect` classes.
+- **Names are copied too.** The glass filters find their sibling layers by name (`@0`, `@1`, `@2`).
+- **In 3D,** SDF layers' planes stay empty (outline only). Their distance fields only mean something composited with
+  their siblings; on a plane of their own they draw as a rainbow.
+- **`--png`** draws the copy with `CARenderer`, as a window would. `-renderInContext:` leaves out filters, backdrops,
+  SDF layers and portals. It draws a clone of the copy, because a window may be showing the copy's own layers.
 
 ### Keeping the two sides in step
 
@@ -182,6 +254,15 @@ node   = CATransformLayer   the layer's geometry (bounds, position, anchor point
   nothing. The texture's rows come out bottom-up.
 - **3D geometry works as hoped.** `geometryFlipped` works on a `CATransformLayer`. `-hitTest:` and
   `-convertPoint:fromLayer:` go through perspective and 3D rotation, so picking needs no ray math of our own.
+- **Text is a mask.** SwiftUI's and UILabel's backing stores are 8-bit alpha-only images (`CGImageIsMask`), and the
+  color comes from the backing store's tint. A `CATintedImage` for an SF Symbol had no tint at all: the color
+  (white, or 60% gray) was the layer's `contentsMultiplyColor`.
+- **Key-value coding on a CALayer isn't only properties.** A CALayer stores any key it is given. So
+  `[layer valueForKey:@"_usesCornerRadii"]` reads (nil) from that storage instead of calling the method: call
+  methods directly. Real layer properties (`cornerRadii`, a backdrop's `scale`) do work through key-value coding.
+- **Classify by class, not name.** `SwiftUI.SDFLayer` is a plain container. Copying it as a `CASDFLayer` because of
+  its name made every glass button a rainbow square. Kinds now come from `-isKindOfClass:` against the private
+  classes.
 - **First action after launch.** With the default 5 s timeout, the first scripted action in an app could run out of
   time while UIKit's accessibility loaded (4–5 s). The timeout then fired during the stability check, so the error
   said "keeps moving". `internal.poll` now does that one-time load before its clock starts (scripting.md).
@@ -191,8 +272,9 @@ node   = CATransformLayer   the layer's geometry (bounds, position, anchor point
 - In 3D: corner-radius clipping and `mask` layers, a range slider (show only some levels), focus on a subtree.
 - Depth layout is O(n²) in the number of layers and runs after every batch while 3D is showing. That's fine for
   a few hundred layers; a grid of the placed rectangles would make it cheaper.
-- Step 4, contents. Getting a backing store's IOSurface, and whether Core Animation can draw into a surface we're
-  still showing, are questions for IDA.
+- Contents: draw pictures off the main thread (a page push can spend 12 ms on them). Send IOSurfaces instead of
+  bytes, if the copies ever matter. Wide color (pictures are sRGB).
 - Demangling SwiftUI class names in the tree.
-- Filters: names only for now. The Mac's `CIFilter`s could stand in for blur.
+- Liquid Glass on buttons (backdrop, SDF and portal layers working together) isn't reproduced yet: their capsules are
+  missing, though the blur and the switch's glass are right. Portals aren't resolved in 3D.
 - Steps 1 and 2 were tested on iOS 27.1 only.

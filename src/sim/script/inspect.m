@@ -12,10 +12,18 @@
 // layers, back to front. A property at its default value is left out. Sublayers and masks are node ids; a node is
 // sent whole the first time it appears. The Mac side drops nodes it can no longer reach from the screen; so does this
 // side (from what it believes was sent), so a layer that comes back later is sent whole again.
+//
+// Contents (what a layer drew, or the image it shows) go as pictures: a node's contentsImage names one, and the batch
+// that first needs a picture carries it under images: { name: { width, height, pixels } } (BGRA, premultiplied, sRGB,
+// rows top down). A picture is named after the image object it was made from (and its tint): Core Animation keeps
+// returning the same CGImage for a backing store until the layer draws again, so a new name means new pixels, and
+// layers showing the same image share one picture. Both sides drop pictures no node names any more.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #include <os/lock.h>
+#include <dlfcn.h>
 #include <mach/mach.h>
 #include "script.h"
 #include "protocol.h"
@@ -41,6 +49,16 @@ static void SRNote(CALayer *layer) {
   // runs after the commit that is going on now (a commit on the main thread is itself a run loop callout)
   if (schedule) dispatch_async(dispatch_get_main_queue(), ^{ SRFlush(); });
 }
+
+// QuartzCore functions for backing stores, what -drawRect:/-drawInContext: drew into (looked up at runtime: private)
+static CFTypeID (*gBackingStoreTypeID)(void);
+static CGImageRef (*gBackingStoreCopyImage)(CFTypeRef);   // +1: the same object until the layer draws again
+static CGColorRef (*gBackingStoreCopyTint)(CFTypeRef);    // +1 or NULL: the color an alpha-only backing store is painted in
+
+// The pictures the Mac side has (by name), and those a batch being made may need. Names are image addresses: keeping the
+// images alive keeps them from being reused while the name is in use.
+static NSMutableDictionary<NSString *, id> *gImages;
+static NSMutableDictionary<NSString *, NSArray *> *gPendingImages;   // name -> @[ image, tint or NSNull, multiply or NSNull ]
 
 // ---------------------------------------------------------------- the commit hook
 typedef void *(*SRCopyRenderLayerIMP)(id, SEL, void *, uint32_t, uint32_t *);
@@ -147,11 +165,18 @@ static NSString *SRKind(CALayer *l) {
   if ([l isKindOfClass:CAReplicatorLayer.class]) return @"replicator";
   if ([l isKindOfClass:CAEmitterLayer.class]) return @"emitter";
   if ([l isKindOfClass:CAMetalLayer.class]) return @"metal";
+  // private classes, by what the layer is (SwiftUI.SDFLayer, say, is a plain container despite its name)
+  static NSArray *special;
+  if (!special) {
+    NSMutableArray *m = [NSMutableArray array];
+    for (NSArray *e in @[ @[ @"CABackdropLayer", @"backdrop" ], @[ @"CAPortalLayer", @"portal" ], @[ @"CALayerHost", @"host" ],
+                          @[ @"CASDFElementLayer", @"sdfElement" ], @[ @"CASDFLayer", @"sdf" ] ]) {
+      Class k = NSClassFromString(e[0]); if (k) [m addObject:@[ k, e[1] ]];
+    }
+    special = m;
+  }
+  for (NSArray *e in special) if ([l isKindOfClass:e[0]]) return e[1];
   NSString *c = NSStringFromClass(l.class);
-  if ([c containsString:@"Backdrop"]) return @"backdrop";
-  if ([c containsString:@"Portal"]) return @"portal";
-  if ([c containsString:@"LayerHost"]) return @"host";
-  if ([c containsString:@"SDF"]) return @"sdf";
   if ([c containsString:@"PlayerLayer"] || [c containsString:@"VideoLayer"]) return @"video";
   return @"layer";
 }
@@ -171,10 +196,92 @@ static void SRContents(CALayer *l, NSMutableDictionary *p) {
     if ([cls isEqualToString:@"__NSCFType"]) cls = CFBridgingRelease(CFCopyTypeIDDescription(CFGetTypeID(cf)));
     p[@"contents"] = [cls containsString:@"BackingStore"] ? @"backingStore" : cls;
   }
+  // the picture: an image, and a tint to paint it in (alpha-only backing stores, SF Symbols' CATintedImage)
+  CGImageRef image = NULL; CGColorRef tint = NULL;
+  @try {   // private classes: whatever they do, inspecting must not take the app down
+    if (CFGetTypeID(cf) == CGImageGetTypeID()) image = CGImageRetain((CGImageRef)cf);
+    else if (gBackingStoreTypeID && CFGetTypeID(cf) == gBackingStoreTypeID()) {
+      image = gBackingStoreCopyImage(cf);
+      tint = gBackingStoreCopyTint ? gBackingStoreCopyTint(cf) : NULL;
+    } else if ([NSStringFromClass([c class]) isEqualToString:@"CATintedImage"]) {
+      // -image and -tint return a CGImage and a CGColor (not objects to KVC)
+      SEL imageSel = NSSelectorFromString(@"image"), tintSel = NSSelectorFromString(@"tint");
+      if ([c respondsToSelector:imageSel]) image = CGImageRetain(((CGImageRef (*)(id, SEL))objc_msgSend)(c, imageSel));
+      if ([c respondsToSelector:tintSel]) tint = CGColorRetain(((CGColorRef (*)(id, SEL))objc_msgSend)(c, tintSel));
+    }
+  } @catch (NSException *e) { VLOG("inspect: no picture for %s: %s", NSStringFromClass([c class]).UTF8String, e.reason.UTF8String); }
+  if (!image && gBackingStoreTypeID && CFGetTypeID(cf) == gBackingStoreTypeID()) p[@"contents"] = @"backingStore (empty)";   // nothing drawn yet
+  if (image) {
+    // and the layer's contentsMultiplyColor, which Core Animation multiplies the contents by (SF Symbols' color)
+    NSArray *multiply = nil;
+    SEL multiplySel = NSSelectorFromString(@"contentsMultiplyColor");
+    if ([l respondsToSelector:multiplySel]) multiply = SRColor(((CGColorRef (*)(id, SEL))objc_msgSend)(l, multiplySel));
+    if ([multiply isEqual:@[ @1, @1, @1, @1 ]]) multiply = nil;
+    NSArray *tc = SRColor(tint);
+    NSString *name = [NSString stringWithFormat:@"%p%@%@", image, tc ? [@" tint " stringByAppendingString:[tc componentsJoinedByString:@","]] : @"",
+                                                  multiply ? [@" multiply " stringByAppendingString:[multiply componentsJoinedByString:@","]] : @""];
+    p[@"contentsImage"] = name;
+    if (!gImages[name] && !gPendingImages[name])
+      gPendingImages[name] = @[ (__bridge id)image, tint ? (__bridge id)tint : NSNull.null, multiply ?: NSNull.null ];
+    CGImageRelease(image);
+  }
+  if (tint) CGColorRelease(tint);
   if (![l.contentsGravity isEqualToString:kCAGravityResize]) p[@"contentsGravity"] = l.contentsGravity;
   if (!CGRectEqualToRect(l.contentsRect, CGRectMake(0, 0, 1, 1))) p[@"contentsRect"] = SRRectValue(l.contentsRect);
   if (!CGRectEqualToRect(l.contentsCenter, CGRectMake(0, 0, 1, 1))) p[@"contentsCenter"] = SRRectValue(l.contentsCenter);
   p[@"contentsScale"] = @(l.contentsScale);
+}
+
+// The properties of the special layer classes the Mac has too (backdrops, portals, Liquid Glass's SDF layers), copied as
+// they are (key-value coding, then keyed archiving), besides those every layer has.
+static NSArray<NSString *> *SRExtraKeys(NSString *kind) {
+  static NSDictionary *keys;
+  if (!keys) keys = @{
+    @"backdrop": @[ @"enabled", @"scale", @"zoom", @"groupName", @"groupNamespace", @"usesGlobalGroupNamespace", @"marginWidth", @"captureOnly",
+                    @"backdropRect", @"ignoresScreenClip", @"allowsInPlaceFiltering" ],
+    @"portal": @[ @"matchesPosition", @"matchesTransform", @"matchesOpacity", @"hidesSourceLayer", @"hidesSourceLayerInOtherPortals" ],
+    @"sdf": @[ @"effect", @"effectOffset", @"gaussianRadius", @"smoothness", @"mergeElements" ],
+    @"sdfElement": @[ @"operation", @"mode", @"contentsZeroValueDistance", @"contentsOneValueDistance", @"gradientOvalization" ],
+  };
+  return keys[kind] ?: @[];
+}
+
+// `extras`: the filters (CAFilter objects: their type and every parameter) and the special classes' properties, as a
+// keyed archive the Mac side unarchives into the same classes. Whatever can't be archived is left out.
+static NSData *SRExtras(CALayer *l, NSString *kind) {
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  if (l.filters.count) values[@"filters"] = l.filters;
+  if (l.backgroundFilters.count) values[@"backgroundFilters"] = l.backgroundFilters;
+  if (l.compositingFilter) values[@"compositingFilter"] = l.compositingFilter;
+  // per-corner radii (capsules and other corner configurations): a struct both sides' CALayer has. -_usesCornerRadii is
+  // a method, not a layer property: key-value coding on a CALayer would read a key of that name from its own storage
+  SEL usesRadii = NSSelectorFromString(@"_usesCornerRadii");
+  @try {
+    if ([l respondsToSelector:usesRadii] && ((BOOL (*)(id, SEL))objc_msgSend)(l, usesRadii)) values[@"cornerRadii"] = [l valueForKey:@"cornerRadii"];
+  } @catch (NSException *e) {}
+  for (NSString *k in SRExtraKeys(kind)) {
+    @try { id v = [l valueForKey:k]; if (v) values[k] = v; } @catch (NSException *e) {}
+  }
+  if (!values.count) return nil;
+  // a struct in an NSValue (cornerRadii, CATransform3D, …) doesn't keyed-archive securely: its type and bytes do
+  for (NSString *k in values.allKeys) {
+    id v = values[k];
+    if (![v isKindOfClass:NSValue.class] || [v isKindOfClass:NSNumber.class]) continue;
+    NSUInteger size = 0; NSGetSizeAndAlignment([v objCType], &size, NULL);
+    NSMutableData *bytes = [NSMutableData dataWithLength:size];
+    [v getValue:bytes.mutableBytes size:size];
+    values[k] = @{ @"$type": @([v objCType]), @"$bytes": bytes };
+  }
+  NSError *err = nil;
+  NSData *d = [NSKeyedArchiver archivedDataWithRootObject:values requiringSecureCoding:YES error:&err];
+  if (d) return d;
+  // one of them won't archive: keep the others
+  for (NSString *k in values.allKeys) {
+    if ([NSKeyedArchiver archivedDataWithRootObject:@{ k: values[k] } requiringSecureCoding:YES error:NULL]) continue;
+    VLOG("inspect: can't copy %s's %s (%s)", NSStringFromClass(l.class).UTF8String, k.UTF8String, NSStringFromClass([values[k] class]).UTF8String);
+    [values removeObjectForKey:k];
+  }
+  return values.count ? [NSKeyedArchiver archivedDataWithRootObject:values requiringSecureCoding:YES error:NULL] : nil;
 }
 
 // Everything the Mac side needs to draw `l` (and, for the dump, to describe it), defaults left out.
@@ -222,6 +329,13 @@ static NSDictionary *SRRecord(CALayer *l) {
   if (SRFilterNames(l.filters)) p[@"filters"] = SRFilterNames(l.filters);
   if (SRFilterNames(l.backgroundFilters)) p[@"backgroundFilters"] = SRFilterNames(l.backgroundFilters);
   if (l.compositingFilter) p[@"compositingFilter"] = SRFilterNames(@[ l.compositingFilter ]).firstObject;
+  NSData *extras = SRExtras(l, p[@"kind"]);
+  if (extras) p[@"extras"] = extras;
+  if ([p[@"kind"] isEqual:@"portal"]) {   // what it shows: another layer of the tree
+    id src = nil;
+    @try { src = [l valueForKey:@"sourceLayer"]; } @catch (NSException *e) {}
+    if ([src isKindOfClass:CALayer.class]) p[@"portalSource"] = SRId(src);
+  }
 
   if ([l isKindOfClass:CAGradientLayer.class]) {
     CAGradientLayer *g = (CAGradientLayer *)l;
@@ -310,6 +424,65 @@ static void SRDiffAll(CALayer *l, NSMutableArray *nodes, NSMutableSet *done) {
   if (l.mask) SRDiffAll(l.mask, nodes, done);
 }
 
+// ---------------------------------------------------------------- pictures
+// An image drawn into a plain bitmap (BGRA, premultiplied, sRGB, rows top down; at most 4 million pixels) as Core
+// Animation shows it: an alpha-only image (a mask) is white, or `tint`; a color image with a `tint` is a template,
+// painted in it; then everything is multiplied by `multiply` ([r, g, b, a], or nil).
+static NSDictionary *SRPicture(CGImageRef image, CGColorRef tint, NSArray *multiply) {
+  size_t w = CGImageGetWidth(image), h = CGImageGetHeight(image);
+  if (!w || !h) return nil;
+  double scale = w * h > 4e6 ? sqrt(4e6 / ((double)w * h)) : 1;
+  size_t W = MAX(1, (size_t)(w * scale)), H = MAX(1, (size_t)(h * scale));
+  static CGColorSpaceRef srgb; if (!srgb) srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  NSMutableData *pixels = [NSMutableData dataWithLength:W * H * 4];
+  CGContextRef ctx = CGBitmapContextCreate(pixels.mutableBytes, W, H, 8, W * 4, srgb, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  if (!ctx) return nil;
+  CGRect r = CGRectMake(0, 0, W, H);
+  if (CGImageIsMask(image)) {   // a mask is painted in the fill color
+    CGContextSetFillColorWithColor(ctx, tint ?: CGColorGetConstantColor(kCGColorWhite));
+    CGContextDrawImage(ctx, r, image);
+  } else {
+    CGContextDrawImage(ctx, r, image);
+    if (tint) { CGContextSetBlendMode(ctx, kCGBlendModeSourceIn); CGContextSetFillColorWithColor(ctx, tint); CGContextFillRect(ctx, r); }
+  }
+  CGContextRelease(ctx);
+  if (multiply.count == 4) {   // premultiplied: each color channel by its factor and alpha's, alpha by alpha's
+    double mr = [multiply[0] doubleValue], mg = [multiply[1] doubleValue], mb = [multiply[2] doubleValue], ma = [multiply[3] doubleValue];
+    double fb = MAX(0, MIN(1, mb)) * ma, fg = MAX(0, MIN(1, mg)) * ma, fr = MAX(0, MIN(1, mr)) * ma;
+    uint8_t *px = pixels.mutableBytes;
+    for (size_t i = 0; i < W * H * 4; i += 4) {
+      px[i] = (uint8_t)(px[i] * fb + 0.5); px[i + 1] = (uint8_t)(px[i + 1] * fg + 0.5);
+      px[i + 2] = (uint8_t)(px[i + 2] * fr + 0.5); px[i + 3] = (uint8_t)(px[i + 3] * ma + 0.5);
+    }
+  }
+  return @{ @"width": @(W), @"height": @(H), @"pixels": pixels };
+}
+
+// The pictures the nodes in this batch name that the Mac side doesn't have yet.
+static NSDictionary *SRPicturesFor(NSArray *nodes) {
+  NSMutableDictionary *out = [NSMutableDictionary dictionary];
+  for (NSDictionary *n in nodes) {
+    NSString *name = n[@"contentsImage"];
+    if (!name || gImages[name] || out[name]) continue;
+    NSArray *src = gPendingImages[name];
+    id tint = src[1] == NSNull.null ? nil : src[1], multiply = src[2] == NSNull.null ? nil : src[2];
+    NSDictionary *pic = src ? SRPicture((__bridge CGImageRef)src[0], (__bridge CGColorRef)tint, multiply) : nil;
+    if (!pic) continue;
+    out[name] = pic;
+    gImages[name] = src[0];
+  }
+  [gPendingImages removeAllObjects];
+  return out;
+}
+
+// Drops the pictures no node names any more (the Mac side does the same after each batch).
+static void SRForgetUnusedPictures(void) {
+  if (!gImages.count) return;
+  NSMutableSet *used = [NSMutableSet set];
+  for (NSDictionary *rec in gSent.objectEnumerator) if (rec[@"contentsImage"]) [used addObject:rec[@"contentsImage"]];
+  for (NSString *name in gImages.allKeys) if (![used containsObject:name]) [gImages removeObjectForKey:name];
+}
+
 // ---------------------------------------------------------------- sending
 static void SRInspectStop(void);
 static BOOL gResyncScheduled;
@@ -331,6 +504,7 @@ static void SRSendBatch(NSDictionary *batch) {
   if (kr != KERN_SUCCESS && !gResyncScheduled) {
     VLOG("inspect: SimRun is behind (0x%x); resending the whole tree", kr);
     [gSent removeAllObjects];
+    [gImages removeAllObjects];
     gResyncScheduled = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ gResyncScheduled = NO; SRFlush(); });
   }
@@ -356,8 +530,16 @@ static void SRFlush(void) {
   }
   // something left its superlayer in this batch: forget what the Mac side drops along with it
   if (gDetached.count) { SRForgetUnreachable(); [gDetached removeAllObjects]; }
-  if (nodes.count || full) SRSendBatch(full ? @{ @"full": @YES, @"nodes": nodes } : @{ @"nodes": nodes });
-  VLOG("inspect: %s batch: %lu dirty, %lu nodes, %.1f ms", full ? "full" : "change", (unsigned long)dirty.count, (unsigned long)nodes.count, SRNowMS() - t);
+  NSDictionary *pictures = SRPicturesFor(nodes);
+  SRForgetUnusedPictures();
+  if (nodes.count || full) {
+    NSMutableDictionary *batch = [NSMutableDictionary dictionaryWithObject:nodes forKey:@"nodes"];
+    if (full) batch[@"full"] = @YES;
+    if (pictures.count) batch[@"images"] = pictures;
+    SRSendBatch(batch);
+  }
+  VLOG("inspect: %s batch: %lu dirty, %lu nodes, %lu pictures, %.1f ms", full ? "full" : "change", (unsigned long)dirty.count, (unsigned long)nodes.count,
+       (unsigned long)pictures.count, SRNowMS() - t);
 }
 
 // ---------------------------------------------------------------- start / stop (main thread)
@@ -367,6 +549,7 @@ static void SRInspectStop(void) {
   gHost = MACH_PORT_NULL;
   [gSent removeAllObjects];
   [gDetached removeAllObjects];
+  [gImages removeAllObjects];
   VLOG("inspect: stopped");
 }
 
@@ -379,6 +562,12 @@ void SRInspectStart(mach_port_t host, mach_port_t notify) {
     gDetached = [NSMutableSet set];
     gSent = [NSMutableDictionary dictionary];
     gDirty = [NSHashTable hashTableWithOptions:NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPointerPersonality];
+    gImages = [NSMutableDictionary dictionary];
+    gPendingImages = [NSMutableDictionary dictionary];
+    gBackingStoreTypeID = dlsym(RTLD_DEFAULT, "CABackingStoreGetTypeID");
+    gBackingStoreCopyImage = dlsym(RTLD_DEFAULT, "CABackingStoreCopyCGImage");
+    gBackingStoreCopyTint = dlsym(RTLD_DEFAULT, "CABackingStoreCopyTintColor");
+    if (!gBackingStoreCopyImage) gBackingStoreTypeID = NULL;
   }
   SRInspectStop();   // a new watcher replaces the old one
   gHost = host;

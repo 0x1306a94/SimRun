@@ -81,7 +81,11 @@ CATransform3D SRScenePerspective(CGSize size) {
   p.plane.position = b.origin; p.plane.bounds = (CGRect){ CGPointZero, b.size };
   p.skin.bounds = p.plane.bounds;
   if (screen) p.skin.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
-  else SRApplyAppearance(p.skin, props, NO);
+  else { SRApplyAppearance(p.skin, props, NO); p.skin.contents = (__bridge id)[_mirror imageNamed:props[@"contentsImage"]]; }
+  // Liquid Glass's SDF layers only mean something composited with their siblings (the glass filters find them by name);
+  // on a plane of their own they would draw their raw distance field
+  NSString *kind = props[@"kind"];
+  p.skin.hidden = [kind isEqual:@"sdf"] || [kind isEqual:@"sdfElement"];
   CALayer *standIn = SRUpdateStandIn(p.skin, p.standIn, props, _showsPlaceholders && !screen);
   if (standIn != p.standIn) { p.standIn = standIn; p.skin.sublayers = standIn ? @[ standIn ] : nil; }
   p.outline.bounds = p.plane.bounds;
@@ -298,8 +302,7 @@ CATransform3D SRScenePerspective(CGSize size) {
 // ---------------------------------------------------------------- offscreen
 + (NSData *)PNGOfMirror:(SRLayerMirror *)mirror size:(CGSize)size yaw:(CGFloat)yaw pitch:(CGFloat)pitch spacing:(CGFloat)spacing {
   size_t w = (size_t)size.width, h = (size_t)size.height;
-  id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
-  if (!w || !h || !dev) return nil;
+  if (!w || !h) return nil;
   [CATransaction begin]; [CATransaction setDisableActions:YES];
   SRLayerScene *scene = [[SRLayerScene alloc] initWithMirror:mirror];
   if (spacing > 0) scene.spacing = spacing;
@@ -312,35 +315,6 @@ CATransform3D SRScenePerspective(CGSize size) {
   [scene layoutInSize:size];
   [CATransaction commit];
 
-  MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-  td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModeShared;
-  id<MTLTexture> tex = [dev newTextureWithDescriptor:td];
-  id<MTLCommandQueue> queue = [dev newCommandQueue];
-  CARenderer *r = [CARenderer rendererWithMTLTexture:tex options:@{ kCARendererMetalCommandQueue: queue }];
-  r.layer = view; r.bounds = view.bounds;
-  [CATransaction flush];   // the renderer only sees what is committed after the layer is given to it
-  [r beginFrameAtTime:CACurrentMediaTime() timeStamp:NULL];
-  [r addUpdateRect:r.bounds];
-  [r render];
-  [r endFrame];
-  id<MTLCommandBuffer> done = [queue commandBuffer]; [done commit]; [done waitUntilCompleted];   // after the renderer's work
-  NSMutableData *px = [NSMutableData dataWithLength:w * h * 4];
-  [tex getBytes:px.mutableBytes bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
-  // rows come bottom-up
-  uint8_t *b = px.mutableBytes, *tmp = malloc(w * 4);
-  for (size_t y = 0; y < h / 2; y++) { memcpy(tmp, b + y * w * 4, w * 4); memcpy(b + y * w * 4, b + (h - 1 - y) * w * 4, w * 4); memcpy(b + (h - 1 - y) * w * 4, tmp, w * 4); }
-  free(tmp);
-  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-  CGContextRef ctx = CGBitmapContextCreate(b, w, h, 8, w * 4, cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-  CGColorSpaceRelease(cs);
-  CGImageRef img = ctx ? CGBitmapContextCreateImage(ctx) : NULL;
-  if (ctx) CGContextRelease(ctx);
-  if (!img) return nil;
-  NSMutableData *png = [NSMutableData data];
-  CGImageDestinationRef dst = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, CFSTR("public.png"), 1, NULL);
-  CGImageDestinationAddImage(dst, img, NULL);
-  BOOL ok = CGImageDestinationFinalize(dst);
-  CFRelease(dst); CGImageRelease(img);
-  return ok ? png : nil;
+  return SRRenderPNG(view);
 }
 @end
