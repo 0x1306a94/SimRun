@@ -16,6 +16,7 @@ Write-ups of each part:
 - [pasteboard.md](pasteboard.md) — UIPasteboard ⇄ Mac pasteboard: the pasted protocol, UIKit's cache, the fake server
 - [dragdrop.md](dragdrop.md) — drag & drop within an app: the druid protocols, drag HID events, the in-process drag
   server
+- [docpicker.md](docpicker.md) — document pickers: UIDocumentPickerViewController with the Mac's open and save panels
 - [keychain.md](keychain.md) — the fake keychain: SecItem semantics, the plaintext store, access groups, the Keychain
   window
 - [webkit.md](webkit.md) — WKWebView: BrowserEngineKit process launches, the extension entry point, the Launch

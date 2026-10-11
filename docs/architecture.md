@@ -10,7 +10,8 @@ provide are reimplemented (mostly in-process), and the app appears in an ordinar
 simrun (CLI) ───unix socket──▶ build/bin/simrund   macOS AppKit server: one window per app, input forwarding, and the
   argv, env, stdio fds                   │            host-side "sim2host" services (com.apple.IOSurface.Remote via
                                          │            IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation,
-                                         │            dev.simrun.pasteboard: the Mac's NSPasteboard)
+                                         │            dev.simrun.pasteboard: the Mac's NSPasteboard, dev.simrun.docpicker:
+                                         │            the Mac's open and save panels)
                                          ├─ build/bin/simns --serve   launchd_sim stand-in speaking sim libxpc's XPC-pipe protocol;
                                          │     │                      one private namespace per app layered over a shared global one;
                                          │     └─ trustd, cfprefsd…   real sim daemons launched on demand, shared by all apps
@@ -27,6 +28,8 @@ simrun (CLI) ───unix socket──▶ build/bin/simrund   macOS AppKit serv
                                                              by the Mac pasteboard via simrund (pasteboard.md)
                                               drag.dylib     in-process drag server (druid) for drag & drop within the app
                                                              (dragdrop.md)
+                                              docpicker.dylib UIDocumentPickerViewController picks with the Mac's
+                                                             open and save panels (docpicker.md)
                                               keychain.dylib fake keychain: the SecItem API over a plaintext plist in the
                                                              data directory, shown in SimRun's Keychain window
                                                              (keychain.md)
@@ -74,7 +77,7 @@ new choice takes effect when SimRun is reopened; the menu says so while the two 
 it the shared daemons (cfprefsd, containermanagerd, trustd, securityd, nsurlsessiond), runs from that runtime.
 
 An app can run on another installed runtime (Launch With… ▸ Info, or `simrun run --runtime`). SimRun then starts a second `simns --serve` from that runtime the first time it is needed, publishes the
-same host services (IOSurface, Metal, pasteboard) in it, and gives the app a namespace there, so an app never talks to
+same host services (IOSurface, Metal, pasteboard, file panels) in it, and gives the app a namespace there, so an app never talks to
 another runtime's daemons. Either way the server sets the runtime variables (`DYLD_ROOT_PATH`, `SIMULATOR_ROOT`,
 `SIMULATOR_RUNTIME_VERSION`, …) itself. Extra simns stay
 until SimRun quits. An app whose executable needs a newer iOS than its runtime (the arm64 slice's minimum OS, which
@@ -123,11 +126,11 @@ and `simrun screenshot` take `--profile` to pick one of an app's instances.
 | Path | Contents |
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
-| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment, runtimes and device types, host pasteboard, Keychain window), `simrun/` (the `simrun` command line), `gpuhost/` (IOSurface + Metal host services) |
+| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment, runtimes and device types, host pasteboard, file panels for document pickers, Keychain window), `simrun/` (the `simrun` command line), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
-| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `keychain/`, `webkit/`, `simfb/` |
+| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `docpicker/`, `keychain/`, `webkit/`, `simfb/` |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `crash.py` (crash-report backtrace) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `bgdownload` background URLSession, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `bgdownload` background URLSession, `pickertest` document pickers, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
 | `docs/` | These write-ups |
 
 ## Building

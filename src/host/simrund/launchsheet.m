@@ -7,12 +7,14 @@
 // SimRun variables the Options and Diagnostics tabs switch: { variable, checkbox title, checked = variable unset }.
 static NSArray<NSArray *> *ServiceSwitches(void) {
   return @[ @[ @"PBOARD_DISABLE", @"Pasteboard shared with the Mac", @YES ], @[ @"DRAG_DISABLE", @"Drag and drop", @YES ],
+            @[ @"DOCPICKER_DISABLE", @"Document pickers with Mac file panels", @YES ],
             @[ @"KEYCHAIN_DISABLE", @"SimRun keychain", @YES ], @[ @"WEBKIT_DISABLE", @"Web view helper processes", @YES ] ];
 }
 static NSArray<NSArray *> *TracingSwitches(void) {
   return @[ @[ @"HID_VERBOSE", @"Touch and keyboard", @NO ], @[ @"SCENES_VERBOSE", @"Scenes", @NO ],
             @[ @"SIMFB_VERBOSE", @"Rendering", @NO ], @[ @"PBOARD_VERBOSE", @"Pasteboard", @NO ],
-            @[ @"DRAG_VERBOSE", @"Drag and drop", @NO ], @[ @"KEYCHAIN_VERBOSE", @"Keychain", @NO ],
+            @[ @"DRAG_VERBOSE", @"Drag and drop", @NO ], @[ @"DOCPICKER_VERBOSE", @"Document pickers", @NO ],
+            @[ @"KEYCHAIN_VERBOSE", @"Keychain", @NO ],
             @[ @"WEBKIT_VERBOSE", @"Web views", @NO ], @[ @"RSHIM_VERBOSE", @"Runtime shims", @NO ] ];
 }
 

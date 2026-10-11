@@ -1,7 +1,7 @@
 // SimRun.app / simrund — the SimRun host process (macOS, AppKit).
 //
 // One process owns the launcher, every app window, one set of host-side "sim2host" services (IOSurface, Metal, the
-// Mac pasteboard) and a `simns --serve` per iOS runtime in use (the launchd_sim stand-in, which also runs that runtime's
+// Mac pasteboard, file panels) and a `simns --serve` per iOS runtime in use (the launchd_sim stand-in, which also runs that runtime's
 // shared sim daemons): SimRun's own runtime's from the start, another runtime's once an app launched on it needs it.
 // Each iOS app is still its own process: it gets a private simns namespace layered over the global one of its
 // runtime's simns and a window (SRSession).
@@ -25,12 +25,14 @@
 #include "library.h"
 #include "launcher.h"
 #include "pasteboard.h"
+#include "filepanel.h"
 #include "keychainwindow.h"
 #include "launchoptions.h"
 #include "simns_proto.h"
 #include "simrund_proto.h"
 #include "gpuhost.h"
 #include "pboard.h"
+#include "docpicker.h"
 
 typedef NS_ENUM(NSInteger, SRMode) { SRModeGUI, SRModeServe };
 
@@ -82,6 +84,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   SRLauncher *_launcher;
   NSMenuItem *_quitServerItem, *_quitAppItem;   // ⌘Q quits the app whose window is key, else SimRun
   SRPasteboardHost *_pasteboard; mach_port_t _pasteboardPort;
+  SRDocumentPickerHost *_docPicker; mach_port_t _docPickerPort;
   BOOL _gpuStarted; mach_port_t _iosurfacePort, _metalPort;
   BOOL _launched;
 }
@@ -487,6 +490,16 @@ static BOOL ProcessGone(pid_t pid) {
     if (_metalPort) [self registerName:"com.apple.metal.simulator" port:_metalPort in:ns];
     if (!_pasteboard) { _pasteboard = [SRPasteboardHost new]; _pasteboardPort = [_pasteboard start]; }
     if (_pasteboardPort) [self registerName:SRPB_SERVICE port:_pasteboardPort in:ns]; else LOG(@"host pasteboard service failed to start");
+    if (!_docPicker) {
+      __weak SRServer *weakSelf = self;
+      _docPicker = [[SRDocumentPickerHost alloc] initWithWindowForPid:^NSWindow *(pid_t pid) {
+        SRServer *s = weakSelf;
+        if (s) for (SRRequest *r in s->_active) if (r.session.pid == pid) return r.session.window;
+        return nil;
+      }];
+      _docPickerPort = [_docPicker start];
+    }
+    if (_docPickerPort) [self registerName:SRDP_SERVICE port:_docPickerPort in:ns]; else LOG(@"host document picker service failed to start");
     mach_msg_header_t ready = { .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0), .msgh_size = sizeof ready,
                                 .msgh_remote_port = ns.control, .msgh_id = SIMNS_MSG_READY };
     mach_msg(&ready, MACH_SEND_MSG, sizeof ready, 0, 0, 0, 0);
