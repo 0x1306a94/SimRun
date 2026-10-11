@@ -47,7 +47,23 @@ window, controlled with your mouse, trackpad and keyboard.
 SimRun is developed on macOS 27.2 with Xcode 27.1 and the iOS 27.1 runtime; the iOS 27.0, 26.5 and 18.6 runtimes work too.
 Other versions may or may not work.
 
-## Build
+## Install
+
+### Download a release
+
+Each [release](https://github.com/unixzii/SimRun/releases) has a `SimRun-<version>.zip` with a ready-built
+`SimRun.app`. Download it, unzip it, and move `SimRun.app` to your Applications folder.
+
+The download isn't notarized by Apple, so macOS refuses to open it at first. Clear the quarantine flag
+it puts on downloaded files once, after moving the app:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SimRun.app
+```
+
+Releases contain only SimRun itself. To get the sample apps, build from source.
+
+### Build from source
 
 ```bash
 make
@@ -65,6 +81,8 @@ make test-apps
 ## Use
 
 ### With the SimRun app
+
+Open SimRun from your Applications folder if you downloaded it, or from the build folder if you built it:
 
 ```bash
 open build/SimRun.app
@@ -104,7 +122,12 @@ build/bin/simrun run build/apps/Showcase.app
 
 The app opens in a window, and its output appears in your terminal. Press Ctrl-C or close the window to quit it.
 Anything after the app's path is passed to the app as launch arguments. `simrun` is also inside the app, at
-`SimRun.app/Contents/Helpers/simrun`; link either one into your `PATH` to type just `simrun`.
+`SimRun.app/Contents/Helpers/simrun`; link either one into your `PATH` to type just `simrun`. With a downloaded
+release, that's:
+
+```bash
+sudo ln -s /Applications/SimRun.app/Contents/Helpers/simrun /usr/local/bin/simrun
+```
 
 If SimRun isn't open, this starts it in the background without the launcher. It quits by itself after 10 minutes
 with no apps running.
