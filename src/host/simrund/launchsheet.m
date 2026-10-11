@@ -9,7 +9,8 @@ static NSArray<NSArray *> *ServiceSwitches(void) {
   return @[ @[ @"PBOARD_DISABLE", @"Pasteboard shared with the Mac", @YES ], @[ @"DRAG_DISABLE", @"Drag and drop", @YES ],
             @[ @"DOCPICKER_DISABLE", @"Document pickers with Mac file panels", @YES ],
             @[ @"KEYCHAIN_DISABLE", @"SimRun keychain", @YES ], @[ @"WEBKIT_DISABLE", @"Web view helper processes", @YES ],
-            @[ @"MPS_DISABLE", @"MPSGraph on the GPU", @YES ] ];
+            @[ @"MPS_DISABLE", @"MPSGraph on the GPU", @YES ],
+            @[ @"SCRIPT_DISABLE", @"Scripts (simrun eval)", @YES ] ];
 }
 static NSArray<NSArray *> *TracingSwitches(void) {
   return @[ @[ @"HID_VERBOSE", @"Touch and keyboard", @NO ], @[ @"SCENES_VERBOSE", @"Scenes", @NO ],
@@ -17,6 +18,7 @@ static NSArray<NSArray *> *TracingSwitches(void) {
             @[ @"DRAG_VERBOSE", @"Drag and drop", @NO ], @[ @"DOCPICKER_VERBOSE", @"Document pickers", @NO ],
             @[ @"KEYCHAIN_VERBOSE", @"Keychain", @NO ],
             @[ @"WEBKIT_VERBOSE", @"Web views", @NO ], @[ @"MPS_VERBOSE", @"MPSGraph", @NO ],
+            @[ @"SCRIPT_VERBOSE", @"Scripts", @NO ],
             @[ @"RSHIM_VERBOSE", @"Runtime shims", @NO ] ];
 }
 
@@ -196,8 +198,9 @@ static NSView *Page(NSView *content) {
   NSArray *tracing = TracingSwitches();
   NSMutableArray *rows = [NSMutableArray arrayWithObject:
       @[ Label(@"Logging"), [self switchBox:@[ @"OS_ACTIVITY_DT_MODE", @"Mirror os_log and NSLog to the app's log", @NO ]], NSGridCell.emptyContentView ]];
-  for (NSUInteger i = 0; i < tracing.count; i += 2)
-    [rows addObject:@[ i ? NSGridCell.emptyContentView : Label(@"Tracing"), [self switchBox:tracing[i]], [self switchBox:tracing[i + 1]] ]];
+  for (NSUInteger i = 0; i < tracing.count; i += 2)   // in pairs; an odd one out leaves the last cell empty
+    [rows addObject:@[ i ? NSGridCell.emptyContentView : Label(@"Tracing"), [self switchBox:tracing[i]],
+                       i + 1 < tracing.count ? [self switchBox:tracing[i + 1]] : NSGridCell.emptyContentView ]];
   [rows addObject:@[ Label(@"Frames"), [self switchBox:@[ @"SIMFB_CHECK", @"Check presented frames for stale pixels", @NO ]], NSGridCell.emptyContentView ]];
   [rows addObject:@[ NSGridCell.emptyContentView, Note(@"Output goes to the app's log (App ▸ Show Log)."), NSGridCell.emptyContentView ]];
   NSGridView *g = Form(rows, 3);

@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <mach/mach_time.h>
 #include <pwd.h>
+#include <mach/notify.h>
 #include "protocol.h"
 #import "mirrorwindow.h"
 
@@ -100,7 +101,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 // ---------------------------------------------------------------- session
 @implementation SRSession {
   SRMirrorWindow *_window; SRView *_view; CALayer *_surfaceLayer;
-  mach_port_t _port; dispatch_source_t _portSource, _procSource;
+  mach_port_t _port, _scriptPort; dispatch_source_t _portSource, _procSource;
   IOSurfaceRef _surface; NSMutableDictionary<NSNumber *, id> *_surfaces; NSSize _contentSize;
   BOOL _exited, _sawFrame;
   dispatch_source_t _outSource; NSMutableString *_log; NSFileHandle *_logFile;
@@ -199,6 +200,8 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   mach_port_mod_refs(mach_task_self(), _port, MACH_PORT_RIGHT_RECEIVE, -1);
   mach_port_deallocate(mach_task_self(), _port);
   if (_view.inputPort) mach_port_deallocate(mach_task_self(), _view.inputPort);
+  if (_scriptPort) mach_port_deallocate(mach_task_self(), _scriptPort);
+  _scriptPort = MACH_PORT_NULL;
   _window.delegate = nil; [_window close];
   if (_logWindow) _logWindow.title = [NSString stringWithFormat:@"%@ — Log (exited)", _title];
   if (self.onExit) self.onExit(self, st);
@@ -347,6 +350,52 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   return png;
 }
 
+// ---------------------------------------------------------------- scripts (protocol.h SR_MSG_SCRIPT_*)
+- (BOOL)runScript:(NSString *)source output:(void (^)(NSString *key, NSString *text))output {
+  if (_exited || !_scriptPort) return NO;
+  mach_port_t task = mach_task_self(), reply = MACH_PORT_NULL, prev = MACH_PORT_NULL;
+  mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &reply);
+  // a script can print faster than one message at a time is drained
+  mach_port_limits_t limits = { .mpl_qlimit = MACH_PORT_QLIMIT_MAX };
+  mach_port_set_attributes(task, reply, MACH_PORT_LIMITS_INFO, (mach_port_info_t)&limits, MACH_PORT_LIMITS_INFO_COUNT);
+  // the app's send right goes away without a result if it exits (or crashes) mid-script
+  mach_port_request_notification(task, reply, MACH_NOTIFY_NO_SENDERS, 1, reply, MACH_MSG_TYPE_MAKE_SEND_ONCE, &prev);
+  dispatch_queue_t q = dispatch_queue_create("dev.simrun.script-output", DISPATCH_QUEUE_SERIAL);
+  __block dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, reply, 0, q);
+  __block BOOL done = NO;
+  dispatch_source_set_event_handler(src, ^{
+    union { mach_msg_header_t h; sr_script_msg_t m; char buf[sizeof(sr_script_msg_t) + MAX_TRAILER_SIZE]; } u;
+    while (!done && mach_msg(&u.h, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof u, reply, 0, 0) == KERN_SUCCESS) {
+      if (u.h.msgh_id == MACH_NOTIFY_NO_SENDERS) { done = YES; output(@"error", @"the app went away before the script finished"); break; }
+      if (u.h.msgh_id != SR_MSG_SCRIPT_OUTPUT || !(u.h.msgh_bits & MACH_MSGH_BITS_COMPLEX) || u.h.msgh_size < sizeof u.m ||
+          u.m.b.msgh_descriptor_count != 1 || u.m.data.type != MACH_MSG_OOL_DESCRIPTOR) { mach_msg_destroy(&u.h); continue; }
+      NSString *text = [[NSString alloc] initWithBytes:u.m.data.address length:u.m.data.size encoding:NSUTF8StringEncoding] ?: @"";
+      if (u.m.data.size) vm_deallocate(task, (vm_address_t)u.m.data.address, u.m.data.size);
+      uint32_t kind = u.m.kind;
+      if (kind != SR_SCRIPT_LOG) done = YES;
+      output(kind == SR_SCRIPT_LOG ? @"log" : kind == SR_SCRIPT_RESULT ? @"result" : @"exception", text);
+    }
+    if (done) dispatch_source_cancel(src);
+  });
+  dispatch_source_set_cancel_handler(src, ^{ mach_port_mod_refs(task, reply, MACH_PORT_RIGHT_RECEIVE, -1); src = nil; });
+  dispatch_resume(src);
+
+  NSData *d = [source dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+  sr_script_msg_t m = {0};
+  m.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND) | MACH_MSGH_BITS_COMPLEX;
+  m.h.msgh_size = sizeof m; m.h.msgh_remote_port = _scriptPort; m.h.msgh_local_port = reply; m.h.msgh_id = SR_MSG_SCRIPT_EVAL;
+  m.b.msgh_descriptor_count = 1;
+  m.data.address = (void *)d.bytes; m.data.size = (mach_msg_size_t)d.length;
+  m.data.deallocate = FALSE; m.data.copy = MACH_MSG_VIRTUAL_COPY; m.data.type = MACH_MSG_OOL_DESCRIPTOR;
+  m.kind = SR_SCRIPT_SOURCE;
+  if (mach_msg(&m.h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof m, 0, MACH_PORT_NULL, 1000, MACH_PORT_NULL) != KERN_SUCCESS) {
+    dispatch_sync(q, ^{ done = YES; });
+    dispatch_source_cancel(src);
+    return NO;
+  }
+  return YES;
+}
+
 - (void)drain {
   union { mach_msg_header_t h; sr_port_msg_t p; sr_frame_msg_t f; char buf[1024]; } m;
   while (mach_msg(&m.h, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof m, _port, 0, 0) == KERN_SUCCESS) {
@@ -354,6 +403,10 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
       case SR_MSG_HELLO:
         if (_view.inputPort) mach_port_deallocate(mach_task_self(), _view.inputPort);
         _view.inputPort = m.p.port.name;
+        break;
+      case SR_MSG_SCRIPT_HELLO:
+        if (_scriptPort) mach_port_deallocate(mach_task_self(), _scriptPort);
+        _scriptPort = m.p.port.name;
         break;
       case SR_MSG_SURFACE: {
         // CA rotates between up to 3 framebuffers, so this arrives on most frames: cache surfaces by id.

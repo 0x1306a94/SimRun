@@ -741,6 +741,7 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
         [r.session terminate];
         return;
       }
+      if ([action isEqual:@"eval"]) { [self evalRequest:d client:c]; return; }
       if ([action isEqual:@"stop"]) {
         SendReply(c, @{ @"ok": @YES }, ^{ LOG(@"stopped by a client"); [NSApp terminate:nil]; });
         return;
@@ -769,6 +770,22 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
   });
   dispatch_resume(eof); r.eofSource = eof;
   [self enqueue:r];
+}
+
+// `eval`: run a script in an app, streaming its console output and then its outcome to the client.
+- (void)evalRequest:(NSDictionary *)d client:(int)c {
+  NSString *err = nil;
+  SRRequest *r = [self instanceMatching:Str(d, @"instance") profile:Str(d, @"profile") error:&err];
+  NSString *source = [d[@"source"] isKindOfClass:NSString.class] ? d[@"source"] : nil;
+  if (r && !source) err = @"No script";
+  if (!r || !source) { SendReply(c, @{ @"error": err }, nil); return; }
+  BOOL started = [r.session runScript:source output:^(NSString *key, NSString *text) {
+    simrund_send(c, (__bridge CFDictionaryRef)@{ key: text }, NULL, 0);
+    if (![key isEqual:@"log"]) close(c);
+  }];
+  if (!started)
+    SendReply(c, @{ @"error": r.session.ready ? [NSString stringWithFormat:@"%@ can't run scripts (launched with SCRIPT_DISABLE)", r.session.title]
+                                              : [NSString stringWithFormat:@"%@ is still launching", r.session.title] }, nil);
 }
 
 // Fills in `r` from a client's `run` request: the app, its profile, runtime and device, and its environment (the

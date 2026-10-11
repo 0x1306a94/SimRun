@@ -19,6 +19,10 @@
 //   screenshot  { instance: string, profile? } -> { png: data } (the app's screen, at its pixel size)
 //               instance: a pid, or an app (name, bundle ID or executable name), among the instances in `profile`
 //               when given; an app running in several profiles needs one.
+//   eval        { instance: string, profile?, source: string }   run JavaScript in the app (script.dylib, scripting.md)
+//               replies: { log: string } for each console line, then { result: string } (the script's value, "" if
+//               none) or { exception: string } (it threw: message and stack); { error: string } if it can't run.
+//               instance and profile as for screenshot.
 //   profiles    { app? } -> { apps: [ { id, profiles: [string] } ] }   the data containers each app has ("default" first)
 //               app: a bundle ID, or the path of an .app or executable
 //   runtimes    -> { runtimes: [ { name, version, build, root, current: bool } ] }   current: what SimRun runs on

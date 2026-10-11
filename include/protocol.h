@@ -11,7 +11,8 @@
 #pragma once
 #include <mach/mach.h>
 #define SR_PORT_SLOT_HOST 0
-enum { SR_MSG_HELLO = 0x5352000, SR_MSG_SURFACE, SR_MSG_FRAME, SR_MSG_INPUT, SR_MSG_FRAME_ACK };
+enum { SR_MSG_HELLO = 0x5352000, SR_MSG_SURFACE, SR_MSG_FRAME, SR_MSG_INPUT, SR_MSG_FRAME_ACK,
+       SR_MSG_SCRIPT_HELLO, SR_MSG_SCRIPT_EVAL, SR_MSG_SCRIPT_OUTPUT };
 typedef struct { mach_msg_header_t h; mach_msg_body_t b; mach_msg_port_descriptor_t port; uint32_t w, h_px; float scale; } sr_port_msg_t;
 // surface_id/checksum/present_time are optional (a shorter message has only seq); checksum is sr_surface_checksum()
 // at present time when the sim side runs with SIMFB_CHECK=1, else 0.
@@ -49,3 +50,12 @@ typedef struct { float dx, dy; uint32_t phase, momentumPhase; double timestamp; 
 // magnification: NSEvent.magnification delta (scale += m); rotation: NSEvent.rotation delta in degrees, counterclockwise.
 enum { SR_GESTURE_MAGNIFY = 1, SR_GESTURE_ROTATE = 2 };
 typedef struct { float magnification, rotation; uint32_t phase, type; } sr_gesture_payload_t;
+
+// Scripts (script.dylib, scripting.md). The app sends SR_MSG_SCRIPT_HELLO (an sr_port_msg_t; w, h_px, scale unused)
+// with its script port when it starts. The host runs a script with SR_MSG_SCRIPT_EVAL to that port: the source as
+// UTF-8 in `data`, and in msgh_local_port a send right to a port of its own for this one eval. The app answers on
+// that port with SR_MSG_SCRIPT_OUTPUT messages, `kind` saying what `data` (UTF-8) is: console output lines, then one
+// result or exception, after which it releases the right. The host learns that the app went away mid-script from a
+// no-senders notification on the port.
+enum { SR_SCRIPT_SOURCE = 0, SR_SCRIPT_LOG, SR_SCRIPT_RESULT, SR_SCRIPT_EXCEPTION };
+typedef struct { mach_msg_header_t h; mach_msg_body_t b; mach_msg_ool_descriptor_t data; uint32_t kind; } sr_script_msg_t;
