@@ -21,5 +21,6 @@ Write-ups of each part:
   window
 - [webkit.md](webkit.md) — WKWebView: BrowserEngineKit process launches, the extension entry point, the Launch
   Services wait
+- [mps.md](mps.md) — MPSGraph on the simulator's GPU: the device descriptor's missing architecture, private heaps
 - [research-log.md](research-log.md) — chronological findings from the investigation (paths in it refer to the
   original prototype layout)

@@ -20,10 +20,10 @@ HDRS    := $(wildcard include/*.h)
 
 APP   := $(BUILD)/SimRun.app
 CORE  := $(APP) $(BIN)/simrun
-PARTS := $(BIN)/simrund $(BIN)/simrun $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer
+PARTS := $(BIN)/simrund $(BIN)/simrun $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/mps.dylib $(LIB)/SimFramebuffer
 TOOLS := $(BIN)/hostinput
 TEST_APPS  := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/BGDownload.app $(APPS)/PickerTest.app $(APPS)/Showcase.app
-TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest
+TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest $(TBIN)/mpstest
 
 .PHONY: all core tools test-apps test-programs tests clean $(APP)
 all: core tools test-programs
@@ -52,14 +52,14 @@ $(ICON)/Assets.car: resources/AppIcon.icon/icon.json resources/AppIcon.icon/Asse
 # SimRun.app: the server/launcher executable, helpers (simns, simrun) and the sim-side libraries.
 # Assembled in a staging bundle and swapped in with a rename, so a SimRun that is running from the old bundle keeps
 # its (unlinked) files instead of having them overwritten underneath it.
-$(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer resources/Info.plist $(ICON)/Assets.car
+$(APP): $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/mps.dylib $(LIB)/SimFramebuffer resources/Info.plist $(ICON)/Assets.car
 	@rm -rf $(BUILD)/.SimRun.app.new $(BUILD)/.SimRun.app.old
 	@mkdir -p $(BUILD)/.SimRun.app.new/Contents/MacOS $(BUILD)/.SimRun.app.new/Contents/Helpers $(BUILD)/.SimRun.app.new/Contents/Resources/lib
 	@cp resources/Info.plist $(BUILD)/.SimRun.app.new/Contents/Info.plist
 	@cp $(ICON)/Assets.car $(ICON)/AppIcon.icns $(BUILD)/.SimRun.app.new/Contents/Resources/
 	@cp $(BIN)/simrund $(BUILD)/.SimRun.app.new/Contents/MacOS/SimRun
 	@cp $(BIN)/simns $(BIN)/simrun $(BUILD)/.SimRun.app.new/Contents/Helpers/
-	@cp $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/SimFramebuffer $(BUILD)/.SimRun.app.new/Contents/Resources/lib/
+	@cp $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/mps.dylib $(LIB)/SimFramebuffer $(BUILD)/.SimRun.app.new/Contents/Resources/lib/
 	@$(SIGN) --deep $(BUILD)/.SimRun.app.new 2>/dev/null
 	@if [ -d $@ ]; then mv $@ $(BUILD)/.SimRun.app.old; fi
 	@mv $(BUILD)/.SimRun.app.new $@ && rm -rf $(BUILD)/.SimRun.app.old
@@ -115,6 +115,10 @@ $(LIB)/keychain.dylib: src/sim/keychain/keychain.m $(HDRS) | $(LIB)
 
 $(LIB)/webkit.dylib: src/sim/webkit/webkit.m $(HDRS) | $(LIB)
 	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -o $@
+	@$(SIGN) $@ 2>/dev/null
+
+$(LIB)/mps.dylib: src/sim/mps/mps.m $(HDRS) | $(LIB)
+	$(SIMCC) -dynamiclib $< -framework Foundation -framework Metal -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 # ---------------------------------------------------------------- tests
@@ -184,6 +188,9 @@ $(TBIN)/kctest: tests/keychain/kctest.m | $(TBIN)
 	@$(SIGN) $@ 2>/dev/null
 $(TBIN)/loctest: tests/locale/loctest.m | $(TBIN)
 	$(SIMCC) $< -framework Foundation -o $@
+	@$(SIGN) $@ 2>/dev/null
+$(TBIN)/mpstest: tests/mps/mpstest.m | $(TBIN)
+	$(SIMCC) $< -framework Foundation -framework Metal -framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 clean:

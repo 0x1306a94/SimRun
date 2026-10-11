@@ -35,6 +35,8 @@ simrun (CLI) ───unix socket──▶ build/bin/simrund   macOS AppKit serv
                                                              (keychain.md)
                                               webkit.dylib   launches WKWebView's helper processes (WebContent, Networking,
                                                              GPU appexes) as children of the app (webkit.md)
+                                              mps.dylib      works around MPSGraph's simulator bugs so graphs run on
+                                                             the GPU (mps.md)
                                             SimFramebuffer   fake SimFramebuffer: the render server's display; presented
                                                              IOSurfaces go to the app's window (include/protocol.h)
 ```
@@ -128,9 +130,9 @@ and `simrun screenshot` take `--profile` to pick one of an app's instances.
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
 | `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment, runtimes and device types, host pasteboard, file panels for document pickers, Keychain window), `simrun/` (the `simrun` command line), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
-| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `docpicker/`, `keychain/`, `webkit/`, `simfb/` |
+| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `docpicker/`, `keychain/`, `webkit/`, `mps/`, `simfb/` |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `crash.py` (crash-report backtrace) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `bgdownload` background URLSession, `pickertest` document pickers, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `bgdownload` background URLSession, `pickertest` document pickers, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`, `mps/mpstest`) |
 | `docs/` | These write-ups |
 
 ## Building
