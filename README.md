@@ -173,6 +173,10 @@ with no apps running.
   ```bash
   simrun skill install
   ```
+- **See how your app is built, live**: App ▸ Show Layers (⌥⌘I) is a view debugger like Xcode's that doesn't pause the
+  app. It shows the tree of views or layers, a copy of the screen made of real layers (flat, or spread out in 3D), and
+  an inspector for the selected layer. `simrun inspect MyApp` prints the tree as text. See
+  [inspect.md](docs/inspect.md).
 - **Manage the background SimRun** with `simrun status`, `simrun stop` and `simrun log`. The log is the first place
   to look when an app fails to start. `simrun help` lists every command.
 

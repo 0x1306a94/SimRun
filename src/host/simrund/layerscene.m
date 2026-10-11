@@ -228,9 +228,10 @@ CATransform3D SRScenePerspective(CGSize size) {
   [CATransaction begin];
   if (!_animating) [CATransaction setDisableActions:YES];
   // the scale depends on the screen, the view and the zoom only: turning the stack, or its depth changing, doesn't zoom
-  CGFloat fit = MIN(size.width / screen.width, size.height / screen.height) * 0.6 * _zoom;
+  CGFloat visible = MAX(size.height - _topInset, 1);   // the view goes under a translucent toolbar: fit below it
+  CGFloat fit = MIN(size.width / screen.width, visible / screen.height) * 0.6 * _zoom;
   _camera.bounds = (CGRect){ CGPointZero, screen };
-  _camera.position = CGPointMake(size.width / 2 + _pan.x, size.height / 2 + _pan.y);
+  _camera.position = CGPointMake(size.width / 2 + _pan.x, visible / 2 + _pan.y);   // layer coordinates: y up
   CATransform3D t = CATransform3DMakeScale(fit, fit, fit);
   t = CATransform3DRotate(t, _pitch, 1, 0, 0);
   t = CATransform3DRotate(t, _yaw, 0, 1, 0);
@@ -243,6 +244,7 @@ CATransform3D SRScenePerspective(CGSize size) {
 - (void)setPitch:(CGFloat)v { _pitch = MAX(-M_PI_2, MIN(M_PI_2, v)); [self layoutInSize:_viewSize]; }
 - (void)setZoom:(CGFloat)v { _zoom = MAX(0.1, MIN(20, v)); [self layoutInSize:_viewSize]; }
 - (void)setPan:(CGPoint)v { _pan = v; [self layoutInSize:_viewSize]; }
+- (void)setTopInset:(CGFloat)v { _topInset = v; [self layoutInSize:_viewSize]; }
 - (void)animate:(void (^)(void))changes {
   [CATransaction begin];
   [CATransaction setAnimationDuration:0.45];

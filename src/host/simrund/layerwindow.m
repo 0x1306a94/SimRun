@@ -1,15 +1,19 @@
-// layerwindow.m — see layerwindow.h. The canvas holds the flat copy (the mirror's root layer, in a layer scaled to fit)
-// and the 3D scene's camera (layerscene.h); one of them shows. Underneath, a bar with the mode, the 3D switches and a
-// line about the selected layer (click one, in either mode).
+// layerwindow.m — see layerwindow.h. Three panes, as in Xcode's view debugger: the tree (layertree.h), the view, and the
+// inspector (layerinspector.h). The view's canvas holds the flat copy (the mirror's root layer, in a layer scaled to
+// fit) and the 3D scene's camera (layerscene.h); one of them shows. Under it, a bar with the mode and the switches.
+// Selecting a layer, in the tree or by clicking the view, selects it everywhere.
 #import "layerwindow.h"
 #import "layermirror.h"
 #import "layerscene.h"
+#import "layertree.h"
+#import "layerinspector.h"
 #import "session.h"
 
 // ---------------------------------------------------------------- canvas: layer-hosting, passes the mouse on
 @interface SRLayerCanvas : NSView
 @property (strong) CALayer *fit;   // the flat copy's parent: the screen, scaled to fit and centered
 @property NSSize screenSize;
+@property (readonly) CGFloat topInset;   // how much of the top is under the toolbar (it goes under it, blurred)
 @property (copy) void (^onResize)(NSSize size);
 @property (copy) void (^onClick)(CGPoint p, NSInteger clicks);   // p in the canvas layer's coordinates
 @property (copy) void (^onDrag)(CGFloat dx, CGFloat dy);
@@ -30,13 +34,19 @@
 }
 - (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self refit]; if (self.onResize) self.onResize(size); }
+- (void)layout {
+  [super layout];
+  CGFloat inset = self.safeAreaInsets.top;
+  if (inset != _topInset) { _topInset = inset; [self refit]; if (self.onResize) self.onResize(self.bounds.size); }
+}
 - (void)refit {
   if (!_screenSize.width || !_screenSize.height) return;
   NSSize b = self.bounds.size;
-  CGFloat s = MAX(0.05, MIN((b.width - 24) / _screenSize.width, (b.height - 24) / _screenSize.height));
+  CGFloat visible = b.height - _topInset;   // fit below the toolbar
+  CGFloat s = MAX(0.05, MIN((b.width - 24) / _screenSize.width, (visible - 24) / _screenSize.height));
   [CATransaction begin]; [CATransaction setDisableActions:YES];
   _fit.bounds = CGRectMake(0, 0, _screenSize.width, _screenSize.height);
-  _fit.position = CGPointMake(b.width / 2, b.height / 2);
+  _fit.position = CGPointMake(b.width / 2, visible / 2);   // layer coordinates: y up
   _fit.transform = CATransform3DMakeScale(s, s, 1);
   self.layer.sublayerTransform = SRScenePerspective(b);
   [CATransaction commit];
@@ -75,6 +85,8 @@ static const CGFloat kYaw = -0.55, kPitch = 0.3;   // the 3D view's starting ang
   NSSlider *_spacing;
   NSButton *_clip, *_wireframes, *_placeholders;
   NSTextField *_status;
+  SRLayerTree *_tree;
+  SRLayerInspector *_inspector;
 }
 
 + (void)showForSession:(SRSession *)session {
@@ -100,57 +112,99 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
 
 - (instancetype)initWithSession:(SRSession *)session {
   NSRect appFrame = session.window.frame;
-  CGFloat h = MAX(NSHeight(appFrame), 560), w = MAX(round(h * 0.62), 420);
+  CGFloat h = MAX(NSHeight(appFrame), 600), w = 1180;
   NSWindow *win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, w, h)
-      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
+      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable |
+                NSWindowStyleMaskFullSizeContentView
       backing:NSBackingStoreBuffered defer:NO];
   win.title = [NSString stringWithFormat:@"%@ — Layers", session.title];
   win.releasedWhenClosed = NO;
-  win.minSize = NSMakeSize(420, 360);
+  win.minSize = NSMakeSize(760, 420);
   if (!(self = [super initWithWindow:win])) return nil;
   _session = session;
   win.delegate = self;
 
-  NSView *content = win.contentView;
-  const CGFloat bar = 54;
-  _canvas = [[SRLayerCanvas alloc] initWithFrame:NSMakeRect(0, bar, w, h - bar)];
-  _canvas.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-  [content addSubview:_canvas];
+  // a standard split view: the tree as a sidebar, the view, the inspector
+  _tree = [SRLayerTree new];
+  _inspector = [SRLayerInspector new];
+  NSView *middle = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 600, h)];
+  NSViewController *treeVC = [NSViewController new], *middleVC = [NSViewController new], *inspectorVC = [NSViewController new];
+  treeVC.view = _tree.view; middleVC.view = middle; inspectorVC.view = _inspector.view;
+  NSSplitViewItem *sidebar = [NSSplitViewItem sidebarWithViewController:treeVC];
+  sidebar.minimumThickness = 220; sidebar.maximumThickness = 520;
+  NSSplitViewItem *content = [NSSplitViewItem splitViewItemWithViewController:middleVC];
+  content.minimumThickness = 320;
+  NSSplitViewItem *inspector = [NSSplitViewItem inspectorWithViewController:inspectorVC];
+  inspector.minimumThickness = 260; inspector.maximumThickness = 560;
+  NSSplitViewController *split = [NSSplitViewController new];
+  split.splitViewItems = @[ sidebar, content, inspector ];
+  win.contentViewController = split;
+  [win setContentSize:NSMakeSize(w, h)];
 
+  // the toolbar: sidebar and inspector toggles at their panes, the mode in the middle
   _mode = [NSSegmentedControl segmentedControlWithLabels:@[ @"Flat", @"3D" ] trackingMode:NSSegmentSwitchTrackingSelectOne
                                                   target:self action:@selector(modeChanged:)];
-  _mode.selectedSegment = 0; _mode.controlSize = NSControlSizeSmall;
+  _mode.selectedSegment = 0;
   _mode.toolTip = @"3D: drag to turn, pinch to zoom, scroll to pan, double-click to reset";
-  [_mode sizeToFit];
-  _mode.frame = (NSRect){ NSMakePoint(10, 28), _mode.frame.size };
-  [content addSubview:_mode];
-  CGFloat x = NSMaxX(_mode.frame) + 12;
+  NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"dev.simrun.layers"];
+  toolbar.delegate = self;
+  toolbar.displayMode = NSToolbarDisplayModeIconOnly;
+  toolbar.centeredItemIdentifiers = [NSSet setWithObject:@"mode"];
+  win.toolbar = toolbar;
+  win.toolbarStyle = NSWindowToolbarStyleUnified;
+
+  // the view: the canvas over a bar, below the toolbar
+  _canvas = [[SRLayerCanvas alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
+  _canvas.layer.masksToBounds = YES;   // the 3D stack stays inside it
+  NSBox *line = [NSBox new]; line.boxType = NSBoxSeparator;
+  // The canvas goes up under the toolbar: the toolbar itself is translucent and frosts what is beneath it, as Xcode's
+  // does (a material view of our own there would be opaque)
+  NSView *bar = [NSView new];
   _spacing = [NSSlider sliderWithValue:12 minValue:2 maxValue:60 target:self action:@selector(spacingChanged:)];
-  _spacing.controlSize = NSControlSizeSmall; _spacing.toolTip = @"Space between planes";
-  _spacing.frame = NSMakeRect(x, 28, 90, 20);
-  [content addSubview:_spacing];
-  x = NSMaxX(_spacing.frame) + 10;
+  _spacing.controlSize = NSControlSizeSmall; _spacing.toolTip = @"Space between planes (3D)";
   _clip = Check(@"Clip", self, @selector(clipChanged:), @"Hide what a superlayer clips (masksToBounds)");
-  _wireframes = Check(@"Outlines", self, @selector(wireframesChanged:), @"An outline around every layer");
+  _wireframes = Check(@"Outlines", self, @selector(wireframesChanged:), @"An outline around every layer (3D)");
   _placeholders = Check(@"Stand-ins", self, @selector(placeholdersChanged:),
-                        @"Blue: what a layer drew or shows (not copied yet). Orange: layers the Mac can't draw (blur, portals, Metal…).");
-  for (NSButton *b in @[ _clip, _wireframes, _placeholders ]) {
-    b.frame = (NSRect){ NSMakePoint(x, 29), b.frame.size };
-    [content addSubview:b];
-    x = NSMaxX(b.frame) + 8;
-  }
+                        @"Blue: contents that didn't come across. Orange: layers the Mac can't draw (other processes', Metal, video).");
   _status = [NSTextField labelWithString:@"Waiting for the app…"];
   _status.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
   _status.textColor = NSColor.secondaryLabelColor;
   _status.lineBreakMode = NSLineBreakByTruncatingMiddle;
   _status.selectable = YES;
-  _status.frame = NSMakeRect(12, 6, w - 24, 16);
-  _status.autoresizingMask = NSViewWidthSizable;
-  [content addSubview:_status];
+  [_status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  NSStackView *switches = [NSStackView stackViewWithViews:@[ _spacing, _clip, _wireframes, _placeholders ]];
+  switches.spacing = 12;
+  for (NSView *v in @[ switches, _status ]) { v.translatesAutoresizingMaskIntoConstraints = NO; [bar addSubview:v]; }
+  for (NSView *v in @[ _canvas, line, bar ]) { v.translatesAutoresizingMaskIntoConstraints = NO; [middle addSubview:v]; }
+  [NSLayoutConstraint activateConstraints:@[
+    [_canvas.topAnchor constraintEqualToAnchor:middle.topAnchor],
+    [_canvas.leadingAnchor constraintEqualToAnchor:middle.leadingAnchor],
+    [_canvas.trailingAnchor constraintEqualToAnchor:middle.trailingAnchor],
+    [_canvas.bottomAnchor constraintEqualToAnchor:line.topAnchor],
+    [line.leadingAnchor constraintEqualToAnchor:middle.leadingAnchor],
+    [line.trailingAnchor constraintEqualToAnchor:middle.trailingAnchor],
+    [line.bottomAnchor constraintEqualToAnchor:bar.topAnchor],
+    [bar.leadingAnchor constraintEqualToAnchor:middle.leadingAnchor],
+    [bar.trailingAnchor constraintEqualToAnchor:middle.trailingAnchor],
+    [bar.bottomAnchor constraintEqualToAnchor:middle.bottomAnchor],
+    [switches.topAnchor constraintEqualToAnchor:bar.topAnchor constant:8],
+    [switches.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:12],
+    [switches.trailingAnchor constraintLessThanOrEqualToAnchor:bar.trailingAnchor constant:-12],
+    [_spacing.widthAnchor constraintEqualToConstant:100],
+    [_status.topAnchor constraintEqualToAnchor:switches.bottomAnchor constant:6],
+    [_status.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:14],
+    [_status.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor constant:-12],
+    [_status.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor constant:-8],
+  ]];
   [self updateControls];
 
   __weak SRLayerWindow *weakSelf = self;
-  _canvas.onResize = ^(NSSize size) { SRLayerWindow *s = weakSelf; if (s) [s->_scene layoutInSize:size]; };
+  _canvas.onResize = ^(NSSize size) {
+    SRLayerWindow *s = weakSelf;
+    if (!s) return;
+    s->_scene.topInset = s->_canvas.topInset;
+    [s->_scene layoutInSize:size];
+  };
   _canvas.onClick = ^(CGPoint p, NSInteger clicks) { [weakSelf clickAt:p clicks:clicks]; };
   _canvas.onDrag = ^(CGFloat dx, CGFloat dy) {
     SRLayerWindow *s = weakSelf;
@@ -163,11 +217,27 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
     if (s && s->_threeD) s->_scene.pan = CGPointMake(s->_scene.pan.x + dx, s->_scene.pan.y - dy);
   };
   _canvas.onMagnify = ^(CGFloat m) { SRLayerWindow *s = weakSelf; if (s && s->_threeD) s->_scene.zoom *= 1 + m; };
+  _tree.onSelect = ^(NSNumber *nid) { [weakSelf select:nid fromTree:YES]; };
+  [_inspector showNode:nil of:nil];
 
   _token = [session addLayerObserver:^(SRLayerMirror *mirror, NSDictionary *changes) { [weakSelf mirror:mirror changed:changes]; }];
   if (!_token) return nil;
   [win setFrameTopLeftPoint:NSMakePoint(NSMaxX(appFrame) + 16, NSMaxY(appFrame))];   // beside the app's window
   return self;
+}
+
+// ---------------------------------------------------------------- toolbar
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)t {
+  return @[ NSToolbarToggleSidebarItemIdentifier, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSToolbarFlexibleSpaceItemIdentifier,
+            @"mode", NSToolbarFlexibleSpaceItemIdentifier, NSToolbarInspectorTrackingSeparatorItemIdentifier, NSToolbarFlexibleSpaceItemIdentifier,
+            NSToolbarToggleInspectorItemIdentifier ];
+}
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)t { return [self toolbarDefaultItemIdentifiers:t]; }
+- (NSToolbarItem *)toolbar:(NSToolbar *)t itemForItemIdentifier:(NSToolbarItemIdentifier)ident willBeInsertedIntoToolbar:(BOOL)flag {
+  if (![ident isEqual:@"mode"]) return nil;
+  NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:ident];
+  item.view = _mode; item.label = @"Mode";
+  return item;
 }
 
 // ---------------------------------------------------------------- updates from the app
@@ -184,6 +254,7 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
     _mirror = mirror;
     _mirror.showsPlaceholders = _placeholders.state == NSControlStateValueOn;
     [_canvas.fit addSublayer:mirror.rootLayer];
+    _tree.mirror = mirror;
     if (_threeD) [self showScene];
   } else if (_scene) {
     if (_threeD) { [_scene updateWithChanges:changes]; _spacing.doubleValue = _scene.spacing; }   // a full batch may choose a new spacing
@@ -191,8 +262,12 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
   }
   NSSize screen = mirror.rootLayer.bounds.size;
   if (!NSEqualSizes(screen, _canvas.screenSize)) { _canvas.screenSize = screen; [_canvas refit]; [_scene layoutInSize:_canvas.bounds.size]; }
-  if (_selected && !mirror.nodes[_selected]) [self select:nil];
-  else [self showSelection];
+  [_tree mirrorChanged:changes];
+  if (_selected && !mirror.nodes[_selected]) [self select:nil fromTree:NO];
+  else {
+    [self showSelection];
+    if (_selected && ([changes[@"full"] isEqual:@YES] || changes[@"changed"][_selected] || !changes.count)) [_inspector showNode:_selected of:_mirror];
+  }
 }
 
 // ---------------------------------------------------------------- modes and switches
@@ -204,6 +279,7 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
     _scene.showsWireframes = _wireframes.state == NSControlStateValueOn;
     _scene.showsPlaceholders = _placeholders.state == NSControlStateValueOn;
     _scene.selectedNode = _selected;
+    _scene.topInset = _canvas.topInset;
     _spacing.doubleValue = _scene.spacing;
   } else if (_sceneStale) [_scene updateWithChanges:@{ @"full": @YES }];
   _sceneStale = NO;
@@ -244,12 +320,16 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
     return;
   }
   NSNumber *n = _threeD ? [_scene nodeAtPoint:p fromLayer:_canvas.layer] : [_mirror nodeAtPoint:p fromLayer:_canvas.layer];
-  [self select:[n isEqual:@1] ? nil : n];
+  [self select:[n isEqual:@1] ? nil : n fromTree:NO];
 }
-- (void)select:(NSNumber *)nid {
+// From the view: the tree selects the row for it (the nearest layer above it with a row, when only views are listed),
+// and that is the selection. From the tree: as it is.
+- (void)select:(NSNumber *)nid fromTree:(BOOL)fromTree {
+  if (!fromTree) nid = [_tree selectNode:nid] ?: nid;   // nil deselects; a layer the tree can't show (filtered out) stays selected
   _selected = nid;
   _scene.selectedNode = nid;
   [self showSelection];
+  [_inspector showNode:nid of:_mirror];
 }
 // The flat mode's highlight, and the line underneath.
 - (void)showSelection {

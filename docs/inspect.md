@@ -1,10 +1,14 @@
 # inspect — the layer tree, live
 
-**Status: steps 1–4 of 5 work.** SimRun keeps a live copy of a running app's layer tree on the Mac, without
+**Status: all 5 steps work.** SimRun keeps a live copy of a running app's layer tree on the Mac, without
 pausing the app. The copy is made of real Mac `CALayer`s with the app's geometry, colors, borders, corners, shadows,
-masks, gradients and shapes, so the Mac's Core Animation draws it as the app's does. App ▸ Show Layers (⌥⌘I) shows the
-copy next to the app's window, flat or spread out in 3D as in Xcode's view debugger, live; `simrun inspect` prints it
-as text.
+masks, gradients and shapes, so the Mac's Core Animation draws it as the app's does. App ▸ Show Layers (⌥⌘I) opens a
+view debugger like Xcode's, but live:
+- the tree of views (or of all layers),
+- the copy, flat or spread out in 3D,
+- an inspector for the selected layer.
+
+`simrun inspect` prints the tree as text.
 
 Contents are copied too: what layers drew (text, `drawRect:`, SwiftUI drawing) and the images they show, so the copy
 looks like the app. Sampled on a grid against a screenshot, 1 point in 8,250 differs noticeably on Showcase's home
@@ -24,7 +28,9 @@ The plan, toward a view debugger like Xcode's but live:
 2. ✅ The flat copy on the Mac, next to the real window (the best check that the data is right).
 3. ✅ The 3D view: every layer a plane spread out in depth, a camera, picking, clipping as a switch.
 4. ✅ Contents: what layers drew and the images they show, sent as pictures, once each.
-5. The tree and inspector panels, editing, animations.
+5. ✅ The tree and inspector panels.
+
+Next could come: editing properties from the inspector, view controllers in the tree, and copying animations.
 
 ```bash
 simrun inspect Showcase                 # the tree as text
@@ -236,6 +242,42 @@ node   = CATransformLayer   the layer's geometry (bounds, position, anchor point
   for spacing, Clip, Outlines and Stand-ins. A click selects a layer in either mode, and the line under the view
   describes it.
 - **`--png --3d`** draws the scene offscreen with `CARenderer` into a Metal texture: `-renderInContext:` flattens 3D.
+
+### The panels
+
+The layer window is a standard `NSSplitViewController`, with three panes:
+- the tree (layertree.m) as a sidebar item,
+- the view: its canvas (clipped, so the 3D stack stays inside), over a bar with a separator line above it. The canvas
+  goes up under the toolbar, which is translucent itself and frosts it, as in Xcode. A material view of our own there
+  came out opaque. It fits and centers what it shows below the toolbar (its safe-area inset),
+- the inspector (layerinspector.m) as an inspector item.
+
+A unified toolbar has the standard sidebar and inspector toggles, each beside its pane, and the Flat/3D control in the
+middle. Selecting a layer anywhere selects it everywhere.
+
+- **Tree.**
+  - Rows are node ids. A row's id is a stable `NSNumber`, so expansion and selection survive the reloads.
+  - The tree reloads at most about 8 times a second, and only when its shape changed: nodes added or removed, or
+    `sublayers`, `hidden`, `mask` or `view` changed.
+  - By default it lists views, as Xcode does: a view's children are the nearest view-backed layers under it, through
+    the layers between. The toggle at the end of the filter field lists every layer.
+  - Clicking a layer in the view selects its row: the nearest row above it, when only views are listed.
+  - The filter field sits at the bottom of the sidebar, as in Xcode's navigators. It keeps the rows whose class,
+    view, name or `#id` match, and the rows above them.
+  - Icons say what a layer is: window, view, text (a backing store), image, gradient, shape, glass, portal.
+- **Inspector.** A read-only text view, rebuilt when the selection or the selected layer changes.
+  - Object: class, view, node, name.
+  - Layout: frame, frame on screen, bounds origin, position, anchor point, transforms.
+  - Appearance: colors as swatches.
+  - Contents: kind, size, and the picture itself.
+  - Filters (each `CAFilter`'s description) and the special classes' properties.
+- **Readable names.** Swift runtime names are demangled with the Swift runtime's `swift_demangle`:
+  - `_TtC7SwiftUIP33_…14CGDrawingLayer` becomes `CGDrawingLayer`.
+  - `(X in _hash)` qualifiers and the system modules' prefixes are dropped.
+  - Long generic arguments become `…`.
+  
+  This applies in the tree, the inspector and `simrun inspect`'s text, including layer names (UIKit names a view's
+  layer after its class and its view controller's).
 
 ## Findings
 

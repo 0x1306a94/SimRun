@@ -21,6 +21,7 @@
 @property (nonatomic) CGFloat yaw, pitch;   // radians: turned about the vertical axis, then tilted
 @property (nonatomic) CGFloat zoom;         // the only thing that scales the view (1: about 60% of it)
 @property (nonatomic) CGPoint pan;          // points, in the view
+@property (nonatomic) CGFloat topInset;     // the top of the view under a (translucent) toolbar: fit and center below it
 @property (nonatomic) CGFloat spacing;      // points between levels; until set, chosen when the scene is built (the
                                             // stack about as deep as the screen is tall)
 @property (nonatomic) BOOL clipsContent;    // planes clipped by their superlayers' masksToBounds (default YES)

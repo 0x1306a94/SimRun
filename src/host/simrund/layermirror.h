@@ -41,6 +41,7 @@
 @interface SRLayerMirror (Nodes)
 @property (readonly) NSDictionary<NSNumber *, SRMirrorNode *> *nodes;   // by id; 1 is the screen
 - (CGImageRef)imageNamed:(NSString *)name;   // a node's contentsImage, if the app has sent it
+- (NSDictionary *)extrasOfNode:(NSNumber *)nid;   // its filters and special properties, unarchived (inspect.m SRExtras)
 @end
 // A Core Animation layer of the class a node's `kind` needs.
 CALayer *SRNewMirrorLayer(NSString *kind);
@@ -55,3 +56,9 @@ CALayer *SRUpdateStandIn(CALayer *layer, CALayer *standIn, NSDictionary *props, 
 // `view` (frame origin 0, size in pixels) drawn by Core Animation as a window would draw it, as PNG: with CARenderer into
 // a Metal texture. -renderInContext: would leave out 3D, filters, backdrops, SDF layers and portals.
 NSData *SRRenderPNG(CALayer *view);
+
+// A class name to show: Swift runtime names demangled ("_TtC7SwiftUIP33_…14CGDrawingLayer" -> "CGDrawingLayer"), the
+// system modules' prefixes and private-name qualifiers dropped, long generic arguments shortened.
+NSString *SRReadableClassName(NSString *runtimeName);
+// Text with Swift runtime names in it (UIKit names a view's layer "<view class> (<view controller class>)"), readable.
+NSString *SRReadableText(NSString *text);

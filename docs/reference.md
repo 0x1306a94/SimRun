@@ -53,7 +53,7 @@ them in Launch With….
 
 ## Keyboard shortcuts
 
-In an app window: ⌘R relaunch, ⌥⌘R relaunch with other launch options, ⌘L log (the app's stdout/stderr), ⌥⌘I layers (inspect.md), ⌘Q or ⌘W quit the app, ⌘0 launcher, ⇧⌘K Keychain
+In an app window: ⌘R relaunch, ⌥⌘R relaunch with other launch options, ⌘L log (the app's stdout/stderr), ⌥⌘I Show Layers: tree, live copy (flat or 3D) and inspector (inspect.md), ⌘Q or ⌘W quit the app, ⌘0 launcher, ⇧⌘K Keychain
 window, ⌥⌘Q quit SimRun (⌘Q in SimRun's own windows). Edit menu commands (undo, redo, cut, copy, paste, delete,
 select all) go to the app while one of its windows is key.
 

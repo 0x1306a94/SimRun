@@ -4,6 +4,7 @@
 #import "layermirror.h"
 #import <ImageIO/ImageIO.h>
 #import <Metal/Metal.h>
+#include <dlfcn.h>
 
 @implementation SRMirrorNode
 @end
@@ -233,6 +234,7 @@ CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on)
   SRMirrorNode *n = _nodes[nid];
   return n ? [n.layer convertRect:n.layer.bounds toLayer:_rootLayer] : CGRectNull;
 }
+- (NSDictionary *)extrasOfNode:(NSNumber *)nid { return Extras(_nodes[nid].props[@"extras"]); }
 - (CGImageRef)imageNamed:(NSString *)name { return [name isKindOfClass:NSString.class] ? (__bridge CGImageRef)_images[name] : NULL; }
 
 // A picture from a batch: BGRA, premultiplied, sRGB, rows top down.
@@ -361,6 +363,56 @@ static CGImageRef NewPicture(NSDictionary *d) {
 }
 
 // ---------------------------------------------------------------- text
+static NSArray<NSString *> *SystemModulePrefixes(void) {
+  return @[ @"SwiftUI.", @"UIKit.", @"Swift.", @"__C.", @"Foundation.", @"_UIKitCore.", @"SwiftUICore." ];
+}
+NSString *SRReadableClassName(NSString *name) {
+  if (![name isKindOfClass:NSString.class]) return @"?";
+  if (![name hasPrefix:@"_Tt"]) {   // already readable ("SwiftUI.HostingScrollView"): only the module goes
+    for (NSString *module in SystemModulePrefixes()) if ([name hasPrefix:module]) return [name substringFromIndex:module.length];
+    return name;
+  }
+  static NSMutableDictionary *cache;
+  static char *(*demangle)(const char *, size_t, char *, size_t *, uint32_t);
+  if (!cache) {
+    cache = [NSMutableDictionary dictionary];
+    dlopen("/usr/lib/swift/libswiftCore.dylib", RTLD_LAZY);
+    demangle = dlsym(RTLD_DEFAULT, "swift_demangle");
+  }
+  NSString *hit = cache[name];
+  if (hit) return hit;
+  char *d = demangle ? demangle(name.UTF8String, strlen(name.UTF8String), NULL, NULL, 0) : NULL;
+  if (!d) return cache[name] = name;
+  NSMutableString *s = [NSMutableString stringWithUTF8String:d];
+  free(d);
+  // "(CGDrawingLayer in _863C…)" -> "CGDrawingLayer"; "(extension in UIKit):__C." -> ""; the system modules' prefixes
+  NSRegularExpression *privateName = [NSRegularExpression regularExpressionWithPattern:@"\\(([A-Za-z0-9_]+) in [_$][0-9A-Za-z]+\\)" options:0 error:NULL];
+  [privateName replaceMatchesInString:s options:0 range:NSMakeRange(0, s.length) withTemplate:@"$1"];
+  NSRegularExpression *extension = [NSRegularExpression regularExpressionWithPattern:@"\\(extension in [A-Za-z0-9_]+\\):" options:0 error:NULL];
+  [extension replaceMatchesInString:s options:0 range:NSMakeRange(0, s.length) withTemplate:@""];
+  for (NSString *module in SystemModulePrefixes()) [s replaceOccurrencesOfString:module withString:@"" options:0 range:NSMakeRange(0, s.length)];
+  // long generic arguments: the innermost ones become "…" until it is short enough
+  NSRegularExpression *innermost = [NSRegularExpression regularExpressionWithPattern:@"<[^<>]{2,}>" options:0 error:NULL];
+  while (s.length > 70 && [innermost firstMatchInString:s options:0 range:NSMakeRange(0, s.length)])
+    [innermost replaceMatchesInString:s options:0 range:NSMakeRange(0, s.length) withTemplate:@"<…>"];
+  return cache[name] = [s copy];
+}
+
+NSString *SRReadableText(NSString *text) {
+  if (![text isKindOfClass:NSString.class] || ![text containsString:@"_Tt"]) return text;
+  NSRegularExpression *mangled = [NSRegularExpression regularExpressionWithPattern:@"_Tt[A-Za-z0-9_$]+" options:0 error:NULL];
+  NSMutableString *out = [NSMutableString string];
+  __block NSUInteger at = 0;
+  [mangled enumerateMatchesInString:text options:0 range:NSMakeRange(0, text.length) usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags f, BOOL *stop) {
+    [out appendString:[text substringWithRange:NSMakeRange(at, m.range.location - at)]];
+    [out appendString:SRReadableClassName([text substringWithRange:m.range])];
+    at = NSMaxRange(m.range);
+  }];
+  [out appendString:[text substringFromIndex:at]];
+  return out;
+}
+
+// ---------------------------------------------------------------- the tree as text
 static NSString *Fmt(CGFloat v) { return [NSString stringWithFormat:@"%g", round(v * 10) / 10]; }
 static NSString *Hex(id v) {
   NSArray *a = v;
@@ -371,12 +423,12 @@ static NSString *Hex(id v) {
 }
 - (NSString *)lineFor:(SRMirrorNode *)n {
   NSDictionary *p = n.props;
-  NSMutableString *s = [NSMutableString stringWithFormat:@"%@ #%@", Str(p[@"class"], @"?"), n.nid];
-  if (p[@"view"]) [s appendFormat:@" (%@)", p[@"view"]];
+  NSMutableString *s = [NSMutableString stringWithFormat:@"%@ #%@", SRReadableClassName(Str(p[@"class"], @"?")), n.nid];
+  if (p[@"view"]) [s appendFormat:@" (%@)", SRReadableClassName(p[@"view"])];
   CGRect b = RectOf(p[@"bounds"], CGRectZero); CGPoint pos = PointOf(p[@"position"], CGPointZero), ap = PointOf(p[@"anchorPoint"], CGPointMake(0.5, 0.5));
   [s appendFormat:@" (%@,%@ %@x%@)", Fmt(pos.x - ap.x * b.size.width), Fmt(pos.y - ap.y * b.size.height), Fmt(b.size.width), Fmt(b.size.height)];
   if (b.origin.x || b.origin.y) [s appendFormat:@" origin=(%@,%@)", Fmt(b.origin.x), Fmt(b.origin.y)];
-  if (p[@"name"]) [s appendFormat:@" name=\"%@\"", p[@"name"]];
+  if (p[@"name"]) [s appendFormat:@" name=\"%@\"", SRReadableText(p[@"name"])];
   if (Bool(p[@"hidden"], NO)) [s appendString:@" hidden"];
   if (p[@"opacity"]) [s appendFormat:@" alpha=%@", Fmt(Num(p[@"opacity"], 1))];
   if (p[@"transform"]) [s appendString:@" transform"];
@@ -424,8 +476,7 @@ static NSString *Hex(id v) {
   NSUInteger shown = 0;
   for (NSNumber *nid in ids) {
     if (shown++ == 6) { [s appendFormat:@" …"]; break; }
-    NSString *cls = Str(_nodes[nid].props[@"class"], @"?");
-    if ([cls hasPrefix:@"_Tt"]) cls = @"(Swift)";
+    NSString *cls = SRReadableClassName(Str(_nodes[nid].props[@"class"], @"?"));
     [s appendFormat:@"%@ %@#%@ %@", shown == 1 ? @":" : @";", cls, nid, [changed[nid] componentsJoinedByString:@","]];
   }
   return s;
