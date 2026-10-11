@@ -1,9 +1,10 @@
 # inspect — the layer tree, live
 
-**Status: steps 1 and 2 of 5 work.** SimRun keeps a live copy of a running app's layer tree on the Mac, without
+**Status: steps 1–3 of 5 work.** SimRun keeps a live copy of a running app's layer tree on the Mac, without
 pausing the app. The copy is made of real Mac `CALayer`s with the app's geometry, colors, borders, corners, shadows,
 masks, gradients and shapes, so the Mac's Core Animation draws it as the app's does. App ▸ Show Layers (⌥⌘I) shows the
-copy next to the app's window; `simrun inspect` prints it as text.
+copy next to the app's window, flat or spread out in 3D as in Xcode's view debugger, live; `simrun inspect` prints it
+as text.
 
 What isn't copied yet is what layers *drew* (text, images, `drawRect:`): those layers get a blue stand-in. Layers the
 Mac can't draw at all (blur and other backdrops, portals, Liquid Glass SDF layers, Metal, video) get an orange one.
@@ -12,15 +13,14 @@ The plan, toward a view debugger like Xcode's but live:
 
 1. ✅ The data: the whole tree, then what changed after each commit.
 2. ✅ The flat copy on the Mac, next to the real window (the best check that the data is right).
-3. Explode it in 3D: each layer as a `CATransformLayer` node holding a "skin" layer and its children, spread out in
-   depth, with a camera, picking, and clipping as a toggle (3D can't flatten, so clipping and group opacity are done
-   by hand).
+3. ✅ The 3D view: every layer a plane spread out in depth, a camera, picking, clipping as a switch.
 4. Contents: the backing stores' IOSurfaces shown without copying, images copied once.
 5. The tree and inspector panels, editing, animations.
 
 ```bash
 simrun inspect Showcase                 # the tree as text
 simrun inspect Showcase --png copy.png  # and the copy as the Mac draws it
+simrun inspect Showcase --png 3d.png --3d   # spread out in 3D
 simrun inspect Showcase --watch         # then a line per update, until Ctrl-C
 simrun inspect Showcase --check         # does the live copy match a fresh one from the app?
 ```
@@ -122,6 +122,49 @@ drops what the screen can't reach. All of this happens in one `CATransaction` wi
   port reaches the app as a dead-name notification.
 - **`--png`** draws the copy with `-[CALayer renderInContext:]` at 2x.
 
+### The 3D view
+
+`SRLayerScene` (layerscene.m) builds a second Core Animation tree from the mirror's nodes:
+
+```
+node   = CATransformLayer   the layer's geometry (bounds, position, anchor point, transform); keeps 3D for what it holds
+├─ plane = CALayer          flat, the size of the layer: clipped by hand (a mask)
+│  ├─ skin                  the layer's look (SRApplyAppearance, as the flat copy), faded by hand
+│  └─ outline               the wireframe; blue when selected
+└─ the nodes of its sublayers…
+```
+
+- **Depth.** A plane goes one level above its superlayer's, and above every earlier plane (in drawing order) that it
+  overlaps on the screen. So siblings side by side share a level, as in Xcode. Screen rectangles come from the flat
+  copy (`-convertRect:toLayer:` knows every transform). Each node's `zPosition` is its level minus its superlayer's,
+  times the spacing.
+- **Spacing.** Unless you set it, the spacing is chosen once, when the scene is built: the whole stack about as deep
+  as the screen is tall, so deep trees get thinner slices. Showcase's home screen has about 40 levels. It isn't
+  recomputed as levels come and go. When it was (screen height ÷ levels after every update), one plane changing
+  level moved every plane in the stack.
+- **Holding still.** Live updates shouldn't make the stack jitter:
+  - Overlaps of half a point or less don't count. Fractional frames and separators make neighboring cells "overlap"
+    by a fraction of a point, and that flips back and forth.
+  - A plane goes up a level at once when it must. It comes back down only after the app has been quiet for 1.5 s,
+    when a settling layout runs. Until then it keeps any level that is still high enough.
+  - Level changes slide over 0.3 s (an explicit `zPosition` animation), rather than jump.
+- **What flattening did, done by hand.** Nothing in a 3D tree is flattened into its superlayer. So opacity is
+  multiplied down the tree onto each skin. A superlayer's `masksToBounds` becomes a mask on each plane under it,
+  clipped to what shows (and the plane is hidden when nothing does). Corner-radius clipping and `mask` layers aren't
+  applied in 3D, and neither is a superlayer's `sublayerTransform`.
+- **Camera.** It's a `CATransformLayer`: scale, tilt, turn. It sits in the canvas layer, whose `sublayerTransform` has
+  the perspective. The scale depends only on the screen, the view's size and the zoom, so turning the stack doesn't
+  zoom it (it once fit the turned stack). The camera turns about the middle of the stack as it was when built or
+  respaced, so planes moving between levels don't shift the view either.
+- **Picking.** Each plane converts the click with `-convertPoint:fromLayer:`, which goes through the camera, the
+  perspective and every node: the point where the line of sight meets the plane. Among the planes that contain it,
+  the highest level wins (then the later one in drawing order). In flat mode, `-hitTest:` on the flat copy picks.
+- **The window.** Flat | 3D. In 3D: drag to turn, pinch to zoom, scroll to pan, double-click to go back to the
+  starting angle (turned left, tilted back; switching to 3D swings round to it from straight on). There are switches
+  for spacing, Clip, Outlines and Stand-ins. A click selects a layer in either mode, and the line under the view
+  describes it.
+- **`--png --3d`** draws the scene offscreen with `CARenderer` into a Metal texture: `-renderInContext:` flattens 3D.
+
 ## Findings
 
 - **Commits include the path to each change.** `_copyRenderLayer:` is called for each changed layer and for the
@@ -134,13 +177,20 @@ drops what the screen can't reach. All of this happens in one `CATransaction` wi
   `CAGradientLayer`).
 - **Liquid Glass.** It is `CASDFLayer`, `CABackdropLayer` and `CAPortalLayer`, plus filters such as `displacementMap`
   and `opacityPair`, all of which only the simulator's render server can draw.
+- **`CARenderer` and 3D.** Offscreen rendering into an `MTLTexture` works, but only for what is committed **after**
+  the layer is given to the renderer (`r.layer = …; [CATransaction flush]`); a tree committed before renders as
+  nothing. The texture's rows come out bottom-up.
+- **3D geometry works as hoped.** `geometryFlipped` works on a `CATransformLayer`. `-hitTest:` and
+  `-convertPoint:fromLayer:` go through perspective and 3D rotation, so picking needs no ray math of our own.
 - **First action after launch.** With the default 5 s timeout, the first scripted action in an app could run out of
   time while UIKit's accessibility loaded (4–5 s). The timeout then fired during the stability check, so the error
   said "keeps moving". `internal.poll` now does that one-time load before its clock starts (scripting.md).
 
 ## Next steps
 
-- Step 3, the 3D view. Picking needs our own ray-quad intersection, since `hitTest:` doesn't handle 3D transforms.
+- In 3D: corner-radius clipping and `mask` layers, a range slider (show only some levels), focus on a subtree.
+- Depth layout is O(n²) in the number of layers and runs after every batch while 3D is showing. That's fine for
+  a few hundred layers; a grid of the placed rectangles would make it cheaper.
 - Step 4, contents. Getting a backing store's IOSurface, and whether Core Animation can draw into a surface we're
   still showing, are questions for IDA.
 - Demangling SwiftUI class names in the tree.

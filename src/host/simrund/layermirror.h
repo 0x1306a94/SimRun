@@ -22,4 +22,32 @@
 - (NSString *)describeChanges:(NSDictionary *)changes;
 // The copy drawn by Core Animation (CALayer -renderInContext:) at `scale` pixels per point; nil before the first batch.
 - (NSData *)PNGWithScale:(CGFloat)scale;
+// The node drawn at `p` (in `layer`'s coordinates; the flat copy, hit-tested by Core Animation); nil for none.
+- (NSNumber *)nodeAtPoint:(CGPoint)p fromLayer:(CALayer *)layer;
+// A node's bounds in the screen's coordinates (points, y down); CGRectNull if there's no such node.
+- (CGRect)screenRectOfNode:(NSNumber *)nid;
+// One line about a node, as in -treeDescription.
+- (NSString *)describeNode:(NSNumber *)nid;
 @end
+
+// ---------------------------------------------------------------- for the 3D view (layerscene.m)
+// A node: the properties the app last sent (defaults left out), and its layer in the flat copy.
+@interface SRMirrorNode : NSObject
+@property (copy) NSNumber *nid;
+@property (strong) NSMutableDictionary *props;
+@property (strong) CALayer *layer;
+@property (strong) CALayer *placeholder;   // first sublayer: drawn where the layer's contents would be
+@end
+@interface SRLayerMirror (Nodes)
+@property (readonly) NSDictionary<NSNumber *, SRMirrorNode *> *nodes;   // by id; 1 is the screen
+@end
+// A Core Animation layer of the class a node's `kind` needs.
+CALayer *SRNewMirrorLayer(NSString *kind);
+// A node's geometry (bounds, position, anchor point, transform, flipping; with `depth` its zPosition and
+// sublayerTransform too) and its look (colors, border, corners, shadow, contents settings, gradient, shape, text;
+// with `opacity` its opacity). Defaults for what `props` leaves out.
+void SRApplyGeometry(CALayer *layer, NSDictionary *props, BOOL depth);
+void SRApplyAppearance(CALayer *layer, NSDictionary *props, BOOL opacity);
+// The stand-in sublayer for what `layer` would draw but isn't copied (nil when there's none to show, or `on` is NO):
+// `standIn` updated, or a new one.
+CALayer *SRUpdateStandIn(CALayer *layer, CALayer *standIn, NSDictionary *props, BOOL on);

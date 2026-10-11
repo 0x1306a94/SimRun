@@ -4,12 +4,6 @@
 #import "layermirror.h"
 #import <ImageIO/ImageIO.h>
 
-@interface SRMirrorNode : NSObject
-@property (copy) NSNumber *nid;
-@property (strong) NSMutableDictionary *props;
-@property (strong) CALayer *layer;
-@property (strong) CALayer *placeholder;   // first sublayer: drawn where the layer's contents would be
-@end
 @implementation SRMirrorNode
 @end
 
@@ -62,75 +56,45 @@ static BOOL IsForeign(NSString *kind) {
   return [s containsObject:kind];
 }
 
-@implementation SRLayerMirror {
-  NSMutableDictionary<NSNumber *, SRMirrorNode *> *_nodes;
-}
-
-- (instancetype)init {
-  if (!(self = [super init])) return nil;
-  _nodes = [NSMutableDictionary dictionary];
-  _showsPlaceholders = YES;
-  _rootLayer = [CALayer layer];
-  _rootLayer.geometryFlipped = YES;   // y down, as the app's screen
-  _rootLayer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
-  _rootLayer.masksToBounds = YES;
-  [self reset];
-  return self;
-}
-- (void)reset {
-  [_nodes removeAllObjects];
-  SRMirrorNode *screen = [SRMirrorNode new];
-  screen.nid = @1; screen.props = [NSMutableDictionary dictionary]; screen.layer = _rootLayer;
-  _rootLayer.sublayers = nil;
-  _nodes[@1] = screen;
-}
-- (NSUInteger)nodeCount { return _nodes.count; }
-
-- (SRMirrorNode *)newNode:(NSNumber *)nid kind:(NSString *)kind {
-  SRMirrorNode *n = [SRMirrorNode new];
-  n.nid = nid; n.props = [NSMutableDictionary dictionary];
+CALayer *SRNewMirrorLayer(NSString *kind) {
   Class c = [kind isEqual:@"gradient"] ? CAGradientLayer.class : [kind isEqual:@"shape"] ? CAShapeLayer.class
           : [kind isEqual:@"transform"] ? CATransformLayer.class : [kind isEqual:@"text"] ? CATextLayer.class : CALayer.class;
-  n.layer = [c layer];
-  return n;
+  return [c layer];
 }
 
-// Puts all of a node's properties on its layer (defaults for those left out). YES if its stand-in came or went, so
-// its sublayers must be set again.
-- (BOOL)configure:(SRMirrorNode *)n {
-  CALayer *l = n.layer; NSDictionary *p = n.props;
-  BOOL screen = [n.nid isEqual:@1];
+void SRApplyGeometry(CALayer *l, NSDictionary *p, BOOL depth) {
   l.bounds = RectOf(p[@"bounds"], CGRectZero);
   l.position = PointOf(p[@"position"], CGPointZero);
-  if (!screen) {
-    l.anchorPoint = PointOf(p[@"anchorPoint"], CGPointMake(0.5, 0.5));
-    l.anchorPointZ = Num(p[@"anchorPointZ"], 0);
-    l.zPosition = Num(p[@"zPosition"], 0);
-    l.transform = Matrix(p[@"transform"]);
-    l.sublayerTransform = Matrix(p[@"sublayerTransform"]);
-    l.geometryFlipped = Bool(p[@"geometryFlipped"], NO);
-    l.hidden = Bool(p[@"hidden"], NO);
+  l.anchorPoint = PointOf(p[@"anchorPoint"], CGPointMake(0.5, 0.5));
+  l.anchorPointZ = Num(p[@"anchorPointZ"], 0);
+  l.transform = Matrix(p[@"transform"]);
+  l.geometryFlipped = Bool(p[@"geometryFlipped"], NO);
+  if (depth) { l.zPosition = Num(p[@"zPosition"], 0); l.sublayerTransform = Matrix(p[@"sublayerTransform"]); }
+}
+
+void SRApplyAppearance(CALayer *l, NSDictionary *p, BOOL opacity) {
+  if (opacity) {
     l.opacity = Num(p[@"opacity"], 1);
     l.allowsGroupOpacity = Bool(p[@"allowsGroupOpacity"], YES);
-    l.doubleSided = Bool(p[@"doubleSided"], YES);
-    l.masksToBounds = Bool(p[@"masksToBounds"], NO);
-    l.backgroundColor = Color(p[@"backgroundColor"]);
-    l.borderWidth = Num(p[@"borderWidth"], 0);
-    l.borderColor = p[@"borderColor"] ? Color(p[@"borderColor"]) : CGColorGetConstantColor(kCGColorBlack);
-    l.cornerRadius = Num(p[@"cornerRadius"], 0);
-    l.cornerCurve = Str(p[@"cornerCurve"], kCACornerCurveCircular);
-    l.maskedCorners = (CACornerMask)Num(p[@"maskedCorners"], 15);
-    l.shadowOpacity = Num(p[@"shadowOpacity"], 0);
-    l.shadowColor = p[@"shadowColor"] ? Color(p[@"shadowColor"]) : CGColorGetConstantColor(kCGColorBlack);
-    NSArray *so = [p[@"shadowOffset"] isKindOfClass:NSArray.class] ? p[@"shadowOffset"] : nil;
-    l.shadowOffset = so.count == 2 ? CGSizeMake([so[0] doubleValue], [so[1] doubleValue]) : CGSizeMake(0, -3);
-    l.shadowRadius = Num(p[@"shadowRadius"], 3);
-    l.shadowPath = Path(p[@"shadowPath"]);
-    l.contentsGravity = Str(p[@"contentsGravity"], kCAGravityResize);
-    l.contentsRect = RectOf(p[@"contentsRect"], CGRectMake(0, 0, 1, 1));
-    l.contentsCenter = RectOf(p[@"contentsCenter"], CGRectMake(0, 0, 1, 1));
-    l.contentsScale = Num(p[@"contentsScale"], 1);
   }
+  l.doubleSided = Bool(p[@"doubleSided"], YES);
+  l.masksToBounds = Bool(p[@"masksToBounds"], NO);
+  l.backgroundColor = Color(p[@"backgroundColor"]);
+  l.borderWidth = Num(p[@"borderWidth"], 0);
+  l.borderColor = p[@"borderColor"] ? Color(p[@"borderColor"]) : CGColorGetConstantColor(kCGColorBlack);
+  l.cornerRadius = Num(p[@"cornerRadius"], 0);
+  l.cornerCurve = Str(p[@"cornerCurve"], kCACornerCurveCircular);
+  l.maskedCorners = (CACornerMask)Num(p[@"maskedCorners"], 15);
+  l.shadowOpacity = Num(p[@"shadowOpacity"], 0);
+  l.shadowColor = p[@"shadowColor"] ? Color(p[@"shadowColor"]) : CGColorGetConstantColor(kCGColorBlack);
+  NSArray *so = [p[@"shadowOffset"] isKindOfClass:NSArray.class] ? p[@"shadowOffset"] : nil;
+  l.shadowOffset = so.count == 2 ? CGSizeMake([so[0] doubleValue], [so[1] doubleValue]) : CGSizeMake(0, -3);
+  l.shadowRadius = Num(p[@"shadowRadius"], 3);
+  l.shadowPath = Path(p[@"shadowPath"]);
+  l.contentsGravity = Str(p[@"contentsGravity"], kCAGravityResize);
+  l.contentsRect = RectOf(p[@"contentsRect"], CGRectMake(0, 0, 1, 1));
+  l.contentsCenter = RectOf(p[@"contentsCenter"], CGRectMake(0, 0, 1, 1));
+  l.contentsScale = Num(p[@"contentsScale"], 1);
   if ([l isKindOfClass:CAGradientLayer.class]) {
     CAGradientLayer *g = (CAGradientLayer *)l;
     NSMutableArray *colors = [NSMutableArray array];
@@ -157,21 +121,84 @@ static BOOL IsForeign(NSString *kind) {
   } else if ([l isKindOfClass:CATextLayer.class]) {
     ((CATextLayer *)l).string = Str(p[@"string"], nil);
   }
+}
 
-  // the stand-in for what isn't copied (yet)
+CALayer *SRUpdateStandIn(CALayer *l, CALayer *standIn, NSDictionary *p, BOOL on) {
   NSString *kind = Str(p[@"kind"], @"layer");
-  BOOL foreign = IsForeign(kind), want = _showsPlaceholders && !screen && (p[@"contents"] || foreign);
-  BOOL changed = want != (n.placeholder != nil);
-  if (want && !n.placeholder) { n.placeholder = [CALayer layer]; n.placeholder.anchorPoint = CGPointZero; }
-  if (!want) n.placeholder = nil;
-  if (n.placeholder) {
-    CALayer *ph = n.placeholder;
-    NSColor *tint = foreign ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
-    ph.position = l.bounds.origin; ph.bounds = (CGRect){ CGPointZero, l.bounds.size };
-    ph.backgroundColor = [tint colorWithAlphaComponent:foreign ? 0.3 : 0.15].CGColor;
-    ph.borderColor = [tint colorWithAlphaComponent:0.6].CGColor; ph.borderWidth = 0.5;
-    ph.cornerRadius = l.cornerRadius; ph.cornerCurve = l.cornerCurve; ph.maskedCorners = l.maskedCorners;
+  BOOL foreign = IsForeign(kind);
+  if (!on || !(p[@"contents"] || foreign)) return nil;
+  if (!standIn) { standIn = [CALayer layer]; standIn.anchorPoint = CGPointZero; }
+  NSColor *tint = foreign ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
+  standIn.position = l.bounds.origin; standIn.bounds = (CGRect){ CGPointZero, l.bounds.size };
+  standIn.backgroundColor = [tint colorWithAlphaComponent:foreign ? 0.3 : 0.15].CGColor;
+  standIn.borderColor = [tint colorWithAlphaComponent:0.6].CGColor; standIn.borderWidth = 0.5;
+  standIn.cornerRadius = l.cornerRadius; standIn.cornerCurve = l.cornerCurve; standIn.maskedCorners = l.maskedCorners;
+  return standIn;
+}
+
+@implementation SRLayerMirror {
+  NSMutableDictionary<NSNumber *, SRMirrorNode *> *_nodes;
+  NSMapTable<CALayer *, NSNumber *> *_layerNodes;   // layer (or stand-in) -> its node, for picking
+}
+
+- (instancetype)init {
+  if (!(self = [super init])) return nil;
+  _nodes = [NSMutableDictionary dictionary];
+  _layerNodes = [NSMapTable weakToStrongObjectsMapTable];
+  _showsPlaceholders = YES;
+  _rootLayer = [CALayer layer];
+  _rootLayer.geometryFlipped = YES;   // y down, as the app's screen
+  _rootLayer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+  _rootLayer.masksToBounds = YES;
+  [self reset];
+  return self;
+}
+- (void)reset {
+  [_nodes removeAllObjects];
+  SRMirrorNode *screen = [SRMirrorNode new];
+  screen.nid = @1; screen.props = [NSMutableDictionary dictionary]; screen.layer = _rootLayer;
+  [_layerNodes setObject:@1 forKey:_rootLayer];
+  _rootLayer.sublayers = nil;
+  _nodes[@1] = screen;
+}
+- (NSUInteger)nodeCount { return _nodes.count; }
+- (NSDictionary<NSNumber *, SRMirrorNode *> *)nodes { return _nodes; }
+
+- (NSNumber *)nodeAtPoint:(CGPoint)p fromLayer:(CALayer *)layer {
+  CALayer *hit = [_rootLayer hitTest:[_rootLayer.superlayer ?: _rootLayer convertPoint:p fromLayer:layer]];
+  for (; hit; hit = hit.superlayer) { NSNumber *n = [_layerNodes objectForKey:hit]; if (n) return n; }
+  return nil;
+}
+- (CGRect)screenRectOfNode:(NSNumber *)nid {
+  SRMirrorNode *n = _nodes[nid];
+  return n ? [n.layer convertRect:n.layer.bounds toLayer:_rootLayer] : CGRectNull;
+}
+- (NSString *)describeNode:(NSNumber *)nid { SRMirrorNode *n = _nodes[nid]; return n ? [self lineFor:n] : nil; }
+
+- (SRMirrorNode *)newNode:(NSNumber *)nid kind:(NSString *)kind {
+  SRMirrorNode *n = [SRMirrorNode new];
+  n.nid = nid; n.props = [NSMutableDictionary dictionary];
+  n.layer = SRNewMirrorLayer(kind);
+  [_layerNodes setObject:nid forKey:n.layer];
+  return n;
+}
+
+// Puts all of a node's properties on its layer (defaults for those left out). YES if its stand-in came or went, so
+// its sublayers must be set again.
+- (BOOL)configure:(SRMirrorNode *)n {
+  CALayer *l = n.layer; NSDictionary *p = n.props;
+  if ([n.nid isEqual:@1]) {   // the screen: only its size
+    l.bounds = RectOf(p[@"bounds"], CGRectZero);
+    l.position = PointOf(p[@"position"], CGPointZero);
+    return NO;
   }
+  SRApplyGeometry(l, p, YES);
+  l.hidden = Bool(p[@"hidden"], NO);
+  SRApplyAppearance(l, p, YES);
+  CALayer *standIn = SRUpdateStandIn(l, n.placeholder, p, _showsPlaceholders);
+  BOOL changed = standIn != n.placeholder;
+  if (changed && standIn) [_layerNodes setObject:n.nid forKey:standIn];
+  n.placeholder = standIn;
   return changed;
 }
 

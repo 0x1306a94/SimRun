@@ -30,6 +30,7 @@
 #include "keychainwindow.h"
 #include "layerwindow.h"
 #include "layermirror.h"
+#include "layerscene.h"
 #include "launchoptions.h"
 #include "simns_proto.h"
 #include "simrund_proto.h"
@@ -822,7 +823,7 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
                                               : [NSString stringWithFormat:@"%@ is still launching", r.session.title] }, nil);
 }
 
-// `inspect`: the app's layer tree as text (and, with `png`, the Mac copy drawn as PNG), then with `watch` a line per
+// `inspect`: the app's layer tree as text (and, with `png`, the Mac copy drawn as PNG, `3d` spread out in depth), then with `watch` a line per
 // update until the client goes away. With `check`, the live copy's text and a fresh copy's, to compare: the app is
 // asked for its whole tree again.
 - (void)inspectRequest:(NSDictionary *)d client:(int)c {
@@ -830,7 +831,7 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
   SRRequest *r = [self instanceMatching:Str(d, @"instance") profile:Str(d, @"profile") error:&err];
   if (!r) { SendReply(c, @{ @"error": err }, nil); return; }
   __weak SRSession *s = r.session;   // it holds the observer, which holds finish
-  BOOL watch = [d[@"watch"] isEqual:@YES], png = [d[@"png"] isEqual:@YES], check = [d[@"check"] isEqual:@YES];
+  BOOL watch = [d[@"watch"] isEqual:@YES], png = [d[@"png"] isEqual:@YES], check = [d[@"check"] isEqual:@YES], explode = [d[@"3d"] isEqual:@YES];
   dispatch_queue_t q = dispatch_queue_create("dev.simrun.inspect-client", DISPATCH_QUEUE_SERIAL);   // writes off the main thread
   __block id token = nil;
   __block dispatch_source_t eof = nil;
@@ -851,7 +852,11 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
     if (stage == 1) { if ([changes[@"full"] isEqual:@YES]) finish(@{ @"tree": m.treeDescription, @"before": before }); return; }
     if (stage == 0) {
       NSMutableDictionary *reply = [NSMutableDictionary dictionaryWithObject:m.treeDescription forKey:@"tree"];
-      if (png) { NSData *data = [m PNGWithScale:2]; if (data) reply[@"png"] = data; }
+      if (png) {
+        // 3D: turned a little to the left and tilted back, as the layer window's 3D view starts
+        NSData *data = explode ? [SRLayerScene PNGOfMirror:m size:CGSizeMake(1400, 1400) yaw:-0.55 pitch:0.3 spacing:0] : [m PNGWithScale:2];
+        if (data) reply[@"png"] = data;
+      }
       if (!watch) { finish(reply); return; }
       stage = 2;
       dispatch_async(q, ^{ simrund_send(c, (__bridge CFDictionaryRef)reply, NULL, 0); });

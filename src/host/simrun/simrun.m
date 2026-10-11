@@ -36,10 +36,11 @@ static const char kUsage[] =
   "                             run JavaScript in a running app: prints its console output, then its value; exits\n"
   "                             1 if it throws. The script is the argument, the file (- for stdin), or stdin.\n"
   "                             --snapshot: then print the screen as text (app.snapshot()) once the UI has settled\n"
-  "  inspect <pid | app> [-p <profile>] [--watch] [--png <file>] [--check]\n"
+  "  inspect <pid | app> [-p <profile>] [--watch] [--png <file> [--3d]] [--check]\n"
   "                             print the app's layer tree as SimRun copies it (App > Show Layers draws the copy);\n"
   "                             --watch: then a line per update until Ctrl-C; --png: save the copy as drawn on the\n"
-  "                             Mac; --check: compare the live copy with a fresh one (exits 1 if they differ)\n"
+  "                             Mac (--3d: spread out in depth, as in Show Layers' 3D view); --check: compare the\n"
+  "                             live copy with a fresh one (exits 1 if they differ)\n"
   "  profiles [<bundle ID | App.app>]\n"
   "                             apps' data containers: their default one and their profiles\n"
   "  runtimes                   the installed iOS runtimes (* = SimRun's)\n"
@@ -318,17 +319,18 @@ static int Eval(NSArray<NSString *> *args) {
 // `inspect`: SimRun's copy of the app's layer tree (inspect.md).
 static int Inspect(NSArray<NSString *> *args) {
   NSMutableArray *a = [args mutableCopy];
-  BOOL watch = [a containsObject:@"--watch"], check = [a containsObject:@"--check"];
-  [a removeObject:@"--watch"]; [a removeObject:@"--check"];
+  BOOL watch = [a containsObject:@"--watch"], check = [a containsObject:@"--check"], explode = [a containsObject:@"--3d"];
+  [a removeObject:@"--watch"]; [a removeObject:@"--check"]; [a removeObject:@"--3d"];
   NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *rest = [NSMutableArray array];
   NSString *err = ParseOptions(a, @{ @"-p": @"profile", @"--profile": @"profile", @"--png": @"png" }, NO, o, rest);
   if (err) { Fail(@"%@", err); return Usage(); }
-  if (rest.count != 1 || (check && (watch || o[@"png"]))) return Usage();
+  if (rest.count != 1 || (check && (watch || o[@"png"])) || (explode && !o[@"png"])) return Usage();
   NSMutableDictionary *req = [@{ @"action": @"inspect", @"instance": rest[0] } mutableCopy];
   if (o[@"profile"]) req[@"profile"] = o[@"profile"];
   if (watch) req[@"watch"] = @YES;
   if (check) req[@"check"] = @YES;
   if (o[@"png"]) req[@"png"] = @YES;
+  if (explode) req[@"3d"] = @YES;
   int s = Connect(NO);
   if (s < 0) return Fail(@"SimRun isn't running");
   if (simrund_send(s, (__bridge CFDictionaryRef)req, NULL, 0)) return Fail(@"send failed");

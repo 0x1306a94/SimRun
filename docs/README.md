@@ -25,6 +25,6 @@ Write-ups of each part:
 - [scripting.md](scripting.md) — `simrun eval`: JavaScript in a running app, its accessibility tree, input from
   scripts
 - [inspect.md](inspect.md) — the layer tree, live: Core Animation's commit hook, change batches, the Mac copy drawn by
-  real CALayers (App ▸ Show Layers, `simrun inspect`)
+  real CALayers, and the 3D view (App ▸ Show Layers, `simrun inspect`)
 - [research-log.md](research-log.md) — chronological findings from the investigation (paths in it refer to the
   original prototype layout)
