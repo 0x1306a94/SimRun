@@ -97,8 +97,14 @@ $(LIB)/hid.dylib: src/sim/hid/hid.m $(HDRS) | $(LIB)
 	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -framework IOKit -Wl,-undefined,dynamic_lookup -Wl,-w -o $@
 	@$(SIGN) $@ 2>/dev/null
 
-$(LIB)/script.dylib: src/sim/script/script.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -o $@
+# script.dylib: the native parts, and the JS modules (js/*.js) embedded as C arrays (xxd -i: core.js -> core_js[])
+SCRIPT_SRC := $(wildcard src/sim/script/*.m)
+SCRIPT_JS  := $(wildcard src/sim/script/js/*.js)
+$(BUILD)/gen/script_js.h: $(SCRIPT_JS)
+	@mkdir -p $(@D)
+	@(cd src/sim/script/js && for f in *.js; do xxd -i $$f; done) > $@.tmp && mv $@.tmp $@
+$(LIB)/script.dylib: $(SCRIPT_SRC) src/sim/script/script.h $(BUILD)/gen/script_js.h $(HDRS) | $(LIB)
+	$(SIMCC) -dynamiclib -I$(BUILD)/gen $(SCRIPT_SRC) -framework Foundation -framework UIKit -framework CoreGraphics -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 $(LIB)/pboard.dylib: src/sim/pboard/pboard.m $(HDRS) | $(LIB)

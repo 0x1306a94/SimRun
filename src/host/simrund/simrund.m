@@ -779,9 +779,9 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
   NSString *source = [d[@"source"] isKindOfClass:NSString.class] ? d[@"source"] : nil;
   if (r && !source) err = @"No script";
   if (!r || !source) { SendReply(c, @{ @"error": err }, nil); return; }
-  BOOL started = [r.session runScript:source output:^(NSString *key, NSString *text) {
+  BOOL started = [r.session runScript:source snapshot:[d[@"snapshot"] isEqual:@YES] output:^(NSString *key, NSString *text) {
     simrund_send(c, (__bridge CFDictionaryRef)@{ key: text }, NULL, 0);
-    if (![key isEqual:@"log"]) close(c);
+    if (![key isEqual:@"log"] && ![key isEqual:@"snapshot"]) close(c);
   }];
   if (!started)
     SendReply(c, @{ @"error": r.session.ready ? [NSString stringWithFormat:@"%@ can't run scripts (launched with SCRIPT_DISABLE)", r.session.title]

@@ -351,7 +351,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 }
 
 // ---------------------------------------------------------------- scripts (protocol.h SR_MSG_SCRIPT_*)
-- (BOOL)runScript:(NSString *)source output:(void (^)(NSString *key, NSString *text))output {
+- (BOOL)runScript:(NSString *)source snapshot:(BOOL)snapshot output:(void (^)(NSString *key, NSString *text))output {
   if (_exited || !_scriptPort) return NO;
   mach_port_t task = mach_task_self(), reply = MACH_PORT_NULL, prev = MACH_PORT_NULL;
   mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &reply);
@@ -372,8 +372,8 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
       NSString *text = [[NSString alloc] initWithBytes:u.m.data.address length:u.m.data.size encoding:NSUTF8StringEncoding] ?: @"";
       if (u.m.data.size) vm_deallocate(task, (vm_address_t)u.m.data.address, u.m.data.size);
       uint32_t kind = u.m.kind;
-      if (kind != SR_SCRIPT_LOG) done = YES;
-      output(kind == SR_SCRIPT_LOG ? @"log" : kind == SR_SCRIPT_RESULT ? @"result" : @"exception", text);
+      if (kind == SR_SCRIPT_RESULT || kind == SR_SCRIPT_EXCEPTION) done = YES;
+      output(kind == SR_SCRIPT_LOG ? @"log" : kind == SR_SCRIPT_SNAPSHOT ? @"snapshot" : kind == SR_SCRIPT_RESULT ? @"result" : @"exception", text);
     }
     if (done) dispatch_source_cancel(src);
   });
@@ -387,7 +387,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   m.b.msgh_descriptor_count = 1;
   m.data.address = (void *)d.bytes; m.data.size = (mach_msg_size_t)d.length;
   m.data.deallocate = FALSE; m.data.copy = MACH_MSG_VIRTUAL_COPY; m.data.type = MACH_MSG_OOL_DESCRIPTOR;
-  m.kind = SR_SCRIPT_SOURCE;
+  m.kind = SR_SCRIPT_SOURCE; m.flags = snapshot ? SR_SCRIPT_FLAG_SNAPSHOT : 0;
   if (mach_msg(&m.h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof m, 0, MACH_PORT_NULL, 1000, MACH_PORT_NULL) != KERN_SUCCESS) {
     dispatch_sync(q, ^{ done = YES; });
     dispatch_source_cancel(src);

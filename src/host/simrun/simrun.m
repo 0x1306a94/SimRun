@@ -32,9 +32,10 @@ static const char kUsage[] =
   "                             quit a running app (app: its name, bundle ID or executable)\n"
   "  screenshot <pid | app> [-p <profile>] [-o <file.png>]\n"
   "                             save a running app's screen (default: ./<app>.png)\n"
-  "  eval <pid | app> [-p <profile>] [<script> | -f <file>]\n"
+  "  eval <pid | app> [-p <profile>] [--snapshot] [<script> | -f <file>]\n"
   "                             run JavaScript in a running app: prints its console output, then its value; exits\n"
-  "                             1 if it throws. The script is the argument, the file (- for stdin), or stdin\n"
+  "                             1 if it throws. The script is the argument, the file (- for stdin), or stdin.\n"
+  "                             --snapshot: then print the screen as text (app.snapshot()) once the UI has settled\n"
   "  profiles [<bundle ID | App.app>]\n"
   "                             apps' data containers: their default one and their profiles\n"
   "  runtimes                   the installed iOS runtimes (* = SimRun's)\n"
@@ -253,7 +254,10 @@ static int Instance(NSString *action, NSArray<NSString *> *args) {
 // eval: a script, run in a running app; its console output as it happens, then its value (or what it threw).
 static int Eval(NSArray<NSString *> *args) {
   NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *rest = [NSMutableArray array];
-  NSString *err = ParseOptions(args, @{ @"-p": @"profile", @"--profile": @"profile", @"-f": @"file", @"--file": @"file" }, NO, o, rest);
+  NSMutableArray *a = [args mutableCopy];
+  BOOL snapshot = [a containsObject:@"--snapshot"];
+  [a removeObject:@"--snapshot"];
+  NSString *err = ParseOptions(a, @{ @"-p": @"profile", @"--profile": @"profile", @"-f": @"file", @"--file": @"file" }, NO, o, rest);
   if (err) { Fail(@"%@", err); return Usage(); }
   if (rest.count < 1 || rest.count > 2 || (rest.count == 2 && o[@"file"])) return Usage();
   NSString *source = rest.count == 2 ? rest[1] : nil;
@@ -267,15 +271,29 @@ static int Eval(NSArray<NSString *> *args) {
   }
   NSMutableDictionary *req = [@{ @"action": @"eval", @"instance": rest[0], @"source": source } mutableCopy];
   if (o[@"profile"]) req[@"profile"] = o[@"profile"];
+  if (snapshot) req[@"snapshot"] = @YES;
   int s = Connect(NO);
   if (s < 0) return Fail(@"SimRun isn't running");
   if (simrund_send(s, (__bridge CFDictionaryRef)req, NULL, 0)) return Fail(@"send failed");
+  __block NSString *screen = nil;   // printed after the outcome
+  __block BOOL printed = NO;
+  void (^printScreen)(void) = ^{ if (screen) { Print(printed ? @"\nSnapshot after the script:" : @"Snapshot after the script:"); Print(screen); } };
   for (;;) {
     NSDictionary *msg = CFBridgingRelease(simrund_recv(s, NULL, NULL));
     if (!msg) return Fail(@"lost connection to SimRun");
-    if ([msg[@"log"] isKindOfClass:NSString.class]) { Print(msg[@"log"]); fflush(stdout); continue; }
-    if ([msg[@"result"] isKindOfClass:NSString.class]) { if ([msg[@"result"] length]) Print(msg[@"result"]); return 0; }
-    if ([msg[@"exception"] isKindOfClass:NSString.class]) { fflush(stdout); fprintf(stderr, "%s\n", [msg[@"exception"] UTF8String]); return 1; }
+    if ([msg[@"log"] isKindOfClass:NSString.class]) { Print(msg[@"log"]); fflush(stdout); printed = YES; continue; }
+    if ([msg[@"snapshot"] isKindOfClass:NSString.class]) { screen = msg[@"snapshot"]; continue; }
+    if ([msg[@"result"] isKindOfClass:NSString.class]) {
+      if ([msg[@"result"] length]) { Print(msg[@"result"]); printed = YES; }
+      printScreen();
+      return 0;
+    }
+    if ([msg[@"exception"] isKindOfClass:NSString.class]) {
+      fflush(stdout); fprintf(stderr, "%s\n", [msg[@"exception"] UTF8String]); fflush(stderr);
+      printed = YES;
+      printScreen();
+      return 1;
+    }
     if ([msg[@"error"] isKindOfClass:NSString.class]) return Fail(@"%@", msg[@"error"]);
   }
 }

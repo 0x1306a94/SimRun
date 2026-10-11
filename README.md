@@ -159,11 +159,12 @@ with no apps running.
   uses (and on first use creates) profile "alice"; `simrun profiles` lists them. Select a profile and click **−** (or
   press ⌫) to delete it with its data.
 - **Manage running apps** with `simrun list`, `simrun quit <app>` and `simrun screenshot <app>`.
-- **Script a running app** (experimental) with `simrun eval`: JavaScript that runs inside the app, sees its
-  accessibility tree, and taps and types. Handy for automating UI checks, and for coding agents driving your app:
+- **Script a running app** (experimental) with `simrun eval`: JavaScript that runs inside the app with a
+  Playwright-like API. It sees the screen through accessibility, and taps and types like a user. Handy for automating
+  UI checks, and for coding agents driving your app:
 
   ```bash
-  simrun eval MyApp 'await tapOn("Sign In"); await sleep(500); return ax.tree()'
+  simrun eval MyApp --snapshot 'await app.getByRole("button", { name: "Sign In" }).tap()'
   ```
 
   See [scripting.md](docs/scripting.md) for what scripts can do.

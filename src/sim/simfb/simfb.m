@@ -59,6 +59,7 @@ static SFBDisp *gMain;
 EXPORT void SimRunFBSetFrameHandler(dispatch_queue_t q, SimRunFBFrameHandler h) {
   gFrameQ = q; gFrameHandler = [h copy];
 }
+EXPORT uint64_t SimRunFBFrameCount(void) { return atomic_load(&gSeq); }
 
 // ---- optional viewer sink (protocol.h): if mach_ports_lookup()[SR_PORT_SLOT_HOST] holds a port and SIMFB_VIEWER != 0,
 // every presented frame is shown in the host's window.

@@ -11,7 +11,7 @@ over its socket; `run`, `profiles`, `runtimes` and `devices` start SimRun headle
 | `simrun list` | The running apps: pid, app, profile, device, runtime |
 | `simrun quit <pid \| app> [-p <profile>]` | Quit a running app (by name, bundle ID or executable; `-p` picks among its profiles); returns once it has exited |
 | `simrun screenshot <pid \| app> [-p <profile>] [-o <file.png>]` | Save the app's screen as it last drew it, at its pixel size (default `./<app>.png`) |
-| `simrun eval <pid \| app> [-p <profile>] [<script> \| -f <file>]` | Run JavaScript in a running app ([scripting.md](scripting.md)): prints its console output as it happens, then its value; exits 1 if it throws. The script is the argument, the file (`-` for stdin), or stdin |
+| `simrun eval <pid \| app> [-p <profile>] [--snapshot] [<script> \| -f <file>]` | Run JavaScript in a running app ([scripting.md](scripting.md)): prints its console output as it happens, then its value; exits 1 if it throws. The script is the argument, the file (`-` for stdin), or stdin. `--snapshot`: then print the screen as text (`app.snapshot()`) once the UI has settled |
 | `simrun profiles [<bundle ID \| Sim.app>]` | Apps' data containers: `default` and their profiles |
 | `simrun runtimes` | The installed iOS runtimes (`*`: SimRun's) |
 | `simrun devices [-r <runtime>]` | A runtime's device types (`*`: the default) |

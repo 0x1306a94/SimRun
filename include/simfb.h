@@ -12,3 +12,6 @@ typedef void (^SimRunFBFrameHandler)(IOSurfaceRef surface, uint64_t seq);
 // q != NULL: handler runs async on q (surface retained, but CA may already be drawing the next frame into it).
 // Resolve with dlsym(dlopen(getenv("SIMULATOR_FRAMEBUFFER_FRAMEWORK"), RTLD_NOW), "SimRunFBSetFrameHandler").
 void SimRunFBSetFrameHandler(dispatch_queue_t q, SimRunFBFrameHandler handler);
+// How many frames have been presented so far (any thread). It stays put while nothing on screen changes, which is how
+// script.dylib tells that the UI has settled.
+uint64_t SimRunFBFrameCount(void);

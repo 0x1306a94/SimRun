@@ -33,8 +33,9 @@ typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 // The app's screen as it last presented it, as PNG at its pixel size; nil before its first frame.
 - (NSData *)screenshotPNG;
 // Runs a JavaScript `source` in the app (script.dylib). `output` is called on a background queue with each console
-// line ("log"), then once more with the outcome: "result" (the script's value, possibly empty), "exception" (it threw)
-// or "error" (the app went away first). NO if the app can't run scripts: it isn't running, it hasn't started its
-// script channel yet, or it was launched with SCRIPT_DISABLE.
-- (BOOL)runScript:(NSString *)source output:(void (^)(NSString *key, NSString *text))output;
+// line ("log"), with `snapshot` the screen as text once the script has ended and the UI has settled ("snapshot"), then
+// once more with the outcome: "result" (the script's value, possibly empty), "exception" (it threw) or "error" (the
+// app went away first). NO if the app can't run scripts: it isn't running, it hasn't started its script channel yet,
+// or it was launched with SCRIPT_DISABLE.
+- (BOOL)runScript:(NSString *)source snapshot:(BOOL)snapshot output:(void (^)(NSString *key, NSString *text))output;
 @end

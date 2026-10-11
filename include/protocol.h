@@ -53,9 +53,11 @@ typedef struct { float magnification, rotation; uint32_t phase, type; } sr_gestu
 
 // Scripts (script.dylib, scripting.md). The app sends SR_MSG_SCRIPT_HELLO (an sr_port_msg_t; w, h_px, scale unused)
 // with its script port when it starts. The host runs a script with SR_MSG_SCRIPT_EVAL to that port: the source as
-// UTF-8 in `data`, and in msgh_local_port a send right to a port of its own for this one eval. The app answers on
-// that port with SR_MSG_SCRIPT_OUTPUT messages, `kind` saying what `data` (UTF-8) is: console output lines, then one
-// result or exception, after which it releases the right. The host learns that the app went away mid-script from a
-// no-senders notification on the port.
-enum { SR_SCRIPT_SOURCE = 0, SR_SCRIPT_LOG, SR_SCRIPT_RESULT, SR_SCRIPT_EXCEPTION };
-typedef struct { mach_msg_header_t h; mach_msg_body_t b; mach_msg_ool_descriptor_t data; uint32_t kind; } sr_script_msg_t;
+// UTF-8 in `data`, SR_SCRIPT_FLAG_* in `flags`, and in msgh_local_port a send right to a port of its own for this one
+// eval. The app answers on that port with SR_MSG_SCRIPT_OUTPUT messages, `kind` saying what `data` (UTF-8) is:
+// console output lines; with SR_SCRIPT_FLAG_SNAPSHOT, a snapshot of the screen once the script has ended and the UI
+// has settled; then one result or exception, after which it releases the right. The host learns that the app went
+// away mid-script from a no-senders notification on the port.
+enum { SR_SCRIPT_SOURCE = 0, SR_SCRIPT_LOG, SR_SCRIPT_RESULT, SR_SCRIPT_EXCEPTION, SR_SCRIPT_SNAPSHOT };
+enum { SR_SCRIPT_FLAG_SNAPSHOT = 1 };
+typedef struct { mach_msg_header_t h; mach_msg_body_t b; mach_msg_ool_descriptor_t data; uint32_t kind, flags; } sr_script_msg_t;
