@@ -63,10 +63,11 @@ static const char kUsage[] =
   "  status                     whether SimRun is running\n"
   "  stop                       quit SimRun and every app in it\n"
   "  log                        follow SimRun's log (~/Library/Logs/SimRun/simrund.log)\n"
-  "  skill [path | install [--project | --dir <dir>]]\n"
+  "  skill [path | install [--project] [--claude] | install --dir <dir>]\n"
   "                             the skill that teaches coding agents to drive apps with simrun eval: print it,\n"
-  "                             print its directory, or install it for Claude Code in ~/.claude/skills/simrun\n"
-  "                             (--project: ./.claude/skills/simrun; --dir: <dir>/simrun, for other agents)\n";
+  "                             print its directory, or install it for agents in ~/.agents/skills/simrun\n"
+  "                             (--project: ./.agents/skills/simrun; --dir: <dir>/simrun); --claude also links\n"
+  "                             Claude Code's ~/.claude/skills/simrun (./.claude/skills/simrun) to it\n";
 
 static int Fail(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
 static int Fail(NSString *fmt, ...) {
@@ -536,19 +537,19 @@ static int Skill(NSArray<NSString *> *args) {
   if ([sub isEqualToString:@"path"] && !rest.count) { Print(src); return 0; }
   if (![sub isEqualToString:@"install"]) return Usage();
 
-  BOOL project = [rest containsObject:@"--project"];
+  BOOL project = [rest containsObject:@"--project"], forClaude = [rest containsObject:@"--claude"];
   [rest removeObject:@"--project"];
+  [rest removeObject:@"--claude"];
   NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *positional = [NSMutableArray array];
   NSString *err = ParseOptions(rest, @{ @"--dir": @"dir" }, nil, nil, NO, o, positional);
   if (err) { Fail(@"%@", err); return Usage(); }
-  if (positional.count || (project && o[@"dir"])) return Usage();
-  // Claude Code's own directory: $CLAUDE_CONFIG_DIR, else ~/.claude with ~ from $HOME, as Claude Code reads it
+  if (positional.count || ((project || forClaude) && o[@"dir"])) return Usage();
+  // The copy goes where agents look for skills, .agents/skills; --claude links Claude Code's skills to it.
+  // ~ from $HOME, as the agents read it. Claude Code's own directory: $CLAUDE_CONFIG_DIR, else ~/.claude
   NSDictionary<NSString *, NSString *> *env = NSProcessInfo.processInfo.environment;
-  NSString *claude = env[@"CLAUDE_CONFIG_DIR"].length ? AbsolutePath(env[@"CLAUDE_CONFIG_DIR"])
-                   : [(env[@"HOME"].length ? env[@"HOME"] : NSHomeDirectory()) stringByAppendingPathComponent:@".claude"];
-  NSString *skills = o[@"dir"] ? AbsolutePath(o[@"dir"])
-                   : project ? [fm.currentDirectoryPath stringByAppendingPathComponent:@".claude/skills"]
-                   : [claude stringByAppendingPathComponent:@"skills"];
+  NSString *home = env[@"HOME"].length ? env[@"HOME"] : NSHomeDirectory();
+  NSString *base = project ? fm.currentDirectoryPath : home;
+  NSString *skills = o[@"dir"] ? AbsolutePath(o[@"dir"]) : [base stringByAppendingPathComponent:@".agents/skills"];
   NSString *dest = [skills stringByAppendingPathComponent:@"simrun"], *shown = dest.stringByAbbreviatingWithTildeInPath;
   // attributesOfItemAtPath doesn't follow links: a link (to a checkout's skills/simrun, say) is the user's to manage
   NSDictionary *attrs = [fm attributesOfItemAtPath:dest error:nil];
@@ -565,8 +566,35 @@ static int Skill(NSArray<NSString *> *args) {
     [fm removeItemAtPath:tmp error:nil];
     return Fail(@"cannot replace %@: %@", shown, e.localizedDescription);
   }
-  Print([NSString stringWithFormat:@"%@ the simrun skill in %@. Run this again after updating SimRun to keep it in step.",
-                                   attrs ? @"Updated" : @"Installed", shown]);
+  NSString *done = [NSString stringWithFormat:@"%@ the simrun skill in %@", attrs ? @"Updated" : @"Installed", shown];
+
+  if (forClaude) {
+    // a project's link is relative, so it holds wherever the project is checked out
+    NSString *claudeSkills = project ? [base stringByAppendingPathComponent:@".claude/skills"]
+                           : [(env[@"CLAUDE_CONFIG_DIR"].length ? AbsolutePath(env[@"CLAUDE_CONFIG_DIR"])
+                                                                : [home stringByAppendingPathComponent:@".claude"])
+                               stringByAppendingPathComponent:@"skills"];
+    NSString *link = [claudeSkills stringByAppendingPathComponent:@"simrun"], *target = project ? @"../../.agents/skills/simrun" : dest;
+    NSString *linkShown = link.stringByAbbreviatingWithTildeInPath;
+    NSDictionary *la = [fm attributesOfItemAtPath:link error:nil];
+    BOOL linked = NO;
+    if ([la.fileType isEqualToString:NSFileTypeSymbolicLink]) {
+      NSString *to = [fm destinationOfSymbolicLinkAtPath:link error:nil] ?: @"";
+      NSString *resolved = to.isAbsolutePath ? to : [claudeSkills stringByAppendingPathComponent:to];
+      if (![resolved.stringByResolvingSymlinksInPath isEqualToString:dest.stringByResolvingSymlinksInPath])
+        return Fail(@"%@; %@ is a symbolic link to %@, leaving it alone", done, linkShown, to);
+      linked = YES;
+    } else if (la && !IsSimRunSkill(link)) {
+      return Fail(@"%@; %@ exists and isn't SimRun's skill, leaving it alone", done, linkShown);
+    } else if (la && ![fm removeItemAtPath:link error:&e]) {  // a copy from an earlier install: the link takes its place
+      return Fail(@"%@; cannot replace %@: %@", done, linkShown, e.localizedDescription);
+    }
+    if (!linked && (![fm createDirectoryAtPath:claudeSkills withIntermediateDirectories:YES attributes:nil error:&e] ||
+                    ![fm createSymbolicLinkAtPath:link withDestinationPath:target error:&e]))
+      return Fail(@"%@; cannot link %@ to it: %@", done, linkShown, e.localizedDescription);
+    done = [done stringByAppendingFormat:@", linked from %@ for Claude Code", linkShown];
+  }
+  Print([done stringByAppendingString:@". Run this again after updating SimRun to keep it in step."]);
   return 0;
 }
 

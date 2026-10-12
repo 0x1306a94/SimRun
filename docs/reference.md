@@ -17,7 +17,7 @@ over its socket; `run`, `profiles`, `runtimes` and `devices` start SimRun headle
 | `simrun profiles [<bundle ID \| Sim.app>]` | Apps' data containers: `default` and their profiles |
 | `simrun runtimes` | The installed iOS runtimes (`*`: SimRun's) |
 | `simrun devices [-r <runtime>]` | A runtime's device types (`*`: the default) |
-| `simrun skill [path \| install [--project \| --dir <dir>]]` | The agent skill for `simrun eval` (`skills/simrun`, carried in SimRun.app): print its SKILL.md; print its directory; or copy it to `~/.claude/skills/simrun` (`$CLAUDE_CONFIG_DIR/skills` if set), `--project` to `./.claude/skills/simrun`, `--dir` to `<dir>/simrun` for other agents. A copy doesn't follow SimRun's updates: install again after updating. It replaces only a directory that holds its own skill, never a symbolic link |
+| `simrun skill [path \| install [--project] [--claude] \| install --dir <dir>]` | The agent skill for `simrun eval` (`skills/simrun`, carried in SimRun.app): print its SKILL.md; print its directory; or copy it to `~/.agents/skills/simrun`, `--project` to `./.agents/skills/simrun`, `--dir` to `<dir>/simrun`. `--claude` also links Claude Code's `~/.claude/skills/simrun` (`$CLAUDE_CONFIG_DIR/skills` if set; with `--project`, `./.claude/skills/simrun`, a relative link) to the copy, replacing a copy an earlier install left there. A copy doesn't follow SimRun's updates: install again after updating. It replaces only a directory that holds its own skill, never a symbolic link that isn't its own |
 | `simrun status \| stop \| log` | Whether SimRun is running; quit it and its apps; follow its log (`~/Library/Logs/SimRun/simrund.log`) |
 | `tools/crash.py <procname> [n]` | Print the latest crash report backtrace for that process |
 

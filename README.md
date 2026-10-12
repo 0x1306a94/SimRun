@@ -177,7 +177,8 @@ with no apps running.
   ```
 
   See [scripting.md](docs/scripting.md) for what scripts can do. To teach your coding agent how to use it, install
-  the skill that comes with SimRun (for Claude Code; `simrun skill` prints it for other agents):
+  the skill that comes with SimRun in `~/.agents/skills` (add `--claude` to link it into Claude Code's
+  `~/.claude/skills` too; `simrun skill` prints it):
 
   ```bash
   simrun skill install
