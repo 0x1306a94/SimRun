@@ -30,6 +30,7 @@ extern xpc_connection_t sr_xpc_create_mach_service(const char *, dispatch_queue_
 - (instancetype)initWithItems:(NSArray *)items;
 - (instancetype)initWithType:(NSString *)type preferredRepresentation:(NSUInteger)pr v3_loader:(id)loader;
 - (instancetype)initWithNotificationState:(uint64_t)state changeCount:(NSInteger)count sharingToken:(id)token removedItemUUIDs:(NSArray *)uuids;
+- (instancetype)initWithNotificationState:(uint64_t)state changeCount:(NSInteger)count sharingToken:(id)token;   // before iOS 27
 - (void)addRepresentation:(id)rep;
 - (void)setName:(NSString *)name;
 - (void)setChangeCount:(NSInteger)count;
@@ -299,7 +300,13 @@ static NSArray<NSArray<NSArray *> *> *pull(id collection, NSXPCListenerEndpoint 
     b.changeCount++; b.storeCount = -1; b.uuid = [collection valueForKey:@"UUID"] ?: [NSUUID UUID];
     changeCount = b.changeCount; state = ++gState;
   });
-  done([[NSClassFromString(@"PBSaveResponse") alloc] initWithNotificationState:state changeCount:changeCount sharingToken:nil removedItemUUIDs:nil], nil);
+  // iOS 27 added removedItemUUIDs:; earlier runtimes (18, 26) have only the three-argument initializer
+  id response = [NSClassFromString(@"PBSaveResponse") alloc];
+  if ([response respondsToSelector:@selector(initWithNotificationState:changeCount:sharingToken:removedItemUUIDs:)])
+    response = [response initWithNotificationState:state changeCount:changeCount sharingToken:nil removedItemUUIDs:nil];
+  else
+    response = [response initWithNotificationState:state changeCount:changeCount sharingToken:nil];
+  done(response, nil);
   // later readers (other apps, or this one once its cache is gone) queue up behind this on gQ
   dispatch_async(gQ, ^{
     NSArray *items = pull(collection, endpoint);

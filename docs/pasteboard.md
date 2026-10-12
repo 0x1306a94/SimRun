@@ -28,7 +28,9 @@ PBOARD_VERBOSE=1 build/bin/simrun run …                          # trace reads
 - UIKit **caches** each pasteboard's collection (`_pasteboardCacheQueue_PasteboardNametoItemCollectionMap`) and only
   drops persistent ones when it sees the NSNotification **`com.apple.pasteboard.changed`** `{state: n}`, which
   PBServerConnection posts on the notify(3) post `com.apple.pasteboard.notify.changed`. When `state` equals the
-  `notificationState` of its own last save (`PBSaveResponse`), UIKit treats the change as its own.
+  `notificationState` of its own last save (`PBSaveResponse`), UIKit treats the change as its own. iOS 27 added a
+  `removedItemUUIDs:` argument to `PBSaveResponse`'s initializer; pboard.dylib uses whichever the runtime has (an
+  unrecognized selector there ended the app at its first copy on iOS 18 and 26).
 - Without a server, every save logs "Could not save pasteboard … Cannot connect to pasteboard server" (after
   multi-second timeouts) and the pasteboard is always empty.
 
