@@ -25,7 +25,9 @@ you find in place of `simrun` below.
 
 ## 1. Build the app for the Simulator
 
-SimRun runs Simulator builds (`Debug-iphonesimulator`), not device builds. The app must use scenes: any SwiftUI
+SimRun runs Simulator builds (`Debug-iphonesimulator`); build for the Simulator. (Given a device build, such as
+`Debug-iphoneos` or an ad hoc one, it runs a copy converted for the Simulator; not App Store builds, which are
+encrypted.) The app must use scenes: any SwiftUI
 `App` does, and so does a UIKit app with a `UIScene` configuration. An app delegate alone won't show a window.
 
 ```bash

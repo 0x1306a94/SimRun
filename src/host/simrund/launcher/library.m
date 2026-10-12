@@ -29,9 +29,10 @@ NSNotificationName const SRLibraryDidChangeNotification = @"SRLibraryDidChange";
 static NSString *const kLibraryKey = @"SRLibraryPaths";
 
 // Platform (LC_BUILD_VERSION) of the arm64 slice of a Mach-O, or 0; its minimum OS version (xxxx.yy.zz nibbles) in
-// *minos if given.
-static uint32_t Arm64Platform(NSString *path, uint32_t *minos) {
+// *minos and whether it is encrypted (an App Store build) in *encrypted, if given.
+static uint32_t Arm64Platform(NSString *path, uint32_t *minos, BOOL *encrypted) {
   if (minos) *minos = 0;
+  if (encrypted) *encrypted = NO;
   NSData *d = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
   if (d.length < sizeof(struct mach_header_64)) return 0;
   const uint8_t *p = d.bytes; size_t off = 0;
@@ -48,19 +49,23 @@ static uint32_t Arm64Platform(NSString *path, uint32_t *minos) {
   const struct mach_header_64 *mh = (const void *)(p + off);
   if (mh->magic != MH_MAGIC_64 || mh->cputype != CPU_TYPE_ARM64) return 0;
   const uint8_t *lc = (const uint8_t *)(mh + 1), *end = p + d.length;
+  uint32_t platform = 0;
   for (uint32_t i = 0; i < mh->ncmds && lc + sizeof(struct load_command) <= end; i++) {
     const struct load_command *c = (const void *)lc;
-    if (c->cmd == LC_BUILD_VERSION) {
+    if (c->cmd == LC_BUILD_VERSION && !platform) {
       if (minos) *minos = ((const struct build_version_command *)c)->minos;
-      return ((const struct build_version_command *)c)->platform;
+      platform = ((const struct build_version_command *)c)->platform;
     }
-    if (c->cmd == LC_VERSION_MIN_IPHONEOS) {   // old binaries; sim vs device unknown
+    if (c->cmd == LC_VERSION_MIN_IPHONEOS && !platform) {   // old binaries; sim vs device unknown
       if (minos) *minos = ((const struct version_min_command *)c)->version;
-      return PLATFORM_IOSSIMULATOR;
+      platform = PLATFORM_IOSSIMULATOR;
     }
+    if (c->cmd == LC_ENCRYPTION_INFO_64 && encrypted && lc + sizeof(struct encryption_info_command_64) <= end)
+      *encrypted = ((const struct encryption_info_command_64 *)c)->cryptid != 0;
+    if (!c->cmdsize) break;
     lc += c->cmdsize;
   }
-  return 0;
+  return platform;
 }
 
 @implementation SRAppInfo
@@ -71,9 +76,12 @@ static uint32_t Arm64Platform(NSString *path, uint32_t *minos) {
   if (!info) return @"This doesn't look like an iOS app: it has no top-level Info.plist (macOS apps keep it in Contents/).";
   NSString *exe = info[@"CFBundleExecutable"];
   if (!exe.length) return @"Info.plist has no CFBundleExecutable.";
-  switch (Arm64Platform([path stringByAppendingPathComponent:exe], NULL)) {
+  BOOL encrypted;
+  switch (Arm64Platform([path stringByAppendingPathComponent:exe], NULL, &encrypted)) {
     case PLATFORM_IOSSIMULATOR: return nil;
-    case PLATFORM_IOS: return @"This is a build for iPhone/iPad devices. Build it for an iOS Simulator destination instead.";
+    case PLATFORM_IOS:   // SimRun runs a converted copy (devicebuild.h)
+      return encrypted ? @"This is an encrypted App Store build. SimRun can run builds for iPhone/iPad devices from Xcode or for "
+                          "development, ad hoc or enterprise distribution, not App Store ones." : nil;
     case 0: return @"The executable has no arm64 slice (SimRun needs an arm64 iOS Simulator build).";
     default: return @"The executable isn't built for the iOS Simulator.";
   }
@@ -81,7 +89,7 @@ static uint32_t Arm64Platform(NSString *path, uint32_t *minos) {
 
 + (NSString *)minimumOSVersionOfExecutable:(NSString *)path {
   uint32_t v;
-  if (!Arm64Platform(path, &v) || !v) return nil;
+  if (!Arm64Platform(path, &v, NULL) || !v) return nil;
   return (v & 0xff) ? [NSString stringWithFormat:@"%u.%u.%u", v >> 16, (v >> 8) & 0xff, v & 0xff]
                     : [NSString stringWithFormat:@"%u.%u", v >> 16, (v >> 8) & 0xff];
 }
@@ -93,6 +101,7 @@ static uint32_t Arm64Platform(NSString *path, uint32_t *minos) {
   a->_name = info[@"CFBundleDisplayName"] ?: info[@"CFBundleName"] ?: path.lastPathComponent.stringByDeletingPathExtension;
   a->_bundleIdentifier = info[@"CFBundleIdentifier"] ?: @"";
   a->_executablePath = [path stringByAppendingPathComponent:info[@"CFBundleExecutable"] ?: @""];
+  a->_deviceBuild = Arm64Platform(a->_executablePath, NULL, NULL) == PLATFORM_IOS;
   a->_icon = [self iconForBundle:path];
   return a;
 }

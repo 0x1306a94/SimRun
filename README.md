@@ -33,7 +33,7 @@ window, controlled with your mouse, trackpad and keyboard.
 - **Looks and behaves like the iPhone version.** Your app runs with the iPhone's own UIKit and SwiftUI, so layouts,
   controls and Liquid Glass look the way they do on a phone, not the way they're adapted for the Mac.
 - **Works with apps you didn't write.** Any iOS Simulator build can be opened, including ones you received from
-  someone else, without access to the source.
+  someone else, without access to the source. So can most builds for devices (see Tips).
 
 ## What you need
 
@@ -158,6 +158,11 @@ with no apps running.
   profile has its own launch options (device, runtime, arguments…). From the terminal, `simrun run --profile alice …`
   uses (and on first use creates) profile "alice"; `simrun profiles` lists them. Select a profile and click **−** (or
   press ⌫) to delete it with its data.
+- **Run a build made for iPhone or iPad devices**, such as a development or ad hoc build someone sent you, or
+  Xcode's `Debug-iphoneos` build: add it or `simrun run` it like any other app. SimRun runs a copy converted for the
+  Simulator, made in about a second the first time and again whenever the app changes (they are kept in
+  `~/Library/Caches/dev.simrun.SimRun/DeviceBuilds`, and can be deleted). App Store builds are encrypted and can't
+  run. A converted app loses its entitlements, so its keychain items go in an access group named after its bundle ID.
 - **Manage running apps** with `simrun list`, `simrun quit <app>` and `simrun screenshot <app>`.
 - **Script a running app** (experimental) with `simrun eval`: JavaScript that runs inside the app with a
   Playwright-like API. It sees the screen through accessibility, and taps and types like a user. Handy for automating

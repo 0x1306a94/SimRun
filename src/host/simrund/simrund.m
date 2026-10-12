@@ -24,6 +24,7 @@
 #include "session/mirrorwindow.h"
 #include "session/environment.h"
 #include "launcher/library.h"
+#include "launcher/devicebuild.h"
 #include "launcher/launcher.h"
 #include "services/pasteboard.h"
 #include "services/filepanel.h"
@@ -49,6 +50,8 @@ static void LOG(NSString *fmt, ...) {
 @interface SRRequest : NSObject
 @property NSArray<NSString *> *argv, *env; @property NSString *cwd, *title, *appPath;
 @property NSString *bundleID;                      // the app's (nil for a bare binary)
+@property NSString *deviceBuild;                   // a device build's bundle (appPath): runs as its simulator copy
+@property NSString *problem;                       // why it can't launch, found before launching
 @property NSString *runtimeRoot;                   // the iOS runtime it runs on
 @property SRDeviceType *device;                    // the device type it runs as
 @property NSString *profile;                       // the app's profile (data container) it runs in; nil = its default one
@@ -82,7 +85,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   NSMutableDictionary<NSString *, SRSimns *> *_simns;   // by runtime root
   dispatch_source_t _listenSource, _sigSource;
   int _listenFd; NSString *_socketPath;
-  NSMutableArray<SRRequest *> *_pending, *_active;
+  NSMutableArray<SRRequest *> *_preparing, *_pending, *_active;   // device builds being converted, waiting for simns, running
   NSMutableArray<NSString *> *_openAtLaunch;
   NSTimer *_idleTimer;
   SRLauncher *_launcher;
@@ -97,7 +100,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
 - (instancetype)initWithMode:(SRMode)mode args:(NSArray<NSString *> *)args {
   if ((self = [super init])) {
     _mode = mode; _args = args; _listenFd = -1;
-    _pending = [NSMutableArray array]; _active = [NSMutableArray array]; _openAtLaunch = [NSMutableArray array];
+    _preparing = [NSMutableArray array]; _pending = [NSMutableArray array]; _active = [NSMutableArray array]; _openAtLaunch = [NSMutableArray array];
     _simns = [NSMutableDictionary dictionary];
     if (mode == SRModeGUI) [_openAtLaunch addObjectsFromArray:args];
     _launcher = [[SRLauncher alloc] initWithDelegate:self];
@@ -301,6 +304,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
 - (SRRequest *)requestForApp:(SRAppInfo *)app profile:(NSString *)profile {
   for (SRRequest *r in _active) if ([r.appPath isEqualToString:app.path] && SameProfile(r.profile, profile)) return r;
   for (SRRequest *r in _pending) if ([r.appPath isEqualToString:app.path] && SameProfile(r.profile, profile)) return r;
+  for (SRRequest *r in _preparing) if ([r.appPath isEqualToString:app.path] && SameProfile(r.profile, profile)) return r;
   return nil;
 }
 - (SRAppState)stateForApp:(SRAppInfo *)app profile:(NSString *)profile {
@@ -411,13 +415,14 @@ static BOOL ProcessGone(pid_t pid) {
   SRRequest *r = [SRRequest new];
   r.argv = [@[ app.executablePath ] arrayByAddingObjectsFromArray:o.launchArguments];
   r.cwd = app.path; r.title = app.name; r.appPath = app.path; r.bundleID = app.bundleIdentifier; r.runtimeRoot = root; r.profile = profile;
+  if (app.deviceBuild) r.deviceBuild = app.path;
   r.device = device ?: [SREnvironment defaultDeviceTypeForRuntime:[SRRuntime runtimeAtRoot:root]];
   r.env = [self environmentFrom:[SREnvironment processEnvironment] for:r libraries:[SREnvironment injectedLibraries]
                       overrides:o.environmentVariables];
   // no terminal: stdout/stderr go to the session's log window
   int p[2]; pipe(p);
   r.fd0 = open("/dev/null", O_RDONLY); r.fd1 = p[1]; r.fd2 = dup(p[1]); r.captureFD = p[0];
-  [self enqueue:r];
+  [self prepare:r];
 }
 
 // `base` (the launcher's environment, or a client's) with the simulator environment for `r`'s runtime and device, the
@@ -567,6 +572,42 @@ static BOOL ProcessGone(pid_t pid) {
 }
 
 // ---------------------------------------------------------------- launching
+// A device build runs as its simulator copy (devicebuild.h). Making one takes a moment, on another queue; `r`
+// waits in _preparing meanwhile. Then, or right away for any other app, it is enqueued.
+- (void)prepare:(SRRequest *)r {
+  NSString *copy = r.deviceBuild ? [SRDeviceBuild currentCopyOfApp:r.deviceBuild] : nil;
+  if (!r.deviceBuild || copy) { [self enqueue:r inCopy:copy]; return; }
+  [_idleTimer invalidate]; _idleTimer = nil;
+  [_preparing addObject:r]; [_launcher reloadState];
+  if (r.sock >= 0 && r.fd2 >= 0)
+    dprintf(r.fd2, "simrun: %s is built for devices; converting a copy for the Simulator\n", r.deviceBuild.lastPathComponent.UTF8String);
+  NSString *app = r.deviceBuild;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSString *err, *made = [SRDeviceBuild simulatorCopyOfApp:app error:&err];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self->_preparing removeObject:r];
+      if (r.eofSource && dispatch_source_testcancel(r.eofSource)) {   // its client went away meanwhile (Ctrl-C)
+        int fds[] = { r.fd0, r.fd1, r.fd2 };
+        for (int i = 0; i < 3; i++) if (fds[i] >= 0) close(fds[i]);
+        r.fd0 = r.fd1 = r.fd2 = -1;
+        [self closeClient:r]; [self->_launcher reloadState]; [self scheduleIdleCheck];
+        return;
+      }
+      if (!made) { r.problem = err; [self launch:r]; return; }
+      [self enqueue:r inCopy:made];
+    });
+  });
+}
+// `r` with a device build's executable and working directory moved into its simulator copy `copy`
+- (void)enqueue:(SRRequest *)r inCopy:(NSString *)copy {
+  if (copy) {
+    NSString *exe = r.argv.firstObject;
+    if ([exe hasPrefix:[r.deviceBuild stringByAppendingString:@"/"]]) exe = [copy stringByAppendingString:[exe substringFromIndex:r.deviceBuild.length]];
+    r.argv = [@[ exe ] arrayByAddingObjectsFromArray:[r.argv subarrayWithRange:NSMakeRange(1, r.argv.count - 1)]];
+    if ([r.cwd isEqualToString:r.deviceBuild]) r.cwd = copy;
+  }
+  [self enqueue:r];
+}
 - (void)enqueue:(SRRequest *)r {
   [_idleTimer invalidate]; _idleTimer = nil;
   SRSimns *ns = [SRRuntime runtimeAtRoot:r.runtimeRoot] ? [self simnsForRoot:r.runtimeRoot] : nil;
@@ -663,7 +704,8 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
   NSString *err = nil;
   mach_port_t ns = MACH_PORT_NULL;
   SRRuntime *rt = [SRRuntime runtimeAtRoot:r.runtimeRoot];
-  if (!rt) err = [NSString stringWithFormat:@"Not an iOS Simulator runtime: %@", r.runtimeRoot];
+  if (r.problem) err = r.problem;
+  else if (!rt) err = [NSString stringWithFormat:@"Not an iOS Simulator runtime: %@", r.runtimeRoot];
   else if ((err = [self runtimeProblemFor:r runtime:rt])) {}
   else ns = [self newNamespaceIn:_simns[r.runtimeRoot.stringByStandardizingPath]];
   int fds[3] = { r.fd0, r.fd1, r.fd2 };
@@ -804,7 +846,7 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
     char b; if (recv(c, &b, 1, MSG_PEEK | MSG_DONTWAIT) == 0) { dispatch_source_cancel(eof); [r.session terminate]; }
   });
   dispatch_resume(eof); r.eofSource = eof;
-  [self enqueue:r];
+  [self prepare:r];
 }
 
 // `eval`: run a script in an app, streaming its console output and then its outcome to the client.
@@ -902,7 +944,9 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
     NSString *problem = [SRAppInfo problemWithAppAtPath:target];
     if (problem) return problem;
     r.appPath = target;
-    exe = [SRAppInfo infoWithPath:target].executablePath;
+    SRAppInfo *info = [SRAppInfo infoWithPath:target];
+    exe = info.executablePath;
+    if (info.deviceBuild) r.deviceBuild = target;
   } else if ([target.stringByDeletingLastPathComponent.pathExtension isEqualToString:@"app"]) {
     r.appPath = target.stringByDeletingLastPathComponent;   // lets the launcher show it as running
   }
@@ -1034,13 +1078,13 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
 
 // ---------------------------------------------------------------- idle exit (headless --serve only)
 - (void)scheduleIdleCheck {
-  if (_mode != SRModeServe || _interactive || _active.count || _pending.count) return;
+  if (_mode != SRModeServe || _interactive || _active.count || _pending.count || _preparing.count) return;
   const char *e = getenv("SIMRUND_IDLE");
   double idle = e ? atof(e) : 600;
   if (idle <= 0) return;
   [_idleTimer invalidate];
   _idleTimer = [NSTimer scheduledTimerWithTimeInterval:idle repeats:NO block:^(NSTimer *t) {
-    if (!self->_interactive && !self->_active.count && !self->_pending.count) { LOG(@"idle for %.0f s, exiting", idle); [NSApp terminate:nil]; }
+    if (!self->_interactive && !self->_active.count && !self->_pending.count && !self->_preparing.count) { LOG(@"idle for %.0f s, exiting", idle); [NSApp terminate:nil]; }
   }];
 }
 @end

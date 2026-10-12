@@ -48,7 +48,7 @@ app process
     keys by class + application label + tag + type + size, all within an access group and sync state.
   - Access groups: from the app's entitlements — the `__TEXT,__entitlements` section Xcode gives simulator builds, or
     the code signature's entitlements blob — `keychain-access-groups`, then `application-identifier`, then app groups;
-    the bundle id if there are none. Adds without `kSecAttrAccessGroup` go to the first; queries without one see all of
+    the bundle id if there are none (as for a device build, whose converted copy is signed ad hoc, without them). Adds without `kSecAttrAccessGroup` go to the first; queries without one see all of
     the app's groups (so apps don't see each other's items). Any group may be named explicitly: no entitlement check.
   - Ignored: `kSecAttrAccessControl` (no biometry or passcode prompt; the item is just stored), `kSecUse*`
     (authentication context, prompts, data-protection keychain), token ids. `kSecAttrAccessible` is stored and

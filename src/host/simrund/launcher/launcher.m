@@ -255,7 +255,7 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   [self show];
   NSOpenPanel *p = [NSOpenPanel openPanel];
   p.allowedContentTypes = @[ UTTypeApplicationBundle ]; p.allowsMultipleSelection = YES; p.treatsFilePackagesAsDirectories = NO;
-  p.message = @"Choose iOS Simulator app bundles (built for an iOS Simulator destination).";
+  p.message = @"Choose iOS app bundles: built for an iOS Simulator destination, or for devices (not from the App Store).";
   [p beginSheetModalForWindow:_window completionHandler:^(NSModalResponse r) {
     if (r != NSModalResponseOK) return;
     NSMutableArray *paths = [NSMutableArray array]; for (NSURL *u in p.URLs) [paths addObject:u.path];

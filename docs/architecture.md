@@ -64,7 +64,15 @@ a profile's has running it and its data container. It remembers its library of a
 Simulator Builds** scans
 `~/Library/Developer/Xcode/DerivedData/*/Build/Products/*-iphonesimulator/` for `.app` bundles. An app is accepted
 if it has a top-level `Info.plist` with a `CFBundleExecutable` whose arm64 slice is built for the `IOSSIMULATOR`
-platform.
+platform, or for `IOS` and not encrypted: a device build. A device build runs as a copy converted for the Simulator
+(`launcher/devicebuild.m`), in `~/Library/Caches/dev.simrun.SimRun/DeviceBuilds/<name>-<hash of its path>/`: an APFS
+clone of the bundle, without `Watch/`, whose arm64 iOS Mach-Os are thinned to arm64 and marked `IOSSIMULATOR`
+(`LC_BUILD_VERSION`; an old `LC_VERSION_MIN_IPHONEOS` becomes one), with a `__RESTRICT` segment renamed (dyld would
+ignore `DYLD_INSERT_LIBRARIES`), Info.plist platform keys made the simulator's, and the device signatures and
+provisioning profiles replaced by ad-hoc signatures (`codesign`, the loose Mach-Os, then bundles from the deepest up).
+A stamp (the app's path, the size and mtime of its `Info.plist`, executable and `_CodeSignature/CodeResources`)
+says whether the copy is current; making it takes ~0.3 s for an 85 MB app, on a background queue while the launch
+waits in `_preparing`.
 
 Launch Options in the toolbar or a profile's menu (or ⌥ in it: **Launch With…**, **Relaunch With…** while it runs;
 ⌥⌘R in an app window) opens a sheet, like a scheme's Run action in Xcode, with the launch options of the app's profile — its iOS runtime and device,
