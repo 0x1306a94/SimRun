@@ -1,4 +1,4 @@
-// docpicker.dylib — UIDocumentPickerViewController with the Mac's open and save panels (SIM platform; see
+// docpicker — app.dylib's UIDocumentPickerViewController with the Mac's open and save panels (SIM platform; see
 // docs/docpicker.md). SwiftUI's fileImporter and fileExporter are built on it.
 // On a device the picker's UI is a remote view controller from DocumentManager's extension, found through PlugInKit
 // (pkd). Under SimRun there is neither, so the picker presents an empty sheet that never fills. This dylib keeps the
@@ -16,12 +16,7 @@
 #include <mach/mach.h>
 #include <xpc/xpc.h>
 #include "docpicker.h"
-
-extern mach_port_t bootstrap_port;
-kern_return_t bootstrap_look_up(mach_port_t bp, const char *name, mach_port_t *out);
-void xpc_connection_enable_sim2host_4sim(xpc_connection_t);
-// (marked unavailable in the iOS SDK headers; it exists in the sim libxpc)
-extern xpc_connection_t sr_xpc_create_mach_service(const char *, dispatch_queue_t, uint64_t) __asm("_xpc_connection_create_mach_service");
+#import "app.h"
 
 // UIDocumentPickerViewController's completion from its remote UI (private)
 @interface UIDocumentPickerViewController (SRDocumentManager)
@@ -34,19 +29,13 @@ extern xpc_connection_t sr_xpc_create_mach_service(const char *, dispatch_queue_
 static int gVerbose;
 #define LOG(...) do { if (gVerbose) fprintf(stderr, "[docpicker] " __VA_ARGS__); } while (0)
 
-static xpc_connection_t gHost;                         // SRDP_SERVICE; NULL: no simrund, pickers cancel at once
+static xpc_connection_t gHost;                         // SRDP_SERVICE; NULL: a SimRun without it, pickers cancel at once
 static __weak UIDocumentPickerViewController *gActive; // the picker whose panel is up
 
 static void host_open(void) {
-  mach_port_t p = MACH_PORT_NULL;
-  if (bootstrap_look_up(bootstrap_port, SRDP_SERVICE, &p) != KERN_SUCCESS) { LOG("no %s: document pickers cancel at once\n", SRDP_SERVICE); return; }
-  mach_port_deallocate(mach_task_self(), p);
-  gHost = sr_xpc_create_mach_service(SRDP_SERVICE, dispatch_get_main_queue(), 0);
-  xpc_connection_enable_sim2host_4sim(gHost);
-  xpc_connection_set_event_handler(gHost, ^(xpc_object_t e) {
+  gHost = SRHostConnect(SRDP_SERVICE, dispatch_get_main_queue(), ^(xpc_object_t e) {
     if (xpc_get_type(e) == XPC_TYPE_ERROR) LOG("host connection: %s\n", xpc_dictionary_get_string(e, XPC_ERROR_KEY_DESCRIPTION) ?: "?");
   });
-  xpc_connection_activate(gHost);
 }
 
 static xpc_object_t string_array(NSArray<NSString *> *a) {
@@ -252,9 +241,8 @@ static void patch_picker(void) {
   }), "v@:B");
 }
 
-__attribute__((constructor)) static void docpicker_init(void) {
+void SRDocPickerStart(void) {
   gVerbose = getenv("DOCPICKER_VERBOSE") != NULL;
-  if (getenv("DOCPICKER_DISABLE") || !strcmp(getprogname(), "MTLCompilerService")) return;
   if (![UIDocumentPickerViewController instancesRespondToSelector:@selector(documentBrowser:didPickDocumentURLs:)] ||
       ![UIDocumentPickerViewController instancesRespondToSelector:@selector(documentManagerWasCancelled:)]) {
     fprintf(stderr, "[docpicker] UIDocumentPickerViewController has no DocumentManager completion; document pickers stay empty\n");
@@ -262,5 +250,5 @@ __attribute__((constructor)) static void docpicker_init(void) {
   }
   patch_picker();
   host_open();
-  LOG("document pickers pick on the Mac%s\n", gHost ? "" : " (no simrund: they cancel at once)");
+  LOG("document pickers pick on the Mac%s\n", gHost ? "" : " (no file panels in this SimRun: they cancel at once)");
 }

@@ -1,6 +1,6 @@
 # SimRun — build everything into build/.
 #   make            core components, tools and test programs
-#   make core       SimRun.app (server + launcher, simns, injected dylibs, fake SimFramebuffer) and the simrun CLI
+#   make core       SimRun.app (server + launcher, simns, injected xpcservices.dylib and app.dylib, fake SimFramebuffer) and the simrun CLI
 #   make test-apps  sample/test apps (build/apps)
 #   make tests      test apps and test programs
 #   make install    install build/SimRun.app into /Applications
@@ -21,7 +21,8 @@ HDRS    := $(wildcard include/*.h)
 
 APP   := $(BUILD)/SimRun.app
 CORE  := $(APP) $(BIN)/simrun
-PARTS := $(BIN)/simrund $(BIN)/simrun $(BIN)/simns $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/mps.dylib $(LIB)/script.dylib $(LIB)/SimFramebuffer
+SIMLIBS := $(LIB)/xpcservices.dylib $(LIB)/app.dylib $(LIB)/SimFramebuffer
+PARTS := $(BIN)/simrund $(BIN)/simrun $(BIN)/simns $(SIMLIBS)
 TOOLS := $(BIN)/hostinput
 TEST_APPS  := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/BGDownload.app $(APPS)/PickerTest.app $(APPS)/Showcase.app $(APPS)/AudioPlayer.app
 TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest $(TBIN)/mpstest $(TBIN)/audiotest
@@ -43,7 +44,7 @@ $(BIN) $(LIB) $(APPS) $(TBIN):
 SIMRUND_SRC := $(wildcard src/host/simrund/*.m src/host/simrund/*/*.m) src/host/gpuhost/gpuhost.m
 $(BIN)/simrund: $(SIMRUND_SRC) $(wildcard src/host/simrund/*/*.h) $(HDRS) | $(BIN)
 	$(MACCC) -Isrc/host/simrund $(SIMRUND_SRC) -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal \
-	  -framework UniformTypeIdentifiers -framework ImageIO -o $@
+	  -framework UniformTypeIdentifiers -framework ImageIO -framework AVFoundation -o $@
 
 # App icon: the Icon Composer document compiled into Assets.car (Liquid Glass icon) and AppIcon.icns (fallback).
 # Xcode 27 reads "features" and a string specular (outside/inside/...). Xcode 26's actool crashes on
@@ -96,14 +97,14 @@ $(ICON)/Assets.car: $(ICON_INPUTS)
 # Assembled in a staging bundle and swapped in with a rename, so a SimRun that is running from the old bundle keeps
 # its (unlinked) files instead of having them overwritten underneath it.
 SKILL_FILES := $(shell find skills -type f ! -name .DS_Store)
-$(APP): $(SKILL_FILES) $(PARTS) $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/mps.dylib $(LIB)/script.dylib $(LIB)/SimFramebuffer resources/Info.plist $(ICON)/Assets.car
+$(APP): $(SKILL_FILES) $(PARTS) resources/Info.plist $(ICON)/Assets.car
 	@rm -rf $(BUILD)/.SimRun.app.new $(BUILD)/.SimRun.app.old
 	@mkdir -p $(BUILD)/.SimRun.app.new/Contents/MacOS $(BUILD)/.SimRun.app.new/Contents/Helpers $(BUILD)/.SimRun.app.new/Contents/Resources/lib
 	@cp resources/Info.plist $(BUILD)/.SimRun.app.new/Contents/Info.plist
 	@cp $(ICON)/Assets.car $(ICON)/AppIcon.icns $(BUILD)/.SimRun.app.new/Contents/Resources/
 	@cp $(BIN)/simrund $(BUILD)/.SimRun.app.new/Contents/MacOS/SimRun
 	@cp $(BIN)/simns $(BIN)/simrun $(BUILD)/.SimRun.app.new/Contents/Helpers/
-	@cp $(LIB)/rshim.dylib $(LIB)/glue.dylib $(LIB)/scenes.dylib $(LIB)/hid.dylib $(LIB)/pboard.dylib $(LIB)/drag.dylib $(LIB)/docpicker.dylib $(LIB)/keychain.dylib $(LIB)/webkit.dylib $(LIB)/mps.dylib $(LIB)/script.dylib $(LIB)/SimFramebuffer $(BUILD)/.SimRun.app.new/Contents/Resources/lib/
+	@cp $(SIMLIBS) $(BUILD)/.SimRun.app.new/Contents/Resources/lib/
 	@rsync -a --exclude .DS_Store skills $(BUILD)/.SimRun.app.new/Contents/Resources/
 	@$(SIGN) --deep $(BUILD)/.SimRun.app.new 2>/dev/null
 	@if [ -d $@ ]; then mv $@ $(BUILD)/.SimRun.app.old; fi
@@ -117,12 +118,17 @@ $(BIN)/hostinput: tools/hostinput.swift | $(BIN)
 	$(MACSWIFT) $< -o $@
 
 # ---------------------------------------------------------------- sim side
+# common/: what the sim libraries share (common.h), compiled into each one that uses it
+COMMON := src/sim/common/common.m
+COMMON_DEPS := $(COMMON) $(wildcard src/sim/common/*.h)
+SIMLIB := $(SIMCC) -Isrc/sim/common
 $(BIN)/simns: src/sim/simns/simns.c $(HDRS) | $(BIN)
 	xcrun -sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=17.0 -Wall -Wno-deprecated-declarations -Iinclude $< -framework CoreFoundation -o $@
 	@$(SIGN) $@ 2>/dev/null
 
-$(LIB)/rshim.dylib: src/sim/rshim/rshim.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework AudioToolbox -o $@
+# xpcservices.dylib: in the app and every helper it spawns, so Foundation only
+$(LIB)/xpcservices.dylib: src/sim/xpcservices/xpcservices.m $(COMMON_DEPS) $(HDRS) | $(LIB)
+	$(SIMLIB) -dynamiclib $< $(COMMON) -framework Foundation -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 $(LIB)/SimFramebuffer: src/sim/simfb/simfb.m $(HDRS) | $(LIB)
@@ -130,50 +136,22 @@ $(LIB)/SimFramebuffer: src/sim/simfb/simfb.m $(HDRS) | $(LIB)
 	  -install_name @rpath/SimFramebuffer.framework/SimFramebuffer -o $@
 	@$(SIGN) $@ 2>/dev/null
 
-$(LIB)/glue.dylib: src/sim/glue/glue.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework QuartzCore -framework CoreGraphics -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-$(LIB)/scenes.dylib: src/sim/scenes/scenes.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -Wl,-undefined,dynamic_lookup -Wl,-w -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-$(LIB)/hid.dylib: src/sim/hid/hid.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -framework IOKit -Wl,-undefined,dynamic_lookup -Wl,-w -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-# script.dylib: the native parts, and the JS modules (js/*.js) embedded as C arrays (xxd -i: core.js -> core_js[])
-SCRIPT_SRC := $(wildcard src/sim/script/*.m)
-SCRIPT_JS  := $(wildcard src/sim/script/js/*.js)
+# app.dylib: the modules SimRun puts in the app (src/sim/app/app.h), one folder each; script/'s JS modules (js/*.js)
+# are embedded as C arrays (xxd -i: core.js -> core_js[]). TCC.framework is linked through a stub (tcc/tcc.tbd; not in
+# the SDK); the other private frameworks' symbols (FrontBoardServices, GraphicsServices, BackBoardServices...) are
+# looked up at load.
+APP_MODULES := locale container render scenes hid pboard drag docpicker keychain webkit mps script tcc audio
+APP_SRC := src/sim/app/app.m $(foreach m,$(APP_MODULES),$(wildcard src/sim/$(m)/*.m))
+SCRIPT_JS := $(wildcard src/sim/script/js/*.js)
 $(BUILD)/gen/script_js.h: $(SCRIPT_JS)
 	@mkdir -p $(@D)
 	@(cd src/sim/script/js && for f in *.js; do xxd -i $$f; done) > $@.tmp && mv $@.tmp $@
-$(LIB)/script.dylib: $(SCRIPT_SRC) src/sim/script/script.h $(BUILD)/gen/script_js.h $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib -I$(BUILD)/gen $(SCRIPT_SRC) -framework Foundation -framework UIKit -framework CoreGraphics -framework QuartzCore -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-$(LIB)/pboard.dylib: src/sim/pboard/pboard.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-$(LIB)/drag.dylib: src/sim/drag/drag.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -framework CoreGraphics -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-$(LIB)/docpicker.dylib: src/sim/docpicker/docpicker.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -framework UniformTypeIdentifiers -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-$(LIB)/keychain.dylib: src/sim/keychain/keychain.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework Security -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-$(LIB)/webkit.dylib: src/sim/webkit/webkit.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework UIKit -o $@
-	@$(SIGN) $@ 2>/dev/null
-
-$(LIB)/mps.dylib: src/sim/mps/mps.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -framework Metal -o $@
+APP_HDRS := $(foreach m,app $(APP_MODULES),$(wildcard src/sim/$(m)/*.h))
+$(LIB)/app.dylib: $(APP_SRC) $(APP_HDRS) src/sim/tcc/tcc.tbd $(BUILD)/gen/script_js.h $(COMMON_DEPS) $(HDRS) | $(LIB)
+	$(SIMLIB) -Isrc/sim/app -Isrc/sim/tcc -I$(BUILD)/gen -dynamiclib $(APP_SRC) $(COMMON) src/sim/tcc/tcc.tbd -framework Foundation \
+	  -framework UIKit -framework QuartzCore -framework CoreGraphics -framework IOKit -framework UniformTypeIdentifiers \
+	  -framework Security -framework Metal -framework AudioToolbox -framework CoreAudio \
+	  -Wl,-undefined,dynamic_lookup -Wl,-w -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 # ---------------------------------------------------------------- tests

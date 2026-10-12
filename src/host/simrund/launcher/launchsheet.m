@@ -3,6 +3,7 @@
 #import "launchoptions.h"
 #import "session/environment.h"
 #import "tabbar.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 // SimRun variables the Options and Diagnostics tabs switch: { variable, checkbox title, checked = variable unset }.
 static NSArray<NSArray *> *ServiceSwitches(void) {
@@ -18,11 +19,13 @@ static NSArray<NSArray *> *TracingSwitches(void) {
             @[ @"DRAG_VERBOSE", @"Drag and drop", @NO ], @[ @"DOCPICKER_VERBOSE", @"Document pickers", @NO ],
             @[ @"KEYCHAIN_VERBOSE", @"Keychain", @NO ],
             @[ @"WEBKIT_VERBOSE", @"Web views", @NO ], @[ @"MPS_VERBOSE", @"MPSGraph", @NO ],
-            @[ @"SCRIPT_VERBOSE", @"Scripts", @NO ],
-            @[ @"RSHIM_VERBOSE", @"Runtime shims", @NO ] ];
+            @[ @"SCRIPT_VERBOSE", @"Scripts", @NO ], @[ @"AUDIO_VERBOSE", @"Audio", @NO ],
+            @[ @"TCC_VERBOSE", @"Privacy permissions", @NO ], @[ @"LOCALE_VERBOSE", @"Language & region", @NO ],
+            @[ @"CONTAINER_VERBOSE", @"Sandbox container", @NO ], @[ @"XPCSERVICES_VERBOSE", @"Shader compiler service", @NO ] ];
 }
 
 static const CGFloat kLabelWidth = 170, kFieldWidth = 360;
+static const CGFloat kPageInsetTop = 20, kPageInsetBottom = 12;   // around a page's content, inside its scroll view
 
 static NSTextField *Label(NSString *s) { return [NSTextField labelWithString:s]; }
 static NSTextField *Note(NSString *s) {
@@ -47,6 +50,13 @@ static NSGridView *Form(NSArray<NSArray<NSView *> *> *rows, NSInteger columns) {
   return g;
 }
 
+// A page's document view: its content starts at the top.
+@interface SRFlippedView : NSView
+@end
+@implementation SRFlippedView
+- (BOOL)isFlipped { return YES; }
+@end
+
 @interface SRLaunchSheet () <NSTableViewDataSource, NSTableViewDelegate>
 @end
 
@@ -54,7 +64,8 @@ static NSGridView *Form(NSArray<NSArray<NSView *> *> *rows, NSInteger columns) {
   SRAppInfo *_app; NSString *_profile; SRLaunchOptions *_options; BOOL _running; void (^_launch)(void);
   NSWindow *_sheet, *_parent;
   SRTabBar *_tabBar; NSArray<NSView *> *_pages;
-  NSPopUpButton *_runtime, *_device, *_locale;
+  NSPopUpButton *_runtime, *_device, *_locale, *_microphone;
+  NSButton *_micLoop;
   NSMutableArray<NSButton *> *_switchBoxes;
   NSTableView *_argsTable, *_envTable;
 }
@@ -120,10 +131,10 @@ static NSMutableSet<SRLaunchSheet *> *gShown;   // a sheet keeps itself alive un
     [sep[0].topAnchor constraintEqualToAnchor:header.bottomAnchor constant:14],
     [tabBar.topAnchor constraintEqualToAnchor:sep[0].bottomAnchor constant:8], [tabBar.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
     [sep[1].topAnchor constraintEqualToAnchor:tabBar.bottomAnchor constant:8],
-    [pageArea.topAnchor constraintEqualToAnchor:sep[1].bottomAnchor constant:20],
+    [pageArea.topAnchor constraintEqualToAnchor:sep[1].bottomAnchor],
     [pageArea.leadingAnchor constraintEqualToAnchor:root.leadingAnchor], [pageArea.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
-    [pageArea.heightAnchor constraintEqualToConstant:300],
-    [sep[2].topAnchor constraintEqualToAnchor:pageArea.bottomAnchor constant:12],
+    [pageArea.heightAnchor constraintEqualToConstant:kPageInsetTop + 360 + kPageInsetBottom],
+    [sep[2].topAnchor constraintEqualToAnchor:pageArea.bottomAnchor],
     [restore.topAnchor constraintEqualToAnchor:sep[2].bottomAnchor constant:14], [restore.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
     [root.bottomAnchor constraintEqualToAnchor:restore.bottomAnchor constant:16],
     [launch.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [launch.centerYAnchor constraintEqualToAnchor:restore.centerYAnchor],
@@ -136,12 +147,21 @@ static NSMutableSet<SRLaunchSheet *> *gShown;   // a sheet keeps itself alive un
   [self showPage:0];
 }
 
-// A page holding `content` centered horizontally at its top.
+// A page holding `content` centered horizontally at its top, scrolling when it is taller than the page area.
 static NSView *Page(NSView *content) {
-  NSView *page = [NSView new];
-  content.translatesAutoresizingMaskIntoConstraints = NO; [page addSubview:content];
+  NSView *document = [SRFlippedView new];
+  document.translatesAutoresizingMaskIntoConstraints = NO;
+  content.translatesAutoresizingMaskIntoConstraints = NO; [document addSubview:content];
+  NSScrollView *page = [NSScrollView new];
+  page.drawsBackground = NO; page.hasVerticalScroller = YES; page.autohidesScrollers = YES;
+  page.documentView = document;
+  NSClipView *clip = page.contentView;
   [NSLayoutConstraint activateConstraints:@[
-    [content.topAnchor constraintEqualToAnchor:page.topAnchor], [content.centerXAnchor constraintEqualToAnchor:page.centerXAnchor],
+    [document.topAnchor constraintEqualToAnchor:clip.topAnchor], [document.leadingAnchor constraintEqualToAnchor:clip.leadingAnchor],
+    [document.widthAnchor constraintEqualToAnchor:clip.widthAnchor],
+    [content.topAnchor constraintEqualToAnchor:document.topAnchor constant:kPageInsetTop],
+    [content.centerXAnchor constraintEqualToAnchor:document.centerXAnchor],
+    [document.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:kPageInsetBottom],
   ]];
   return page;
 }
@@ -183,6 +203,8 @@ static NSView *Page(NSView *content) {
     @[ Label(@"Language & Region"), _locale ],
     @[ NSGridCell.emptyContentView, Note(@"Keep the device's settings to test a language or region other than the Mac's.") ],
     @[ Label(@"Sound"), [self switchBox:@[ @"AUDIO_MUTE", @"Mute", @NO ]] ],
+    @[ Label(@"Microphone"), [self microphoneMenu] ],
+    @[ NSGridCell.emptyContentView, _micLoop = [self switchBox:@[ @"AUDIO_INPUT_LOOP", @"Play the audio file over and over", @NO ]] ],
   ]];
   NSArray *services = ServiceSwitches();
   for (NSUInteger i = 0; i < services.count; i++)
@@ -190,9 +212,50 @@ static NSView *Page(NSView *content) {
   [rows addObject:@[ NSGridCell.emptyContentView, Note(@"Turn a service off to see how the app behaves without what SimRun provides.") ]];
   NSGridView *g = Form(rows, 2);
   [g rowAtIndex:1].topPadding = -4;
-  [g rowAtIndex:2].topPadding = [g rowAtIndex:3].topPadding = 12;
+  [g rowAtIndex:2].topPadding = [g rowAtIndex:5].topPadding = 12;
   [g rowAtIndex:rows.count - 1].topPadding = -2;
   return Page(g);
+}
+
+// What the app records: the Mac's microphone, what the Mac plays, or an audio file (the last one chosen is kept in the
+// menu; Choose Audio File… picks another).
+- (NSPopUpButton *)microphoneMenu {
+  _microphone = [NSPopUpButton new]; _microphone.target = self; _microphone.action = @selector(microphoneChanged:);
+  [_microphone.widthAnchor constraintEqualToConstant:kFieldWidth].active = YES;
+  return _microphone;
+}
+- (void)refreshMicrophone {
+  [_microphone removeAllItems];
+  [_microphone addItemWithTitle:@"Mac Microphone"];
+  [_microphone addItemWithTitle:@"Mac System Audio"];
+  _microphone.lastItem.representedObject = @"system";
+  _microphone.lastItem.toolTip = @"What the Mac plays, but the app itself";
+  NSString *mic = _options.microphone;
+  BOOL file = mic && ![mic isEqualToString:@"system"];
+  [_microphone.menu addItem:NSMenuItem.separatorItem];
+  if (file) {
+    BOOL there = [NSFileManager.defaultManager fileExistsAtPath:mic];
+    [_microphone addItemWithTitle:[NSString stringWithFormat:there ? @"Audio File: %@" : @"Audio File: %@ (Missing)", mic.lastPathComponent]];
+    _microphone.lastItem.representedObject = mic;
+    _microphone.lastItem.toolTip = mic.stringByAbbreviatingWithTildeInPath;
+  }
+  [_microphone addItemWithTitle:@"Choose Audio File…"];
+  _microphone.lastItem.tag = 1;
+  [_microphone selectItemAtIndex:!mic ? 0 : file ? _microphone.numberOfItems - 2 : 1];
+  _micLoop.enabled = file;
+}
+- (void)microphoneChanged:(NSPopUpButton *)p {
+  if (p.selectedItem.tag != 1) { _options.microphone = p.selectedItem.representedObject; [self refreshMicrophone]; return; }
+  [self refreshMicrophone];   // back to the current choice until one is made
+  NSOpenPanel *panel = [NSOpenPanel openPanel];
+  panel.allowedContentTypes = @[ UTTypeAudio ]; panel.message = @"The app records this file's sound, from its start each time it starts recording.";
+  NSString *mic = _options.microphone;
+  if (mic && ![mic isEqualToString:@"system"]) panel.directoryURL = [NSURL fileURLWithPath:mic.stringByDeletingLastPathComponent];
+  [panel beginSheetModalForWindow:_sheet completionHandler:^(NSModalResponse r) {
+    if (r != NSModalResponseOK || !panel.URL) return;
+    self->_options.microphone = panel.URL.path;
+    [self refreshMicrophone];
+  }];
 }
 
 - (NSView *)diagnosticsPage {
@@ -242,7 +305,7 @@ static NSView *Page(NSView *content) {
   pm.segmentStyle = NSSegmentStyleSmallSquare; pm.tag = columns.count;   // 1: arguments, 2: environment
   NSStackView *s = [NSStackView stackViewWithViews:@[ label, sv, pm ]];
   s.orientation = NSUserInterfaceLayoutOrientationVertical; s.alignment = NSLayoutAttributeLeading; s.spacing = 6;
-  [s setCustomSpacing:0 afterView:sv];
+  [s setCustomSpacing:8 afterView:sv];
   [NSLayoutConstraint activateConstraints:@[
     [sv.widthAnchor constraintEqualToConstant:kLabelWidth + 12 + kFieldWidth], [sv.heightAnchor constraintEqualToConstant:88],
   ]];
@@ -331,6 +394,7 @@ static NSView *Page(NSView *content) {
   [self refreshDevices];
   [_locale selectItemAtIndex:[_options.switches containsObject:@"LOCALE_DISABLE"] ? 1 : 0];
   for (NSButton *b in _switchBoxes) b.state = [_options.switches containsObject:b.identifier] != (b.tag != 0) ? NSControlStateValueOn : NSControlStateValueOff;
+  [self refreshMicrophone];
   [_argsTable reloadData]; [_envTable reloadData];
 }
 

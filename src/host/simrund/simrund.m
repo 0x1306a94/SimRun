@@ -29,6 +29,7 @@
 #include "launcher/launcher.h"
 #include "services/pasteboard.h"
 #include "services/filepanel.h"
+#include "services/permissions.h"
 #include "services/keychainwindow.h"
 #include "inspector/layerwindow.h"
 #include "inspector/layermirror.h"
@@ -39,6 +40,7 @@
 #include "gpuhost.h"
 #include "pboard.h"
 #include "docpicker.h"
+#include "privacy.h"
 
 typedef NS_ENUM(NSInteger, SRMode) { SRModeGUI, SRModeServe };
 
@@ -95,6 +97,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   NSMenuItem *_quitServerItem, *_quitAppItem;   // ⌘Q quits the app whose window is key, else SimRun
   SRPasteboardHost *_pasteboard; mach_port_t _pasteboardPort;
   SRDocumentPickerHost *_docPicker; mach_port_t _docPickerPort;
+  SRPrivacyHost *_privacy; mach_port_t _privacyPort;
   BOOL _gpuStarted; mach_port_t _iosurfacePort, _metalPort;
   mach_port_t _audioPort; dispatch_source_t _audioDeath;
   BOOL _launched;
@@ -521,6 +524,8 @@ static BOOL ProcessGone(pid_t pid) {
       _docPickerPort = [_docPicker start];
     }
     if (_docPickerPort) [self registerName:SRDP_SERVICE port:_docPickerPort in:ns]; else LOG(@"host document picker service failed to start");
+    if (!_privacy) { _privacy = [SRPrivacyHost new]; _privacyPort = [_privacy start]; }
+    if (_privacyPort) [self registerName:SRPV_SERVICE port:_privacyPort in:ns]; else LOG(@"host privacy service failed to start");
     if (!_audioPort) [self lookUpHostAudio];
     if (_audioPort) [self registerName:"com.apple.audio.audiohald" port:_audioPort in:ns];
     mach_msg_header_t ready = { .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0), .msgh_size = sizeof ready,
@@ -626,7 +631,7 @@ static BOOL ProcessGone(pid_t pid) {
 // The app's environment: the client's (or the launcher's), aimed at this server's simns and at the app's own data
 // container (HOME), with the shared data directory for what is managed centrally (keychain, app groups, daemons).
 // The display the app renders into (simfb, the window) is SIMULATOR_MAINSCREEN_* in pixels (the device type's screen);
-// its scene (scenes.dylib) is that size unless SCENES_W/SCENES_H/SCENES_SCALE say otherwise. Then the display follows
+// its scene (the scenes module) is that size unless SCENES_W/SCENES_H/SCENES_SCALE say otherwise. Then the display follows
 // the scene, or a smaller scene would draw into a corner of a bigger display.
 - (NSDictionary<NSString *, NSString *> *)displayVariablesForScene:(NSArray<NSString *> *)env {
   NSMutableDictionary *vars = [NSMutableDictionary dictionary];
@@ -636,7 +641,7 @@ static BOOL ProcessGone(pid_t pid) {
       vars[[kv substringToIndex:eq.location]] = [kv substringFromIndex:NSMaxRange(eq)];
   }
   if (!vars[@"SCENES_W"] && !vars[@"SCENES_H"] && !vars[@"SCENES_SCALE"]) return @{};
-  double dscale = [vars[@"SIMULATOR_MAINSCREEN_SCALE"] doubleValue] ?: 3;   // the display's, as scenes.dylib defaults to
+  double dscale = [vars[@"SIMULATOR_MAINSCREEN_SCALE"] doubleValue] ?: 3;   // the display's, as the scenes module defaults to
   double dw = ([vars[@"SIMULATOR_MAINSCREEN_WIDTH"] doubleValue] ?: 1206) / dscale, dh = ([vars[@"SIMULATOR_MAINSCREEN_HEIGHT"] doubleValue] ?: 2622) / dscale;
   double w = vars[@"SCENES_W"] ? [vars[@"SCENES_W"] doubleValue] : dw, h = vars[@"SCENES_H"] ? [vars[@"SCENES_H"] doubleValue] : dh;
   double scale = vars[@"SCENES_SCALE"] ? [vars[@"SCENES_SCALE"] doubleValue] : dscale;

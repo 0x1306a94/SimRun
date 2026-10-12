@@ -11,38 +11,46 @@ simrun (CLI) ───unix socket──▶ build/bin/simrund   macOS AppKit serv
   argv, env, stdio fds                   │            host-side "sim2host" services (com.apple.IOSurface.Remote via
                                          │            IOSurfaceRemoteServer, com.apple.metal.simulator via MTLSimImplementation,
                                          │            dev.simrun.pasteboard: the Mac's NSPasteboard, dev.simrun.docpicker:
-                                         │            the Mac's open and save panels; com.apple.audio.audiohald:
+                                         │            the Mac's open and save panels; dev.simrun.privacy: SimRun's
+                                         │            microphone permissions; com.apple.audio.audiohald:
                                          │            the Mac's coreaudiod, looked up and passed on)
                                          ├─ build/bin/simns --serve   launchd_sim stand-in speaking sim libxpc's XPC-pipe protocol;
                                          │     │                      one private namespace per app layered over a shared global one;
                                          │     └─ trustd, cfprefsd…   real sim daemons launched on demand, shared by all apps
                                          └─ each app (bootstrap port = its namespace), with DYLD_INSERT_LIBRARIES =
-                                              rshim.dylib    Metal shader-compiler XPC service spawning, bootstrap fallbacks,
-                                                             the Mac's language & region (locale, languages, 24-hour
-                                                             time, first weekday...) into the device's global preferences,
-                                                             the app's HOME as its sandbox container
+                                              xpcservices.dylib  the frameworks' bundled XPC services (Metal's shader
+                                                             compiler, MTLCompilerService) spawned for the app as
+                                                             launchd_sim would; all of SimRun such a service gets
+                                              app.dylib      one module per folder of src/sim, started in this order by
+                                                             app/app.m, each in the processes it belongs in (the app;
+                                                             for container, tcc, audio also WebKit's extensions):
+                                                locale       the Mac's language & region (locale, languages, 24-hour
+                                                             time, first weekday...) into the device's global preferences
+                                                container    the app's HOME as its sandbox container
                                                              (sandbox_container_path_for_pid)
-                                              glue.dylib     starts the in-process CA render server (CAWindowServer) and hosts the
-                                                             scene's layers on the display (SpringBoard's job)
-                                              scenes.dylib   in-process FrontBoard host (creates/updates the UIWindowScene)
-                                              hid.dylib      mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:];
+                                                render       starts the in-process CA render server (CAWindowServer) and
+                                                             hosts the scene's layers on the display (SpringBoard's job)
+                                                scenes       in-process FrontBoard host (creates/updates the UIWindowScene)
+                                                hid          mouse/keyboard -> IOHIDEvents -> -[UIApplication _enqueueHIDEvent:];
                                                              trackpad scroll/pinch/rotate as real touches (hid.md)
-                                              pboard.dylib   in-process pasteboard daemon (com.apple.pasteboard.pasted) backed
-                                                             by the Mac pasteboard via simrund (pasteboard.md)
-                                              drag.dylib     in-process drag server (druid) for drag & drop within the app
+                                                pboard       in-process pasteboard daemon (com.apple.pasteboard.pasted)
+                                                             backed by the Mac pasteboard via simrund (pasteboard.md)
+                                                drag         in-process drag server (druid) for drag & drop within the app
                                                              (dragdrop.md)
-                                              docpicker.dylib UIDocumentPickerViewController picks with the Mac's
-                                                             open and save panels (docpicker.md)
-                                              keychain.dylib fake keychain: the SecItem API over a plaintext plist in the
-                                                             data directory, shown in SimRun's Keychain window
-                                                             (keychain.md)
-                                              webkit.dylib   launches WKWebView's helper processes (WebContent, Networking,
+                                                docpicker    UIDocumentPickerViewController picks with the Mac's open and
+                                                             save panels (docpicker.md)
+                                                keychain     fake keychain: the SecItem API over a plaintext plist in the
+                                                             data directory, shown in SimRun's Keychain window (keychain.md)
+                                                webkit       launches WKWebView's helper processes (WebContent, Networking,
                                                              GPU appexes) as children of the app (webkit.md)
-                                              mps.dylib      works around MPSGraph's simulator bugs so graphs run on
-                                                             the GPU (mps.md)
-                                              script.dylib   runs JavaScript from `simrun eval` on the app's main thread;
+                                                mps          works around MPSGraph's simulator bugs so graphs run on the
+                                                             GPU (mps.md)
+                                                script       runs JavaScript from `simrun eval` on the app's main thread;
                                                              loads JavaScriptCore on the first script (scripting.md);
                                                              streams the layer tree while it is watched (inspect.md)
+                                                tcc          answers libTCC for the resources SimRun fakes, under SimRun's
+                                                             own permissions on the Mac (microphone.md)
+                                                audio        muting, and the microphone's source (microphone.md)
                                             SimFramebuffer   fake SimFramebuffer: the render server's display; presented
                                                              IOSurfaces go to the app's window (include/protocol.h)
 ```
@@ -52,7 +60,8 @@ talks to it over a unix socket (`include/simrund_proto.h`): one request per conn
 quit, screenshot or run a script in running ones, list profiles, runtimes and device types, or stop SimRun. `simrun run` passes the
 app's argv, the terminal's environment and stdio file descriptors; SimRun adds the simulator environment itself (the
 runtime, device type, data container and injected libraries), as for launcher launches. If SimRun.app isn't open, it
-is started headless and exits after 10 idle minutes (`SIMRUND_IDLE`). Each app gets its own window; `simrun run`
+is started headless and exits after 10 idle minutes (`SIMRUND_IDLE`), responsible for itself (macOS asks for and keeps
+privacy permissions, such as the microphone's, for SimRun, not for the terminal). Each app gets its own window; `simrun run`
 exits with the app's status, and Ctrl-C (or closing the window) ends the app. Launching into a running server takes
 ~0.6 s to first frame.
 
@@ -104,7 +113,8 @@ app, never through the Mac's mouse or keyboard) and `inspect` work as usual. Wha
 
 `simrun list` marks headless apps. In the launcher they show as running; opening one there (double-click, ▶) shows
 its window after all, and it is an ordinary windowed app from then on, but for its pasteboards, which stay its own.
-Sound still plays on the Mac's output; `--mute` silences an app. Instances of one app running at the same time share its data container unless
+Sound still plays on the Mac's output; `--mute` silences an app, and `--mic` gives it a file (or what the Mac plays)
+to record instead of the Mac's microphone ([microphone.md](microphone.md)). Instances of one app running at the same time share its data container unless
 they run in different profiles (`-p`).
 
 ## Runtimes
@@ -132,7 +142,7 @@ What device an app runs as comes from a CoreSimulator device type (a `.simdevice
 the model, Dynamic Island, screen corner radius, home button, artwork traits for asset selection and so on. Without
 it, MobileGestalt falls back to its defaults (no Dynamic Island, among others). The device type also gives
 `SIMULATOR_MODEL_IDENTIFIER`, `SIMULATOR_PRODUCT_CLASS` and the screen, `SIMULATOR_MAINSCREEN_*`. That screen is the
-display the app renders into, its scene's size, and its window. scenes.dylib takes the safe area from UIKit's default
+display the app renders into, its scene's size, and its window. The scenes module takes the safe area from UIKit's default
 display edge info for the device, or from its kind (home-button iPhone, iPad) when UIKit has none.
 
 The device types an app can use are the ones its runtime supports, as `simctl list runtimes` lists them (without
@@ -169,9 +179,9 @@ and `simrun screenshot` take `--profile` to pick one of an app's instances.
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
 | `src/host/` | macOS side: `simrund/` (SimRun.app: `simrund.m` the server and menus; `session/` a running app's window session, environment, runtimes and device types; `launcher/` the launcher + library, Launch With… sheet + per-app launch options; `services/` host pasteboard, file panels for document pickers, Keychain window; `inspector/` the layer debugger), `simrun/` (the `simrun` command line), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
-| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `docpicker/`, `keychain/`, `webkit/`, `mps/`, `script/`, `simfb/` |
+| `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `xpcservices/` (xpcservices.dylib), `app/` (app.dylib's start and its module list) and its modules `locale/`, `container/`, `render/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `docpicker/`, `keychain/`, `webkit/`, `mps/`, `script/`, `tcc/`, `audio/`; `common/` (what the libraries share: the process's role, SimRun's services, spawning helpers), `simfb/` (SimFramebuffer) |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `crash.py` (crash-report backtrace) |
-| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `bgdownload` background URLSession, `pickertest` document pickers, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works, `audioplayer` a music player for trying sound) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`, `mps/mpstest`, `audio/audiotest`), and scripts for `simrun eval` (`scripts/`) |
+| `tests/` | Test apps (`hello` UIKit, `swiftui`, `hidtest`, `dragtest`, `webtest` WKWebView, `bgdownload` background URLSession, `pickertest` document pickers, `glass` Liquid Glass, `showcase` a SwiftUI tour of everything that works, `audioplayer` a music player for trying sound) and programs (`net/nettest`, `net/nwtest`, `pboard/pbtest`, `keychain/kctest`, `locale/loctest`, `mps/mpstest`, `audio/audiotest` playing and recording), and scripts for `simrun eval` (`scripts/`) |
 | `skills/` | The agent skill (`simrun/`: SKILL.md and an API reference) that SimRun.app carries in `Contents/Resources/skills/` and `simrun skill` prints or installs |
 | `docs/` | These write-ups |
 

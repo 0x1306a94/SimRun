@@ -1,4 +1,4 @@
-// hid.h — in-process HID injection API exported by hid.dylib (see HID.md).
+// hid.h — in-process HID injection API exported by the hid module (see HID.md).
 // All functions are thread-safe: they hop to the main thread (asynchronously, in call order) when called elsewhere.
 // Coordinates are window-scene points (the coordinate space of the UIWindowScene, e.g. 402x874 portrait, origin top-left;
 // after a rotation the scene's rotated space) — exactly what the viewer sends in sr_input_msg_t.x/y.
@@ -44,7 +44,7 @@ void SRHIDReleaseModifiers(void);
 // the active keyboard input delegate (UIKeyboardImpl insertText:), like the software keyboard / IME commit.
 void SRHIDText(const char *utf8);
 
-// Drag & drop (drag.dylib, the in-process stand-in for the druid drag server). What backboardd does when a drag begins:
+// Drag & drop (the drag module, the in-process stand-in for the druid drag server). What backboardd does when a drag begins:
 // the fingers touching the screen are taken from UIKit (their touches are cancelled) and from then on their moves and
 // lift go to `handler` (on the main thread) instead, until they lift. Returns false if no finger is down.
 typedef void (*SRHIDDetachedTouchHandler)(int phase, float x, float y, void *ctx);
@@ -54,11 +54,6 @@ bool SRHIDDetachTouches(SRHIDDetachedTouchHandler handler, void *ctx);
 // finger lifted (drag end).
 enum { SRHID_DRAG_WITHIN = 1, SRHID_DRAG_ENTERED = 2, SRHID_DRAG_EXITED = 3 };
 void SRHIDDragEvent(uint32_t sessionID, int locus, float x, float y, bool touching);
-
-// Start the viewer-protocol receiver (viewer/protocol.h): allocates a receive port, sends SR_MSG_HELLO with it to
-// mach_ports_lookup()[SR_PORT_SLOT_HOST], and turns SR_MSG_INPUT messages into the calls above. Called automatically
-// by the dylib constructor when a host port exists (disable with HID_NO_RECEIVER=1). Idempotent.
-void SRHIDStartReceiver(void);
 
 #ifdef __cplusplus
 }
