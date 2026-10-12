@@ -170,8 +170,11 @@ static void choose(UIDocumentPickerViewController *p) {
     NSArray<NSString *> *types = p.documentTypes ?: @[];
     BOOL folders = NO, files = NO;
     for (NSString *t in types) {
+      // There is no Launch Services type database here (no lsd), so UTType knows no supertypes: name the folder types
       UTType *u = [UTType typeWithIdentifier:t];
-      if (u && [u conformsToType:UTTypeDirectory] && ![u conformsToType:UTTypePackage]) folders = YES; else files = YES;
+      BOOL folder = [t isEqualToString:UTTypeFolder.identifier] || [t isEqualToString:UTTypeDirectory.identifier] ||
+                    (u && [u conformsToType:UTTypeDirectory] && ![u conformsToType:UTTypePackage]);
+      if (folder) folders = YES; else files = YES;
     }
     xpc_dictionary_set_string(m, "panel", "open");
     xpc_dictionary_set_bool(m, "files", files || !folders);
