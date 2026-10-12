@@ -22,6 +22,7 @@
 - (instancetype)init {
   if (!(self = [super init])) return nil;
   _keys = [NSMapTable weakToStrongObjectsMapTable];
+  _editable = YES;
   _scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 300, 500)];
   _scroll.hasVerticalScroller = YES; _scroll.autohidesScrollers = YES; _scroll.drawsBackground = NO;
   SRInspectorDocument *doc = [[SRInspectorDocument alloc] initWithFrame:_scroll.bounds];
@@ -169,6 +170,15 @@ static NSString *Hex(NSColor *c) {
   }
   self.onEdit(_nid, key, value);
 }
+- (void)setEditable:(BOOL)on {
+  _editable = on;
+  for (NSControl *c in _keys.keyEnumerator) {
+    if (!on && [c isKindOfClass:NSColorWell.class]) [(NSColorWell *)c deactivate];
+    if (!on && [c isKindOfClass:NSTextField.class]) [c abortEditing];
+    c.enabled = on;
+  }
+  if (!on) _editing = NO;
+}
 - (void)clearColor:(NSButton *)b { NSString *key = [_keys objectForKey:b]; if (key && _nid && self.onEdit) self.onEdit(_nid, key, nil); }
 - (void)controlTextDidBeginEditing:(NSNotification *)n { _editing = YES; }
 - (void)controlTextDidEndEditing:(NSNotification *)n {
@@ -305,5 +315,6 @@ static NSString *Hex(NSColor *c) {
   if (p[@"portalSource"]) [rows addObject:@[ @"Portal source", [NSString stringWithFormat:@"#%@", p[@"portalSource"]] ]];
   if ([p[@"animations"] count]) [rows addObject:@[ @"Animating", [[[p[@"animations"] allKeys] sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "] ]];
   [self section:@"Filters, animations and special properties" rows:rows];
+  if (!_editable) for (NSControl *c in _keys.keyEnumerator) c.enabled = NO;
 }
 @end

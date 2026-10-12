@@ -420,6 +420,12 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   [_layerObservers removeObjectIdenticalTo:token];
   if (!_layerObservers.count) [self stopInspecting];
 }
+- (SRLayerMirror *)detachLayerMirror {
+  SRLayerMirror *m = _mirror;
+  if (m) _mirror = [m clone];
+  return m;
+}
+- (SRLayerMirror *)layerMirror { return _mirror; }
 - (BOOL)sendInspectStart:(mach_port_t)port {
   mach_msg_header_t h = { .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND), .msgh_size = sizeof h,
                           .msgh_remote_port = _scriptPort, .msgh_local_port = port, .msgh_id = SR_MSG_INSPECT_START };

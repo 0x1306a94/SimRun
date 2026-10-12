@@ -517,6 +517,7 @@ static NSString *Hex(id v) {
   SRLayerMirror *c = [SRLayerMirror new];
   [CATransaction begin]; [CATransaction setDisableActions:YES];
   c->_showsPlaceholders = _showsPlaceholders;
+  c->_batchCount = _batchCount;
   [c->_images addEntriesFromDictionary:_images];
   [_nodes enumerateKeysAndObjectsUsingBlock:^(NSNumber *nid, SRMirrorNode *n, BOOL *stop) {
     SRMirrorNode *m = [nid isEqual:@1] ? c->_nodes[@1] : [c newNode:nid kind:Str(n.props[@"kind"], @"layer")];

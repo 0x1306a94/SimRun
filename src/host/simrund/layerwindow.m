@@ -7,6 +7,7 @@
 #import "layerscene.h"
 #import "layertree.h"
 #import "layerinspector.h"
+#import "layerfreeze.h"
 #import "session.h"
 
 // ---------------------------------------------------------------- canvas: layer-hosting, passes the mouse on
@@ -87,6 +88,17 @@ static const CGFloat kYaw = -0.55, kPitch = 0.3;   // the 3D view's starting ang
   NSTextField *_status;
   SRLayerTree *_tree;
   SRLayerInspector *_inspector;
+  // freezing (layerfreeze.h): armed, it counts down updates or time; frozen, the window keeps the copy it had (the
+  // session streams into a clone of it) until the freeze ends
+  NSButton *_freeze;
+  NSPopover *_freezePopover;
+  BOOL _frozen;
+  NSInteger _updatesLeft;    // armed by updates: how many more (0: not armed by updates)
+  NSTimer *_freezeTimer;     // armed by time
+  NSDate *_freezeAt;
+  SRLayerMirror *_live;      // while frozen: the copy the app's updates go into
+  NSUInteger _missed;        // while frozen: updates since
+  NSDate *_frozenAt;
 }
 
 + (void)showForSession:(SRSession *)session {
@@ -174,7 +186,12 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
   [_status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   NSStackView *switches = [NSStackView stackViewWithViews:@[ _spacing, _clip, _wireframes, _placeholders ]];
   switches.spacing = 12;
-  for (NSView *v in @[ switches, _status ]) { v.translatesAutoresizingMaskIntoConstraints = NO; [bar addSubview:v]; }
+  NSImageSymbolConfiguration *small = [NSImageSymbolConfiguration configurationWithPointSize:13 weight:NSFontWeightRegular];
+  _freeze = [NSButton buttonWithImage:[[NSImage imageWithSystemSymbolName:@"snowflake" accessibilityDescription:@"Freeze"]
+                                          imageWithSymbolConfiguration:small]
+                               target:self action:@selector(freezeClicked:)];
+  _freeze.bordered = NO;
+  for (NSView *v in @[ switches, _status, _freeze ]) { v.translatesAutoresizingMaskIntoConstraints = NO; [bar addSubview:v]; }
   for (NSView *v in @[ _canvas, line, bar ]) { v.translatesAutoresizingMaskIntoConstraints = NO; [middle addSubview:v]; }
   [NSLayoutConstraint activateConstraints:@[
     [_canvas.topAnchor constraintEqualToAnchor:middle.topAnchor],
@@ -189,7 +206,9 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
     [bar.bottomAnchor constraintEqualToAnchor:middle.bottomAnchor],
     [switches.topAnchor constraintEqualToAnchor:bar.topAnchor constant:8],
     [switches.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:12],
-    [switches.trailingAnchor constraintLessThanOrEqualToAnchor:bar.trailingAnchor constant:-12],
+    [switches.trailingAnchor constraintLessThanOrEqualToAnchor:_freeze.leadingAnchor constant:-12],
+    [_freeze.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor constant:-12],
+    [_freeze.centerYAnchor constraintEqualToAnchor:switches.centerYAnchor],
     [_spacing.widthAnchor constraintEqualToConstant:100],
     [_status.topAnchor constraintEqualToAnchor:switches.bottomAnchor constant:6],
     [_status.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:14],
@@ -197,6 +216,7 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
     [_status.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor constant:-8],
   ]];
   [self updateControls];
+  [self showFreezeState];
 
   __weak SRLayerWindow *weakSelf = self;
   _canvas.onResize = ^(NSSize size) {
@@ -248,18 +268,30 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
 - (void)mirror:(SRLayerMirror *)mirror changed:(NSDictionary *)changes {
   if (!changes) {   // the app went away: keep showing the last copy
     _token = nil;
+    [self disarm];
     _status.stringValue = @"The app has quit";
     self.window.title = [self.window.title stringByAppendingString:@" (exited)"];
     return;
   }
-  if (mirror != _mirror) {
+  if (_frozen) {   // kept for when the freeze ends
+    _live = mirror;
+    if (changes.count) { _missed++; [self showFreezeState]; }
+    return;
+  }
+  [self show:mirror changes:changes];
+  if (_updatesLeft && changes.count && --_updatesLeft == 0) [self freezeNow];
+  else if (_updatesLeft) [self showFreezeState];
+}
+- (void)show:(SRLayerMirror *)mirror changes:(NSDictionary *)changes {
+  if (mirror != _mirror) {   // the first copy, or the live one again after a freeze (the camera stays where it was)
+    SRLayerScene *old = _scene;
     [_mirror.rootLayer removeFromSuperlayer];
-    [_scene.cameraLayer removeFromSuperlayer]; _scene = nil;
+    [_scene.cameraLayer removeFromSuperlayer]; _scene = nil; _sceneStale = NO;
     _mirror = mirror;
     _mirror.showsPlaceholders = _placeholders.state == NSControlStateValueOn;
     [_canvas.fit addSublayer:mirror.rootLayer];
     _tree.mirror = mirror;
-    if (_threeD) [self showScene];
+    if (_threeD) [self showSceneFrom:old];
   } else if (_scene) {
     if (_threeD) { [_scene updateWithChanges:changes]; _spacing.doubleValue = _scene.spacing; }   // a full batch may choose a new spacing
     else _sceneStale = YES;
@@ -275,7 +307,9 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
 }
 
 // ---------------------------------------------------------------- modes and switches
-- (void)showScene {
+- (void)showScene { [self showSceneFrom:nil]; }
+// `old`: a scene of another copy, whose camera and spacing the new one takes (no swing round)
+- (void)showSceneFrom:(SRLayerScene *)old {
   if (!_mirror) return;
   if (!_scene) {
     _scene = [[SRLayerScene alloc] initWithMirror:_mirror];
@@ -292,10 +326,13 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
   if (!_scene.cameraLayer.superlayer) [_canvas.layer addSublayer:_scene.cameraLayer];
   _canvas.fit.hidden = YES;
   _scene.cameraLayer.hidden = NO;
-  _scene.yaw = 0; _scene.pitch = 0; _scene.zoom = 1; _scene.pan = CGPointZero;
+  if (old) {
+    _scene.spacing = old.spacing; _spacing.doubleValue = old.spacing;
+    _scene.yaw = old.yaw; _scene.pitch = old.pitch; _scene.zoom = old.zoom; _scene.pan = old.pan;
+  } else { _scene.yaw = 0; _scene.pitch = 0; _scene.zoom = 1; _scene.pan = CGPointZero; }
   [_scene layoutInSize:_canvas.bounds.size];
   [CATransaction commit];
-  [_scene animate:^{ self->_scene.yaw = kYaw; self->_scene.pitch = kPitch; }];   // swing round from straight on
+  if (!old) [_scene animate:^{ self->_scene.yaw = kYaw; self->_scene.pitch = kPitch; }];   // swing round from straight on
 }
 - (void)modeChanged:(NSSegmentedControl *)c {
   _threeD = c.selectedSegment == 1;
@@ -358,7 +395,95 @@ static NSButton *Check(NSString *title, id target, SEL action, NSString *tip) {
   _status.toolTip = line;
 }
 
+// ---------------------------------------------------------------- freezing
+- (void)freezeClicked:(NSButton *)b {
+  if (_frozen) { [self unfreeze]; return; }
+  if (_updatesLeft || _freezeTimer) { [self disarm]; [self showFreezeState]; return; }
+  if (_freezePopover.shown) { [_freezePopover close]; return; }
+  if (!_freezePopover) {
+    SRFreezeOptions *options = [SRFreezeOptions new];
+    __weak SRLayerWindow *weakSelf = self;
+    options.onFreeze = ^(SRFreezeWhen when, NSInteger count) { [weakSelf arm:when count:count]; };
+    _freezePopover = [NSPopover new];
+    _freezePopover.contentViewController = options;
+    _freezePopover.behavior = NSPopoverBehaviorTransient;
+  }
+  [_freezePopover showRelativeToRect:b.bounds ofView:b preferredEdge:b.isFlipped ? NSRectEdgeMinY : NSRectEdgeMaxY];   // above it
+}
+- (void)arm:(SRFreezeWhen)when count:(NSInteger)count {
+  [_freezePopover close];
+  [self disarm];
+  if (when == SRFreezeNow || count < 1 || (!_token && when == SRFreezeAfterUpdates)) { [self freezeNow]; return; }
+  if (when == SRFreezeAfterUpdates) _updatesLeft = count;
+  else {
+    _freezeAt = [NSDate dateWithTimeIntervalSinceNow:count];
+    __weak SRLayerWindow *weakSelf = self;
+    _freezeTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
+      SRLayerWindow *s = weakSelf;
+      if (!s) { [t invalidate]; return; }
+      if (s->_freezeAt.timeIntervalSinceNow <= 0) [s freezeNow];
+      else [s showFreezeState];
+    }];
+  }
+  [self showFreezeState];
+}
+- (void)disarm {
+  [_freezeTimer invalidate]; _freezeTimer = nil; _freezeAt = nil;
+  _updatesLeft = 0;
+}
+// Stops showing the app's updates. The session is given a clone to stream into, so this copy stays as it is; its
+// animations are paused where they are.
+- (void)freezeNow {
+  [self disarm];
+  if (_frozen || !_mirror) { [self showFreezeState]; return; }
+  SRSession *s = _session;
+  if (s.layerMirror == _mirror) [s detachLayerMirror];
+  _live = s.layerMirror;
+  _frozen = YES; _missed = 0; _frozenAt = [NSDate date];
+  CALayer *root = _mirror.rootLayer;
+  CFTimeInterval now = [root convertTime:CACurrentMediaTime() fromLayer:nil];
+  root.speed = 0; root.timeOffset = now;
+  _inspector.editable = NO;
+  [self showFreezeState];
+}
+// Back to the live copy, as it is now.
+- (void)unfreeze {
+  if (!_frozen) return;
+  _frozen = NO;
+  SRLayerMirror *live = _live ?: _session.layerMirror;
+  _live = nil; _frozenAt = nil;
+  _inspector.editable = YES;
+  if (live && live != _mirror) {
+    [self show:live changes:@{ @"full": @YES }];
+    if (_selected) [self select:_selected fromTree:NO];
+  } else {   // the app has gone: the frozen copy is the last there is; let its animations go on
+    CALayer *root = _mirror.rootLayer;
+    CFTimeInterval paused = root.timeOffset;
+    root.speed = 1; root.timeOffset = 0; root.beginTime = 0;
+    root.beginTime = [root convertTime:CACurrentMediaTime() fromLayer:nil] - paused;
+  }
+  [self showFreezeState];
+}
+// The snowflake's tint and tip, and the window's subtitle.
+- (void)showFreezeState {
+  BOOL armed = _updatesLeft || _freezeTimer;
+  _freeze.contentTintColor = _frozen ? NSColor.systemBlueColor : armed ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+  _freeze.toolTip = _frozen ? @"End the freeze: back to the live layers" : armed ? @"Cancel the freeze" : @"Freeze the layers…";
+  NSString *sub = @"";
+  if (_frozen) {
+    NSString *at = [NSDateFormatter localizedStringFromDate:_frozenAt dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle];
+    sub = [NSString stringWithFormat:@"Frozen at %@", at];
+    if (_missed) sub = [sub stringByAppendingFormat:@" · %lu update%@ since", (unsigned long)_missed, _missed == 1 ? @"" : @"s"];
+  } else if (_updatesLeft) {
+    sub = [NSString stringWithFormat:@"Freezing after %ld more update%@", (long)_updatesLeft, _updatesLeft == 1 ? @"" : @"s"];
+  } else if (_freezeTimer) {
+    sub = [NSString stringWithFormat:@"Freezing in %.0f s", ceil(MAX(_freezeAt.timeIntervalSinceNow, 0))];
+  }
+  if (![self.window.subtitle isEqual:sub]) self.window.subtitle = sub;
+}
+
 - (void)windowWillClose:(NSNotification *)n {
+  [self disarm];
   [_session removeLayerObserver:_token];   // the last watcher stops the stream
   _token = nil;
   SRSession *s = _session;

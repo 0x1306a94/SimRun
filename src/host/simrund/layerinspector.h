@@ -10,6 +10,8 @@
 @property (readonly) NSView *view;
 // A control was changed: set `key` of node `nid` to `value` (nil: none, for a color).
 @property (copy) void (^onEdit)(NSNumber *nid, NSString *key, id value);
+// NO: the controls are disabled (the layers are frozen: an edit would go to the app but not show). YES by default.
+@property (nonatomic) BOOL editable;
 // Shows `nid` of `mirror` (nil: nothing selected). While a field is being edited, the refresh waits until it's done.
 - (void)showNode:(NSNumber *)nid of:(SRLayerMirror *)mirror;
 @end

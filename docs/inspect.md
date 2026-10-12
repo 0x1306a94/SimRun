@@ -34,6 +34,7 @@ Since then:
 - Editing properties from the inspector (or `simrun inspect --set`).
 - View controllers in the tree.
 - Copying animations.
+- Freezing the window on one frame.
 
 ```bash
 simrun inspect Showcase                 # the tree as text
@@ -317,6 +318,20 @@ script showed half-faded in the copy one second in.
   little after it has ended: that is the app's state. On the Mac it removes itself on completion.
 - SwiftUI mostly animates by committing new values every frame, which the copy follows anyway.
 - Animations aren't applied in the 3D view: it shows model values.
+
+### Freezing
+
+The snowflake at the end of the window's bar opens freeze options (layerfreeze.m), a popover like Xcode's Capture
+Options. It freezes now, after the app's next N updates (batches), or N seconds from now; the choice is remembered.
+- Armed, the snowflake is orange and the window's subtitle counts down. Clicking it cancels.
+- Frozen, the window keeps the copy it was showing, the same layers and 3D scene, so nothing moves at the moment it
+  freezes. The session hands that copy over (`-detachLayerMirror`) and streams on into a clone of it. Other observers,
+  like `simrun inspect --watch`, carry on live.
+- The frozen copy's root layer has speed 0, so animations in flight stop where they were.
+- The inspector's controls are disabled while frozen: an edit would reach the app but not show.
+- The subtitle says when it froze and how many updates have come since. Clicking the blue snowflake ends the freeze:
+  the window takes the live copy as it is now, keeping the selection, the 3D camera and the spacing.
+- If the app quits while frozen, ending the freeze keeps the last copy there is.
 
 ## Findings
 

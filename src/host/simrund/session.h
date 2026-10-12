@@ -46,6 +46,10 @@ typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 // Returns a token for -removeLayerObserver:, or nil if the app can't be inspected (it has no script channel).
 - (id)addLayerObserver:(void (^)(SRLayerMirror *mirror, NSDictionary *changes))observer;
 - (void)removeLayerObserver:(id)token;
+// The copy as it stands, given away to be kept as it is (a frozen layer window): the stream goes on into a clone of it
+// (SRLayerMirror -clone), which observers get with the next batch. nil if there's no copy.
+- (SRLayerMirror *)detachLayerMirror;
+@property (readonly) SRLayerMirror *layerMirror;   // the live copy (nil when not streaming)
 // Asks the app for its whole tree again (`simrun inspect --check`: does the live copy match a fresh one?).
 - (void)resyncLayers;
 // Changes a property of one of the app's layers (protocol.h SR_MSG_INSPECT_EDIT); the change comes back as a batch.

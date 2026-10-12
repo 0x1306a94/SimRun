@@ -28,6 +28,8 @@
 - (CGRect)screenRectOfNode:(NSNumber *)nid;
 // One line about a node, as in -treeDescription.
 - (NSString *)describeNode:(NSNumber *)nid;
+// A separate copy of this copy, with layers of its own (a layer can only be in one tree); the pictures are shared.
+- (SRLayerMirror *)clone;
 @end
 
 // ---------------------------------------------------------------- for the 3D view (layerscene.m)
