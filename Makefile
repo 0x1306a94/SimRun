@@ -38,8 +38,10 @@ $(BIN) $(LIB) $(APPS) $(TBIN):
 	@mkdir -p $@
 
 # ---------------------------------------------------------------- host (macOS)
-SIMRUND_SRC := $(wildcard src/host/simrund/*.m) src/host/gpuhost/gpuhost.m
-$(BIN)/simrund: $(SIMRUND_SRC) $(wildcard src/host/simrund/*.h) $(HDRS) | $(BIN)
+# simrund.m, then session/ (a running app), launcher/, services/ (the Mac's side of faked system services) and
+# inspector/ (the layer debugger); imports across folders name the folder
+SIMRUND_SRC := $(wildcard src/host/simrund/*.m src/host/simrund/*/*.m) src/host/gpuhost/gpuhost.m
+$(BIN)/simrund: $(SIMRUND_SRC) $(wildcard src/host/simrund/*/*.h) $(HDRS) | $(BIN)
 	$(MACCC) -Isrc/host/simrund $(SIMRUND_SRC) -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal \
 	  -framework UniformTypeIdentifiers -framework ImageIO -o $@
 

@@ -1,6 +1,6 @@
 // appdetail.m — see appdetail.h.
 #import "appdetail.h"
-#import "environment.h"
+#import "session/environment.h"
 #import "launchoptions.h"
 #import "tabbar.h"
 

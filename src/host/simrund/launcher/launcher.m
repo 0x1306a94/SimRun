@@ -1,8 +1,8 @@
 // launcher.m — see launcher.h.
 #import "launcher.h"
 #import "appdetail.h"
-#import "keychainwindow.h"
-#import "environment.h"
+#import "services/keychainwindow.h"
+#import "session/environment.h"
 #import "launchoptions.h"
 #import "launchsheet.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>

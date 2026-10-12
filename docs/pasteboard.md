@@ -40,7 +40,7 @@ Neither fits SimRun.
 
 ```
 app process                                                      simrund (macOS)
-  UIKit ─NSXPC─▶ pboard.dylib: fake pasted                        SRPasteboardHost (src/host/simrund/pasteboard.m)
+  UIKit ─NSXPC─▶ pboard.dylib: fake pasted                        SRPasteboardHost (src/host/simrund/services/pasteboard.m)
                  NSXPCListener checked in as                        sim2host XPC listener "dev.simrun.pasteboard"
                  com.apple.pasteboard.pasted (app's namespace)      registered in simns' global namespace
                  ── read / data / write (pboard.h) ─sim2host XPC─▶  NSPasteboard (general, find, dev.simrun.pboard.<name>)

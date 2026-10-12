@@ -1,7 +1,7 @@
 // launchsheet.m — see launchsheet.h.
 #import "launchsheet.h"
 #import "launchoptions.h"
-#import "environment.h"
+#import "session/environment.h"
 #import "tabbar.h"
 
 // SimRun variables the Options and Diagnostics tabs switch: { variable, checkbox title, checked = variable unset }.

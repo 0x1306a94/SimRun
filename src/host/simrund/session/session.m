@@ -11,7 +11,7 @@
 #include <mach/notify.h>
 #include "protocol.h"
 #import "mirrorwindow.h"
-#import "layermirror.h"
+#import "inspector/layermirror.h"
 
 extern int posix_spawnattr_setspecialport_np(posix_spawnattr_t *, mach_port_t, int);
 extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, const char *);

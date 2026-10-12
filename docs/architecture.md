@@ -134,7 +134,7 @@ and `simrun screenshot` take `--profile` to pick one of an app's instances.
 | Path | Contents |
 |---|---|
 | `include/` | Shared headers: viewer wire protocol, simns control protocol, gpuhost, simfb, scenes and hid APIs, keychain store |
-| `src/host/` | macOS side: `simrund/` (SimRun.app: server, launcher + library, Launch With… sheet + per-app launch options, per-app window sessions, environment, runtimes and device types, host pasteboard, file panels for document pickers, Keychain window), `simrun/` (the `simrun` command line), `gpuhost/` (IOSurface + Metal host services) |
+| `src/host/` | macOS side: `simrund/` (SimRun.app: `simrund.m` the server and menus; `session/` a running app's window session, environment, runtimes and device types; `launcher/` the launcher + library, Launch With… sheet + per-app launch options; `services/` host pasteboard, file panels for document pickers, Keychain window; `inspector/` the layer debugger), `simrun/` (the `simrun` command line), `gpuhost/` (IOSurface + Metal host services) |
 | `resources/` | SimRun.app's Info.plist and app icon (`AppIcon.icon`, an Icon Composer document) |
 | `src/sim/` | Simulator side: `simns/` (launchd_sim stand-in), `rshim/`, `glue/`, `scenes/`, `hid/`, `pboard/`, `drag/`, `docpicker/`, `keychain/`, `webkit/`, `mps/`, `script/`, `simfb/` |
 | `tools/` | `hostinput.swift` (synthesize Mac clicks/typing into the viewer), `crash.py` (crash-report backtrace) |

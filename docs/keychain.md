@@ -63,7 +63,7 @@ app process
   `kSecPublicKeyAttrs`) adds the key from inside Security.framework, a call within one image that interposing can't
   catch. So it is interposed as well: the key is generated without permanence and then added here with the attributes
   meant for each half. `SecKeyGeneratePair` goes the same way.
-- **Keychain window** (`src/host/simrund/keychainwindow.m`): one row per item (kind, service/server/label,
+- **Keychain window** (`src/host/simrund/services/keychainwindow.m`): one row per item (kind, service/server/label,
   account/tag, password, access group, app, modified) and every attribute of the selected item below. Filter by app,
   service, account or group; double-click a password item to edit its password; ⌫ or the context menu deletes; Show
   in Finder reveals the file. It watches the directory and reloads when apps change the file.

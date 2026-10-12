@@ -30,7 +30,7 @@ Under SimRun there is no pkd or extension host: the picker presents its sheet an
 
 ```
 app process                                                         simrund (macOS)
-  UIDocumentPickerViewController                                      SRDocumentPickerHost (src/host/simrund/filepanel.m)
+  UIDocumentPickerViewController                                      SRDocumentPickerHost (src/host/simrund/services/filepanel.m)
     docpicker.dylib: no remote UI; blank sheet                          sim2host XPC listener "dev.simrun.docpicker"
     on screen ── choose {panel, types, multiple, ...} ─sim2host XPC─▶   registered in simns' global namespace
                                                                         NSOpenPanel / NSSavePanel, a sheet on the

@@ -8,7 +8,7 @@
 #import "layertree.h"
 #import "layerinspector.h"
 #import "layerfreeze.h"
-#import "session.h"
+#import "session/session.h"
 
 // ---------------------------------------------------------------- canvas: layer-hosting, passes the mouse on
 @interface SRLayerCanvas : NSView

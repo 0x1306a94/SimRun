@@ -1,6 +1,6 @@
 // keychainwindow.m — see keychainwindow.h.
 #import "keychainwindow.h"
-#import "environment.h"
+#import "session/environment.h"
 #include <sys/stat.h>
 #include "keychain.h"
 

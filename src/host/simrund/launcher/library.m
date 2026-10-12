@@ -1,6 +1,6 @@
 // library.m — see library.h.
 #import "library.h"
-#import "environment.h"
+#import "session/environment.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
