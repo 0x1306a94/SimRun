@@ -46,8 +46,14 @@ app quits when `simrun run` exits**. So start it in the background with its outp
 - Otherwise, use `nohup`:
 
 ```bash
-nohup simrun run path/to/MyApp.app > /tmp/myapp.log 2>&1 &
+nohup simrun run --headless --mute path/to/MyApp.app > /tmp/myapp.log 2>&1 &
 ```
+
+`--headless` keeps the app off the screen: no window, nothing comes to the front, and it gets a clipboard of its own,
+so it doesn't get in the way of the user or of other agents running apps at the same time. `--mute` keeps it quiet.
+Everything below works the same; look at the app with snapshots and `simrun screenshot`. Leave them out only when the
+user wants to watch (or hear) the app. File pickers have no panel: answer them with `simrun pick` (see
+[File pickers](#file-pickers)).
 
 Then wait until the app can take scripts. `eval` fails while the app is starting ("No running app matches", then
 "is still launching"), so loop until it succeeds. A successful `eval` is the signal to go by: `simrun list` may still
@@ -218,6 +224,28 @@ The error message usually says what to do next.
   clipped?", "what color is that card?"). `simrun inspect MyApp --set <id> 'backgroundColor=[1,0,0,1]'` changes a
   layer live (hidden, opacity, colors, border, corner radius, position, size), to try a fix before editing code.
 
+## File pickers
+
+A document picker (`UIDocumentPickerViewController`, SwiftUI's `fileImporter` / `fileExporter`) shows as a blank sheet
+and waits for an answer. Make the files the flow needs (fixtures in a temporary folder), open the picker, then answer
+it with `simrun pick`:
+
+```bash
+simrun eval MyApp 'await app.getByRole("button", { name: "Import" }).tap()'
+simrun pick MyApp                       # what it takes: "it takes one file of type public.image"
+simrun pick MyApp /tmp/fixtures/photo.jpg
+```
+
+- `simrun pick` answers the picker that is open, or waits up to `--timeout` seconds (default 10) for the next one,
+  so it can also run before the tap that opens the picker (in the background).
+- It prints the paths the app got, and fails with the reason when the picker can't take them (wrong type, a file for
+  a folder picker, several for a one-item picker). The picker is still open then: answer it again.
+- **Saving or exporting**: give a folder (the app's suggested name is written into it) or the file path to write.
+- `simrun pick MyApp --cancel` cancels the picker, as the user tapping Cancel.
+- To answer every picker of a run without asking each time, launch with `--pick <file or folder>` (repeatable):
+  an open picker gets the first file that fits (in a folder: its files, by name), or all of them if it takes several;
+  a save picker writes into the first folder.
+
 ## Limits
 
 - **Portrait only,** and no on-screen keyboard.
@@ -226,7 +254,8 @@ The error message usually says what to do next.
 - **Scripts can block the app.** A script runs on the main thread, so the app only runs while the script awaits. A
   loop with no `await` in it freezes the app, and there's no time limit yet. If that happens, quit the app.
 - **Two copies of one app** need separate profiles: `-p` on `run`, and the same `-p` on `eval`, `quit` and
-  `screenshot`.
+  `screenshot`. When other agents may be running the same app at the same time, pick a profile name of your own
+  (say, after your task), so neither of you acts on the other's copy or data.
 
 ## Saving a flow as a test
 

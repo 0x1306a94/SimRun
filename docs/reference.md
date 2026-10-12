@@ -7,11 +7,12 @@ over its socket; `run`, `profiles`, `runtimes` and `devices` start SimRun headle
 
 | Command | Effect |
 |---|---|
-| `simrun run [options] <Sim.app \| sim-binary> [args…]` | Run an app in SimRun; output goes to the terminal, Ctrl-C quits it, exits with the app's status. `-p`/`--profile <name>`: with that profile's data container ([architecture.md](architecture.md#data-containers)); `-r`/`--runtime <build, version or RuntimeRoot>`: on that runtime; `-d`/`--device <name or identifier>`: as that device type; `--insert <dylib>`: inject another sim dylib |
-| `simrun list` | The running apps: pid, app, profile, device, runtime |
+| `simrun run [options] <Sim.app \| sim-binary> [args…]` | Run an app in SimRun; output goes to the terminal, Ctrl-C quits it, exits with the app's status. `-p`/`--profile <name>`: with that profile's data container ([architecture.md](architecture.md#data-containers)); `-r`/`--runtime <build, version or RuntimeRoot>`: on that runtime; `-d`/`--device <name or identifier>`: as that device type; `--insert <dylib>`: inject another sim dylib; `--headless`: with no window, never bringing SimRun forward, with pasteboards of its own; its file pickers wait for `simrun pick` ([architecture.md](architecture.md#headless-apps)); `--pick <path>` (repeatable): its file pickers choose from these files and folders with no panel ([docpicker.md](docpicker.md#choosing-without-a-panel)); `--mute`: silence it (`AUDIO_MUTE=1`) |
+| `simrun list` | The running apps: pid, app (marked headless), profile, device, runtime |
 | `simrun quit <pid \| app> [-p <profile>]` | Quit a running app (by name, bundle ID or executable; `-p` picks among its profiles); returns once it has exited |
 | `simrun screenshot <pid \| app> [-p <profile>] [-o <file.png>]` | Save the app's screen as it last drew it, at its pixel size (default `./<app>.png`) |
 | `simrun eval <pid \| app> [-p <profile>] [--snapshot] [<script> \| -f <file>]` | Run JavaScript in a running app ([scripting.md](scripting.md)): prints its console output as it happens, then its value; exits 1 if it throws. The script is the argument, the file (`-` for stdin), or stdin. `--snapshot`: then print the screen as text (`app.snapshot()`) once the UI has settled |
+| `simrun pick <pid \| app> [-p <profile>] [--timeout <s>] [--cancel \| <path>…]` | Answer the app's document picker as if these were chosen (a save picker: the file to write, or a folder to write into), or cancel it: the picker open now (its panel goes away), else the next one it opens within `--timeout` (default 10 s). Prints what the app got; fails, saying why, if the picker can't take them. Without paths: what the open picker takes ([docpicker.md](docpicker.md#choosing-without-a-panel)) |
 | `simrun inspect <pid \| app> [-p <profile>] [--watch] [--png <file> [--3d]] [--check] [--set <id> <key>=<json>]` | Print the app's layer tree as SimRun copies it, contents included ([inspect.md](inspect.md)); App ▸ Show Layers draws the copy. `--watch`: then a line per update until Ctrl-C; `--png`: save the copy as the Mac draws it (2x; `--3d`: spread out in 3D); `--check`: compare the live copy with a fresh one from the app (exits 1, with a diff, if they differ); `--set`: change a layer's `hidden`, `opacity`, `masksToBounds`, `backgroundColor`, `borderWidth`, `borderColor`, `cornerRadius`, `position` or `size` (JSON values: `true`, `0.5`, `[r,g,b,a]`, `[x,y]`) |
 | `simrun profiles [<bundle ID \| Sim.app>]` | Apps' data containers: `default` and their profiles |
 | `simrun runtimes` | The installed iOS runtimes (`*`: SimRun's) |
@@ -35,6 +36,8 @@ them in Launch With….
 | `SIMNS_QUIET=1` | Hide simns's log (in SimRun's log, `simrun log`) of every service lookup (`OK` / `MISSING`) — leave it on to see what an app needs |
 | `SIMNS_DAEMONS=a,b` / `none` | Labels of real sim daemons simns may launch on demand |
 | `SIMAPP_EXTRA_INSERT=x.dylib` | Inject an extra sim dylib into apps launched from the launcher (`simrun run --insert` for one launch) |
+| `AUDIO_MUTE=1` | The app is silent: CoreAudio's per-process switch (`kAudioHardwarePropertyProcessIsAudible`) for everything it plays, its web views' helper processes too, and its system sounds aren't played (`simrun run --mute`, Launch Options ▸ Mute) |
+| `SIMRUN_HEADLESS=1` | `simrun run` runs every app headless, as with `--headless` (read by `simrun`, not SimRun) |
 | `SIMRUND_IDLE=secs` | SimRun, started headless by `simrun`, quits after this long without apps (default 600, 0 = never) |
 | `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
 | `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default: the device type's screen); SimRun sizes the display (`SIMULATOR_MAINSCREEN_*`) and window to match |
@@ -66,8 +69,9 @@ select all) go to the app while one of its windows is key.
 - Rotation: scenes can be rotated ([scenes.md](scenes.md)), but the viewer has no way to rotate and doesn't map
   input into rotated space; `deviceOrientation` and the accelerometer aren't wired.
 - notifyd is not provided.
-- Sound plays through the Mac's default output ([architecture.md](architecture.md)); there is no volume or mute of
-  the app's own, and recording is untested. Once an app has played a sound, its audio output keeps running (and with
+- Sound plays through the Mac's default output ([architecture.md](architecture.md)); there is no volume of the app's
+  own (only muting it, `AUDIO_MUTE`), and recording is untested. A muted app is muted from just after it starts
+  (CoreAudio is told off the main thread), so a sound played in its first moments could still be heard. Once an app has played a sound, its audio output keeps running (and with
   it coreaudiod's assertion against idle sleep) until the app exits, as in Simulator.app; for system sounds that is
   the sound server, which SimRun stops when no apps are left ([simns.md](simns.md#on-demand-sim-daemons)).
 - Background URLSession transfers continue while the app isn't running (nsurlsessiond does them), but the app isn't

@@ -122,7 +122,7 @@ $(BIN)/simns: src/sim/simns/simns.c $(HDRS) | $(BIN)
 	@$(SIGN) $@ 2>/dev/null
 
 $(LIB)/rshim.dylib: src/sim/rshim/rshim.m $(HDRS) | $(LIB)
-	$(SIMCC) -dynamiclib $< -framework Foundation -o $@
+	$(SIMCC) -dynamiclib $< -framework Foundation -framework AudioToolbox -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 $(LIB)/SimFramebuffer: src/sim/simfb/simfb.m $(HDRS) | $(LIB)

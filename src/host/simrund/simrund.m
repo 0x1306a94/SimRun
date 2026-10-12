@@ -12,7 +12,8 @@
 //                                one exits.
 //   SimRun --serve               headless server for `simrun` clients (simrun starts it on demand); shows the launcher
 //                                when asked; exits after SIMRUND_IDLE seconds (default 600, 0 = never) without apps
-//                                unless the launcher was used
+//                                unless the launcher was used. It stays out of the Dock and never comes forward until
+//                                it has a window to show, so apps run with `simrun run --headless` never touch the screen.
 #import <Cocoa/Cocoa.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -55,6 +56,8 @@ static void LOG(NSString *fmt, ...) {
 @property NSString *runtimeRoot;                   // the iOS runtime it runs on
 @property SRDeviceType *device;                    // the device type it runs as
 @property NSString *profile;                       // the app's profile (data container) it runs in; nil = its default one
+@property BOOL headless;                           // no window (simrun run --headless)
+@property NSArray<NSString *> *pickPresets;        // what its file pickers choose, with no panel (simrun run --pick)
 @property int sock; @property int fd0, fd1, fd2;   // client connection (-1 if none) and the app's stdio (-1 = inherit)
 @property int captureFD;                           // read end of the app's output pipe (launcher launches), or -1
 @property SRSession *session; @property dispatch_source_t eofSource;
@@ -505,9 +508,14 @@ static BOOL ProcessGone(pid_t pid) {
     if (_pasteboardPort) [self registerName:SRPB_SERVICE port:_pasteboardPort in:ns]; else LOG(@"host pasteboard service failed to start");
     if (!_docPicker) {
       __weak SRServer *weakSelf = self;
-      _docPicker = [[SRDocumentPickerHost alloc] initWithWindowForPid:^NSWindow *(pid_t pid) {
+      _docPicker = [[SRDocumentPickerHost alloc] initWithAppForPid:^SRPickerApp *(pid_t pid) {
         SRServer *s = weakSelf;
-        if (s) for (SRRequest *r in s->_active) if (r.session.pid == pid) return r.session.window;
+        if (s) for (SRRequest *r in s->_active)
+          if (r.session.pid == pid) {
+            SRPickerApp *a = [SRPickerApp new];
+            a.window = r.session.window; a.headless = r.session.headless; a.presets = r.pickPresets;
+            return a;
+          }
         return nil;
       }];
       _docPickerPort = [_docPicker start];
@@ -695,7 +703,7 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
   if (r.profile) title = [NSString stringWithFormat:@"%@ — %@", title, r.profile];   // also names its log
   SRSession *s = [[SRSession alloc] initWithTitle:title screenSize:ScreenSize(vars)
                                      cornerRadius:SRDeviceCornerRadius(vars[@"SIMULATOR_CAPABILITIES"])];
-  s.appPath = r.appPath;
+  s.appPath = r.appPath; s.headless = r.headless;
   r.session = s;
   [_active addObject:r];
   __weak SRServer *weakSelf = self;
@@ -714,6 +722,7 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
   for (int i = 0; i < 3; i++) if (fds[i] >= 0) close(fds[i]);
   r.fd0 = r.fd1 = r.fd2 = -1;
   if (ok && r.captureFD >= 0) { [s captureOutputFrom:r.captureFD]; r.captureFD = -1; }
+  if (ok && r.headless) [_pasteboard isolatePid:s.pid];
   if (!ok) {
     LOG(@"launch failed: %@", err ?: @"no namespace");
     if (r.captureFD >= 0) { close(r.captureFD); r.captureFD = -1; }
@@ -727,13 +736,15 @@ static NSSize ScreenSize(NSDictionary<NSString *, NSString *> *env) {
     [self scheduleIdleCheck];
     return;
   }
-  LOG(@"launched %@ pid %d%@", r.argv.firstObject.lastPathComponent, s.pid, r.profile ? [@" in profile " stringByAppendingString:r.profile] : @"");
+  LOG(@"launched %@ pid %d%@%@", r.argv.firstObject.lastPathComponent, s.pid, r.profile ? [@" in profile " stringByAppendingString:r.profile] : @"",
+      r.headless ? @", headless" : @"");
   [self reply:r dict:@{ @"pid": @(s.pid) }];
   [_launcher reloadState];
 }
 
 - (void)finish:(SRRequest *)r status:(int)status {
   LOG(@"%@ (pid %d) exited, status %d", r.title, r.session.pid, status);
+  if (r.headless) [_pasteboard endIsolationOfPid:r.session.pid];
   [self reply:r dict:@{ @"exit": @(status) }];
   [self closeClient:r];
   [_active removeObject:r];
@@ -818,6 +829,7 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
         return;
       }
       if ([action isEqual:@"eval"]) { [self evalRequest:d client:c]; return; }
+      if ([action isEqual:@"pick"]) { [self pickRequest:d client:c]; return; }
       if ([action isEqual:@"inspect"]) { [self inspectRequest:d client:c]; return; }
       if ([action isEqual:@"stop"]) {
         SendReply(c, @{ @"ok": @YES }, ^{ LOG(@"stopped by a client"); [NSApp terminate:nil]; });
@@ -863,6 +875,37 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
   if (!started)
     SendReply(c, @{ @"error": r.session.ready ? [NSString stringWithFormat:@"%@ can't run scripts (launched with SCRIPT_DISABLE)", r.session.title]
                                               : [NSString stringWithFormat:@"%@ is still launching", r.session.title] }, nil);
+}
+
+// `pick`: answer the app's file picker (the one open, or the next within `timeout` s), or say what it asks for.
+- (void)pickRequest:(NSDictionary *)d client:(int)c {
+  NSString *err = nil;
+  SRRequest *r = [self instanceMatching:Str(d, @"instance") profile:Str(d, @"profile") error:&err];
+  if (!r) { SendReply(c, @{ @"error": err }, nil); return; }
+  pid_t pid = r.session.pid;
+  NSArray *paths = [d[@"paths"] isKindOfClass:NSArray.class] ? d[@"paths"] : nil;
+  for (id p in paths) if (![p isKindOfClass:NSString.class] || ![p isAbsolutePath]) { SendReply(c, @{ @"error": @"Bad request" }, nil); return; }
+  if (!paths.count && ![d[@"cancel"] isEqual:@YES]) {   // what is open?
+    NSDictionary *picker = [_docPicker pickerOfPid:pid];
+    SendReply(c, picker ? @{ @"picker": picker } : @{}, nil);
+    return;
+  }
+  NSTimeInterval timeout = [d[@"timeout"] isKindOfClass:NSNumber.class] ? [d[@"timeout"] doubleValue] : 10;
+  __block dispatch_source_t eof = nil;
+  id token = [_docPicker pickForPid:pid paths:paths.count ? paths : nil timeout:timeout done:^(NSArray<NSString *> *chosen, NSString *why) {
+    if (eof) { dispatch_source_cancel(eof); eof = nil; }
+    SendReply(c, chosen ? @{ @"chosen": chosen } : @{ @"error": why ?: @"Not picked" }, nil);
+  }];
+  if (!token) return;   // answered at once
+  // the client going away (Ctrl-C) withdraws its answer
+  __weak SRDocumentPickerHost *picker = _docPicker;
+  eof = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, c, 0, dispatch_get_main_queue());
+  dispatch_source_set_event_handler(eof, ^{
+    char b; if (recv(c, &b, 1, MSG_PEEK | MSG_DONTWAIT) != 0) return;
+    dispatch_source_cancel(eof); eof = nil;
+    [picker withdrawPick:token]; close(c);
+  });
+  dispatch_resume(eof);
 }
 
 // `inspect`: the app's layer tree as text (and, with `png`, the Mac copy drawn as PNG, `3d` spread out in depth), then with `watch` a line per
@@ -957,6 +1000,17 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
   NSString *err = [SREnvironment problemWithProfileName:Str(d, @"profile")];
   if (err) return err;
   r.profile = [SREnvironment normalizedProfile:Str(d, @"profile")];
+  r.headless = [d[@"headless"] isEqual:@YES];
+  if ([d[@"pick"] isKindOfClass:NSArray.class]) {
+    NSMutableArray *presets = [NSMutableArray array];
+    for (NSString *p in d[@"pick"]) {
+      if (![p isKindOfClass:NSString.class]) return @"Bad request";
+      NSString *path = (p.absolutePath ? p : [r.cwd stringByAppendingPathComponent:p]).stringByStandardizingPath;
+      if (![NSFileManager.defaultManager fileExistsAtPath:path]) return [NSString stringWithFormat:@"No such file (--pick): %@", path];
+      [presets addObject:path];
+    }
+    r.pickPresets = presets;
+  }
   NSString *rtSpec = Str(d, @"runtime"), *devSpec = Str(d, @"device");
   SRRuntime *rt = rtSpec ? [SREnvironment runtimeMatching:rtSpec] : [SRRuntime runtimeAtRoot:SREnvironment.runtimeRoot];
   if (!rt) return [NSString stringWithFormat:@"No installed iOS runtime matches \"%@\" (simrun runtimes lists them)", rtSpec];
@@ -979,6 +1033,7 @@ static void SendReply(int c, NSDictionary *reply, dispatch_block_t then) {
   if (r.bundleID) m[@"bundleID"] = r.bundleID;
   if (r.profile) m[@"profile"] = r.profile;
   if (r.device.name) m[@"device"] = r.device.name;
+  if (r.session.headless) m[@"headless"] = @YES;
   return m;
 }
 - (NSArray<SRRequest *> *)runningInstances {
@@ -1102,7 +1157,9 @@ int main(int argc, char **argv) {
     if (mode == SRModeServe)
       [NSUserDefaults.standardUserDefaults setVolatileDomain:@{ @"ApplePersistenceIgnoreState": @YES } forName:NSArgumentDomain];
     NSApplication *app = [NSApplication sharedApplication];
-    app.activationPolicy = NSApplicationActivationPolicyRegular;
+    // --serve: an accessory app (no Dock icon, no menu bar, never activated) until a window is shown, when the window's
+    // owner (SRSession, SRLauncher) makes it a regular one
+    app.activationPolicy = mode == SRModeServe ? NSApplicationActivationPolicyAccessory : NSApplicationActivationPolicyRegular;
     SRServer *server = [[SRServer alloc] initWithMode:mode args:rest];
     app.delegate = server;
     [app run];

@@ -3,18 +3,21 @@
 //
 // Every message is a uint32 length (host byte order) followed by a binary property list (a dictionary). A client sends
 // one request per connection; `action` says what it is:
-//   run         { argv: [string], env: [string], cwd: string, profile?, runtime?, device?, insert? }
+//   run         { argv: [string], env: [string], cwd: string, profile?, runtime?, device?, insert?, headless?: bool,
+//                 pick?: [string] }
 //               argv[0] is an .app bundle or a sim executable (absolute, or relative to cwd); the rest are the app's
 //               arguments. env is the client's environment, which the app inherits: the server adds the simulator
 //               environment itself (runtime, device, data container, injected libraries). profile: the app's data
 //               container to use (default: its default one); runtime: an installed iOS runtime (build, version, name
 //               or RuntimeRoot; default: SimRun's); device: a device type (identifier or name; default: the runtime's);
-//               insert: an extra sim dylib to inject. The message carries the client's stdin/stdout/stderr as
-//               SCM_RIGHTS, so the app writes straight to the client's terminal.
+//               insert: an extra sim dylib to inject; headless: no window, SimRun never comes forward, the app gets
+//               pasteboards of its own and no file panels (SRSession headless); pick: files and folders its document
+//               pickers choose from, with no panel (filepanel.h). The message carries the client's
+//               stdin/stdout/stderr as SCM_RIGHTS, so the app writes straight to the client's terminal.
 //               replies: { pid: int } app started, then { exit: int } app finished (raw wait(2) status); or
 //               { error: string } launch failed. Closing the connection before { exit } terminates the app (this is how
 //               Ctrl-C on the client propagates).
-//   list        -> { instances: [ { pid, title, executable, app?, bundleID?, profile?, runtime, device?, ready } ] }
+//   list        -> { instances: [ { pid, title, executable, app?, bundleID?, profile?, runtime, device?, ready, headless? } ] }
 //   quit        { instance: string, profile? } -> { ok: true }
 //   screenshot  { instance: string, profile? } -> { png: data } (the app's screen, at its pixel size)
 //               instance: a pid, or an app (name, bundle ID or executable name), among the instances in `profile`
@@ -24,6 +27,11 @@
 //               screen as text once the script has ended and the UI has settled); then { result: string } (the
 //               script's value, "" if none) or { exception: string } (it threw: message and where); { error: string }
 //               if it can't run. instance and profile as for screenshot.
+//   pick        { instance: string, profile?, paths?: [string], cancel?: bool, timeout?: number }   answer the app's
+//               document picker as if `paths` (absolute) were chosen, or cancel it: the one open now, else the next
+//               one within timeout s (default 10). -> { chosen: [string] } what the app got. Neither paths nor cancel:
+//               -> { picker?: { panel, files, directories, multiple, types, extensions, name, description } } what
+//               the open one asks for. instance and profile as for screenshot.
 //   profiles    { app? } -> { apps: [ { id, profiles: [string] } ] }   the data containers each app has ("default" first)
 //               app: a bundle ID, or the path of an .app or executable
 //   runtimes    -> { runtimes: [ { name, version, build, root, current: bool } ] }   current: what SimRun runs on

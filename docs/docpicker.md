@@ -60,6 +60,36 @@ app process                                                         simrund (mac
   dismisses the picker while the panel is up, docpicker.dylib sends `cancel` and the panel goes away (the delegate
   hears nothing, as on a device); if the app quits, its connection's end does the same.
 - No simrund (an app run outside SimRun)? Pickers cancel as soon as they appear.
+- Folder types are recognized by name as well (`public.folder`, `public.directory`): with no Launch Services type
+  database in the app (no lsd), `UTType` there knows no supertypes, so `public.folder` doesn't conform to
+  `public.directory` and a folder picker would otherwise ask for files.
+
+## Choosing without a panel
+
+Headless apps (`simrun run --headless`) get no panel, and agents and tests need to pick without a user. SimRun answers
+a picker, in this order:
+
+1. **`simrun pick`** waiting for it. `simrun pick MyApp <path>…` answers the picker open now (if its panel is up, the
+   panel goes away), or else waits up to `--timeout` seconds (default 10) for the app's next picker, so it can be
+   started before the tap that opens one. The paths are checked as the panel would: an open picker takes what it can
+   choose (files or folders, of its types, one unless it takes several), a save picker one path, the file to write or
+   a folder to write the suggested name into. When they don't fit, `simrun pick` fails saying why and the picker
+   carries on. `--cancel` answers as Cancel; `simrun pick MyApp` alone prints what the open picker takes.
+2. **Files given at launch**, `simrun run --pick <path>` (repeatable): an open picker gets the first that fits of the
+   files given and the files directly in the folders given (by name), all of them if it takes several; a save
+   picker writes into the first folder given (numbered, "name 2.ext", if the name is taken). If nothing fits, the
+   log says so and the picker goes on to 3.
+3. **Headless**: the picker stays open, waiting for `simrun pick` (the log says what it takes), as a panel would
+   wait for the user. The app dismissing it, or quitting, ends it.
+4. Otherwise the Mac's panel, as above.
+
+```bash
+simrun run --headless build/apps/PickerTest.app &
+simrun eval PickerTest 'await app.getByRole("button", { name: "open" }).tap()'
+simrun pick PickerTest                    # PickerTest has a file picker open: it takes one file of type public.plain-text, …
+simrun pick PickerTest ~/notes.txt        # prints the path the app got
+simrun run --headless --pick fixtures/ --pick out/ build/apps/PickerTest.app   # every picker answered at once
+```
 
 ## Not supported
 

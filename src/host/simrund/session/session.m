@@ -103,7 +103,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 @implementation SRSession {
   SRMirrorWindow *_window; SRView *_view; CALayer *_surfaceLayer;
   mach_port_t _port, _scriptPort; dispatch_source_t _portSource, _procSource;
-  IOSurfaceRef _surface; NSMutableDictionary<NSNumber *, id> *_surfaces; NSSize _contentSize;
+  IOSurfaceRef _surface; NSMutableDictionary<NSNumber *, id> *_surfaces; NSSize _contentSize; CGFloat _contentScale;
   BOOL _exited, _sawFrame;
   dispatch_source_t _outSource; NSMutableString *_log; NSFileHandle *_logFile;
   NSWindow *_logWindow; NSTextView *_logView;
@@ -216,15 +216,27 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
 
 // UIKit apps ignore SIGTERM (termination normally comes through FrontBoard/RunningBoard), so escalate to SIGKILL.
 - (NSWindow *)window { return _window; }
-- (void)bringToFront { if (_ready) { [_window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; } }
+- (void)bringToFront {
+  if (!_ready || _exited) return;
+  if (_headless) { _headless = NO; [self showWindow]; return; }
+  [_window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+}
 
 - (void)becomeReady {
   if (_ready || _exited) return;
   _ready = YES;
+  if (!_headless) [self showWindow];
+  if (self.onReady) self.onReady(self);
+}
+
+- (void)showWindow {
+  // a headless session leaves its window's layer alone (no frame is ever composited); catch up with the app
+  if (_surface) _surfaceLayer.contents = (__bridge id)_surface;
+  // SimRun started for headless apps only stays out of the Dock (main()); a window brings it in
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyRegular) NSApp.activationPolicy = NSApplicationActivationPolicyRegular;
   [self placeWindow];
   [_window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
-  if (self.onReady) self.onReady(self);
 }
 
 - (void)captureOutputFrom:(int)fd {
@@ -333,7 +345,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
   if (!_sawFrame || !_surface) return nil;
   IOSurfaceRef s = (IOSurfaceRef)CFRetain(_surface);
   // the presented content can be smaller than the display buffer
-  CGFloat sc = _surfaceLayer.contentsScale ?: 1;
+  CGFloat sc = _contentScale ?: 1;
   size_t w = MIN(IOSurfaceGetWidth(s), (size_t)lround(_contentSize.width * sc) ?: IOSurfaceGetWidth(s));
   size_t h = MIN(IOSurfaceGetHeight(s), (size_t)lround(_contentSize.height * sc) ?: IOSurfaceGetHeight(s));
   NSMutableData *png = nil;
@@ -512,8 +524,8 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
         _surface = (__bridge IOSurfaceRef)cached;
         CGFloat sc = m.p.scale > 0 ? m.p.scale : 3;
         NSSize content = NSMakeSize(m.p.w / sc, m.p.h_px / sc);
-        if (!NSEqualSizes(content, _contentSize)) {
-          _contentSize = content;
+        if (!NSEqualSizes(content, _contentSize) || sc != _contentScale) {
+          _contentSize = content; _contentScale = sc;
           _view.pointSize = content;
           _window.screenSize = content;   // keeps the screen's top-left
           _surfaceLayer.contentsScale = sc;
@@ -534,7 +546,7 @@ extern int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *, co
           id named = m.h.msgh_size >= sizeof(sr_frame_msg_t) ? _surfaces[@(m.f.surface_id)] : nil;
           if (named) _surface = (__bridge IOSurfaceRef)named;
           // Re-setting the same IOSurface makes CA pick up the new pixels (actions are disabled on this layer).
-          _surfaceLayer.contents = nil; _surfaceLayer.contents = (__bridge id)_surface;
+          if (!_headless) { _surfaceLayer.contents = nil; _surfaceLayer.contents = (__bridge id)_surface; }
           [self acknowledgeFrame:m.f.seq replyPort:m.h.msgh_remote_port bits:m.h.msgh_bits];
         }
         break;

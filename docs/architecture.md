@@ -82,6 +82,31 @@ profile (`SRLaunchOptions` in SimRun's user defaults; a profile starts with the 
 the launcher; apps launched from the
 terminal get only what their environment says.
 
+## Headless apps
+
+`simrun run --headless` (or `SIMRUN_HEADLESS=1` in `simrun`'s environment) runs an app with nothing on the screen, so
+that apps can run in the background and many at once (agents or CI working in parallel) without taking the screen,
+the keyboard focus or the clipboard from each other or from whoever is using the Mac. The app is the same: it renders
+into its display at the device's refresh rate, and `screenshot`, `eval` (accessibility, taps and typing go to the
+app, never through the Mac's mouse or keyboard) and `inspect` work as usual. What changes is in SimRun:
+
+- **No window.** The session never shows its window (SRSession `headless`) nor activates SimRun; its frames aren't
+  put on the window's layer.
+- **No Dock icon.** SimRun started by `simrun` (`--serve`) is an accessory app until it has a window to show: an app
+  that isn't headless, or the launcher. Then it becomes a regular app, and stays one.
+- **A pasteboard of its own.** UIPasteboard's general pasteboard and the named ones are private Mac pasteboards for
+  that app (`dev.simrun.pboard.<pid>.<name>`, released when it exits), not the Mac's clipboard: a script that copies
+  doesn't overwrite what the user copied, nor what another headless app did.
+- **No open and save panels.** A document picker waits, as a panel would wait for the user, for `simrun pick` to
+  answer it with files (`simrun pick MyApp` says what it takes); `simrun run --pick <files or folders>` gives the
+  app's pickers their answer up front ([docpicker.md](docpicker.md#choosing-without-a-panel)). Either works for
+  apps with windows too.
+
+`simrun list` marks headless apps. In the launcher they show as running; opening one there (double-click, ▶) shows
+its window after all, and it is an ordinary windowed app from then on, but for its pasteboards, which stay its own.
+Sound still plays on the Mac's output; `--mute` silences an app. Instances of one app running at the same time share its data container unless
+they run in different profiles (`-p`).
+
 ## Runtimes
 
 SimRun finds the installed iOS runtimes the way Xcode does, with `xcrun simctl list runtimes`: they can be mounted

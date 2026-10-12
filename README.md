@@ -164,6 +164,10 @@ with no apps running.
   `~/Library/Caches/dev.simrun.SimRun/DeviceBuilds`, and can be deleted). App Store builds are encrypted and can't
   run. A converted app loses its entitlements, so its keychain items go in an access group named after its bundle ID.
 - **Manage running apps** with `simrun list`, `simrun quit <app>` and `simrun screenshot <app>`.
+- **Run apps in the background** with `simrun run --headless`: no window, nothing comes to the front, and the app gets
+  a clipboard of its own. Run as many as you like side by side (each in its own profile, `-p`), and drive them with
+  `simrun eval`, `screenshot` and `inspect`; answer their file pickers with `simrun pick`, and add `--mute` to
+  silence them. Handy for coding agents and CI working in parallel while you use the Mac.
 - **Script a running app** (experimental) with `simrun eval`: JavaScript that runs inside the app with a
   Playwright-like API. It sees the screen through accessibility, and taps and types like a user. Handy for automating
   UI checks, and for coding agents driving your app:

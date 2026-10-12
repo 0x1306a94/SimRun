@@ -149,6 +149,8 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   if (!_window) [self buildWindow];
   [_window layoutIfNeeded];
   [_table sizeLastColumnToFit];
+  // SimRun started by simrun stays out of the Dock until it has a window to show (main() in simrund.m)
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyRegular) NSApp.activationPolicy = NSApplicationActivationPolicyRegular;
   [_window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 }

@@ -5,6 +5,9 @@
 //  * com.apple.CARenderServer bootstrap name -> in-process CA render server port (bootstrap_check_in/look_up).
 //  * the Mac's language & region settings -> the device's global preferences (SIMRUN_HOST_INTL).
 //  * sandbox_container_path_for_pid(self) -> the app's HOME (its data container).
+//  * AUDIO_MUTE=1 (simrun run --mute, Launch Options ▸ Mute): the process is inaudible (CoreAudio's own per-process
+//    switch, kAudioHardwarePropertyProcessIsAudible), and its system sounds aren't played. WebKit's helper processes
+//    inherit the variable and this dylib, so web media is muted too.
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
 #include <xpc/xpc.h>
@@ -13,6 +16,7 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include "gpuhost.h"
+#include <AudioToolbox/AudioServices.h>
 
 extern mach_port_t bootstrap_port;
 kern_return_t bootstrap_look_up(mach_port_t bp, const char *name, mach_port_t *out);
@@ -267,7 +271,46 @@ static int my_sandbox_container_path_for_pid(pid_t pid, char *buf, size_t size) 
   return sandbox_container_path_for_pid(pid, buf, size);
 }
 
+// ---------- AUDIO_MUTE ----------
+static int gMuted;
+
+// kAudioHardwarePropertyProcessIsAudible = 0: everything this process plays (AudioQueue, RemoteIO, AVAudioEngine,
+// AVAudioPlayer, AVPlayer…) is silenced by CoreAudio. CoreAudio is loaded (and connects to coreaudiod) only for muted
+// processes, off the main thread: not from inside dyld's initializers.
+static void mute_process(void) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    void *ca = dlopen("/System/Library/Frameworks/CoreAudio.framework/CoreAudio", RTLD_LAZY);
+    // (the HAL API isn't in the iOS SDK's headers; it is in the simulator's CoreAudio)
+    typedef struct { UInt32 selector, scope, element; } Address;   // AudioObjectPropertyAddress
+    OSStatus (*set)(UInt32, const Address *, UInt32, const void *, UInt32, const void *) = ca ? dlsym(ca, "AudioObjectSetPropertyData") : NULL;
+    Address a = { 'pmut' /* kAudioHardwarePropertyProcessIsAudible */, 'glob' /* kAudioObjectPropertyScopeGlobal */, 0 };
+    UInt32 audible = 0;
+    OSStatus st = set ? set(1 /* kAudioObjectSystemObject */, &a, 0, NULL, sizeof audible, &audible) : -1;
+    if (st) fprintf(stderr, "[rshim] AUDIO_MUTE: couldn't mute this process (%d)\n", (int)st);
+    else LOG("muted (process inaudible)\n");
+  });
+}
+
+// System sounds are played by the shared sound server, not by the process: don't ask it to (the completion still runs).
+static void muted_completion(void (^done)(void)) { if (done) dispatch_async(dispatch_get_main_queue(), done); }
+static void my_AudioServicesPlaySystemSound(SystemSoundID s) {
+  if (gMuted) LOG("muted system sound %u\n", (unsigned)s); else AudioServicesPlaySystemSound(s);
+}
+static void my_AudioServicesPlayAlertSound(SystemSoundID s) {
+  if (gMuted) LOG("muted alert sound %u\n", (unsigned)s); else AudioServicesPlayAlertSound(s);
+}
+static void my_AudioServicesPlaySystemSoundWithCompletion(SystemSoundID s, void (^done)(void)) {
+  if (gMuted) { LOG("muted system sound %u\n", (unsigned)s); muted_completion(done); } else AudioServicesPlaySystemSoundWithCompletion(s, done);
+}
+static void my_AudioServicesPlayAlertSoundWithCompletion(SystemSoundID s, void (^done)(void)) {
+  if (gMuted) { LOG("muted alert sound %u\n", (unsigned)s); muted_completion(done); } else AudioServicesPlayAlertSoundWithCompletion(s, done);
+}
+
 __attribute__((used, section("__DATA,__interpose"))) static struct { const void *n, *o; } interposers[] = {
+  { (const void *)my_AudioServicesPlaySystemSound, (const void *)AudioServicesPlaySystemSound },
+  { (const void *)my_AudioServicesPlayAlertSound, (const void *)AudioServicesPlayAlertSound },
+  { (const void *)my_AudioServicesPlaySystemSoundWithCompletion, (const void *)AudioServicesPlaySystemSoundWithCompletion },
+  { (const void *)my_AudioServicesPlayAlertSoundWithCompletion, (const void *)AudioServicesPlayAlertSoundWithCompletion },
   { (const void *)my_sandbox_container_path_for_pid, (const void *)sandbox_container_path_for_pid },
   { (const void *)my_xpc_connection_create_mach_service, (const void *)sr_xpc_create_mach_service },
   { (const void *)my_bootstrap_check_in, (const void *)bootstrap_check_in },
@@ -292,4 +335,6 @@ __attribute__((constructor)) static void rshim_init(void) {
   }
   LOG("loaded: slots iosurface=%#x metal=%#x bootstrap_port=%#x\n", gSlots[1], gSlots[2], bootstrap_port);
   if (gRealBootstrap) sync_host_intl();   // needs cfprefsd (a namespace)
+  const char *mute = getenv("AUDIO_MUTE");
+  if (mute && *mute && strcmp(mute, "0") && strcmp(getprogname(), "MTLCompilerService")) { gMuted = 1; mute_process(); }
 }

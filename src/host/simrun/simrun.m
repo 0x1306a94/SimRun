@@ -27,6 +27,15 @@ static const char kUsage[] =
   "        -r, --runtime <spec>   on this iOS runtime: a build, version or RuntimeRoot (default: SimRun's)\n"
   "        -d, --device <name>    as this device type: a name or identifier (default: the runtime's)\n"
   "        --insert <dylib>       inject this sim dylib too\n"
+  "        --headless             with no window, never bringing SimRun forward (SIMRUN_HEADLESS=1: always), for\n"
+  "                               running apps in the background and side by side; drive them with eval,\n"
+  "                               screenshot and inspect. They get a pasteboard of their own, and simrun pick\n"
+  "                               answers their file pickers\n"
+  "        --pick <path>          answer its file pickers with this file or folder's files (repeatable): an open\n"
+  "                               picker gets the first that fits (all, if it takes several), a save picker\n"
+  "                               writes into the folder. No panel comes up\n"
+  "        --mute                 silence the app: everything it plays, web views' media and its system sounds\n"
+  "                               (AUDIO_MUTE=1 does the same)\n"
   "  list                       the running apps\n"
   "  quit <pid | app> [-p <profile>]\n"
   "                             quit a running app (app: its name, bundle ID or executable)\n"
@@ -36,6 +45,10 @@ static const char kUsage[] =
   "                             run JavaScript in a running app: prints its console output, then its value; exits\n"
   "                             1 if it throws. The script is the argument, the file (- for stdin), or stdin.\n"
   "                             --snapshot: then print the screen as text (app.snapshot()) once the UI has settled\n"
+  "  pick <pid | app> [-p <profile>] [--timeout <s>] [--cancel | <path>...]\n"
+  "                             answer the app's file picker as if these were chosen (a save picker: the file to\n"
+  "                             write, or a folder to write into), or cancel it: the picker open now, else the\n"
+  "                             next one within --timeout (default 10 s). Without paths: what the open one asks for\n"
   "  inspect <pid | app> [-p <profile>] [--watch] [--png <file> [--3d]] [--check] [--set <id> <key>=<json>]\n"
   "                             print the app's layer tree as SimRun copies it (App > Show Layers draws the copy);\n"
   "                             --watch: then a line per update until Ctrl-C; --png: save the copy as drawn on the\n"
@@ -148,10 +161,11 @@ static NSDictionary *Request(NSDictionary *req, BOOL start) {
 }
 
 // ---------------------------------------------------------------- arguments
-// Splits `args` into options (taking a value each) and positional arguments. Stops at the first positional argument
-// when `stopAtPositional` (run: the rest are the app's). Returns an error message or nil.
-static NSString *ParseOptions(NSArray<NSString *> *args, NSDictionary<NSString *, NSString *> *names, BOOL stopAtPositional,
-                              NSMutableDictionary *options, NSMutableArray *positional) {
+// Splits `args` into options (taking a value each, but for the `flags` among `names`' keys, which are set to @YES; the
+// `lists` ones may be repeated, their values collected in an array) and positional arguments. Stops at the first
+// positional argument when `stopAtPositional` (run: the rest are the app's). Returns an error message or nil.
+static NSString *ParseOptions(NSArray<NSString *> *args, NSDictionary<NSString *, NSString *> *names, NSSet<NSString *> *flags,
+                              NSSet<NSString *> *lists, BOOL stopAtPositional, NSMutableDictionary *options, NSMutableArray *positional) {
   for (NSUInteger i = 0; i < args.count; i++) {
     NSString *a = args[i];
     if ([a isEqualToString:@"--"]) { [positional addObjectsFromArray:[args subarrayWithRange:NSMakeRange(i + 1, args.count - i - 1)]]; break; }
@@ -164,11 +178,16 @@ static NSString *ParseOptions(NSArray<NSString *> *args, NSDictionary<NSString *
     if ([a hasPrefix:@"--"] && eq.location != NSNotFound) { value = [a substringFromIndex:NSMaxRange(eq)]; a = [a substringToIndex:eq.location]; }
     NSString *key = names[a];
     if (!key) return [NSString stringWithFormat:@"unknown option %@", a];
+    if ([flags containsObject:a]) {
+      if (value) return [NSString stringWithFormat:@"%@ takes no value", a];
+      options[key] = @YES; continue;
+    }
     if (!value) {
       if (i + 1 >= args.count) return [NSString stringWithFormat:@"%@ needs a value", a];
       value = args[++i];
     }
-    options[key] = value;
+    if ([lists containsObject:a]) { if (!options[key]) options[key] = [NSMutableArray array]; [options[key] addObject:value]; }
+    else options[key] = value;
   }
   return nil;
 }
@@ -201,13 +220,21 @@ static void PrintTable(NSArray<NSArray<NSString *> *> *rows) {
 static int Run(NSArray<NSString *> *args) {
   NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *rest = [NSMutableArray array];
   NSString *err = ParseOptions(args, @{ @"-p": @"profile", @"--profile": @"profile", @"-r": @"runtime", @"--runtime": @"runtime",
-                                        @"-d": @"device", @"--device": @"device", @"--insert": @"insert" }, YES, o, rest);
+                                        @"-d": @"device", @"--device": @"device", @"--insert": @"insert",
+                                        @"--headless": @"headless", @"--mute": @"mute", @"--pick": @"pick" },
+                               [NSSet setWithObjects:@"--headless", @"--mute", nil], [NSSet setWithObject:@"--pick"], YES, o, rest);
   if (err) { Fail(@"%@", err); return Usage(); }
   if (!rest.count) return Usage();
   rest[0] = AbsolutePath(rest[0]);   // SimRun has its own working directory
   if (o[@"insert"]) o[@"insert"] = AbsolutePath(o[@"insert"]);
+  for (NSUInteger i = 0; i < [o[@"pick"] count]; i++) o[@"pick"][i] = AbsolutePath(o[@"pick"][i]);
+  const char *headless = getenv("SIMRUN_HEADLESS");   // for every run, e.g. in an agent's or CI's environment
+  if (headless && *headless && strcmp(headless, "0")) o[@"headless"] = @YES;
   NSMutableArray *env = [NSMutableArray array];
-  for (char **e = environ; *e; e++) [env addObject:@(*e)];
+  BOOL mute = [o[@"mute"] isEqual:@YES];
+  for (char **e = environ; *e; e++) if (!mute || strncmp(*e, "AUDIO_MUTE=", 11)) [env addObject:@(*e)];
+  if (mute) [env addObject:@"AUDIO_MUTE=1"];   // the app's own variable (rshim.dylib)
+  [o removeObjectForKey:@"mute"];
   NSMutableDictionary *req = [@{ @"action": @"run", @"argv": rest, @"env": env, @"cwd": NSFileManager.defaultManager.currentDirectoryPath } mutableCopy];
   [req addEntriesFromDictionary:o];
 
@@ -237,9 +264,11 @@ static int List(NSArray<NSString *> *args) {
   NSArray *list = reply[@"instances"];
   if (!list.count) return 0;
   NSMutableArray *rows = [NSMutableArray arrayWithObject:@[ @"PID", @"APP", @"PROFILE", @"DEVICE", @"RUNTIME" ]];
-  for (NSDictionary *i in list)
-    [rows addObject:@[ [i[@"pid"] description], [i[@"ready"] boolValue] ? i[@"title"] : [i[@"title"] stringByAppendingString:@" (launching)"],
+  for (NSDictionary *i in list) {
+    NSString *title = [i[@"headless"] boolValue] ? [i[@"title"] stringByAppendingString:@" (headless)"] : i[@"title"];
+    [rows addObject:@[ [i[@"pid"] description], [i[@"ready"] boolValue] ? title : [title stringByAppendingString:@" (launching)"],
                        i[@"profile"] ?: @"default", i[@"device"] ?: @"-", i[@"runtime"] ?: @"-" ]];
+  }
   PrintTable(rows);
   return 0;
 }
@@ -249,7 +278,7 @@ static int Instance(NSString *action, NSArray<NSString *> *args) {
   NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *rest = [NSMutableArray array];
   NSMutableDictionary *names = [@{ @"-p": @"profile", @"--profile": @"profile" } mutableCopy];
   if ([action isEqualToString:@"screenshot"]) [names addEntriesFromDictionary:@{ @"-o": @"output", @"--output": @"output" }];
-  NSString *err = ParseOptions(args, names, NO, o, rest);
+  NSString *err = ParseOptions(args, names, nil, nil, NO, o, rest);
   if (err) { Fail(@"%@", err); return Usage(); }
   if (rest.count != 1) return Usage();
   NSMutableDictionary *req = [@{ @"action": action, @"instance": rest[0] } mutableCopy];
@@ -277,7 +306,7 @@ static int Eval(NSArray<NSString *> *args) {
   NSMutableArray *a = [args mutableCopy];
   BOOL snapshot = [a containsObject:@"--snapshot"];
   [a removeObject:@"--snapshot"];
-  NSString *err = ParseOptions(a, @{ @"-p": @"profile", @"--profile": @"profile", @"-f": @"file", @"--file": @"file" }, NO, o, rest);
+  NSString *err = ParseOptions(a, @{ @"-p": @"profile", @"--profile": @"profile", @"-f": @"file", @"--file": @"file" }, nil, nil, NO, o, rest);
   if (err) { Fail(@"%@", err); return Usage(); }
   if (rest.count < 1 || rest.count > 2 || (rest.count == 2 && o[@"file"])) return Usage();
   NSString *source = rest.count == 2 ? rest[1] : nil;
@@ -318,6 +347,34 @@ static int Eval(NSArray<NSString *> *args) {
   }
 }
 
+// `pick`: answer a running app's file picker, or say what it asks for.
+static int Pick(NSArray<NSString *> *args) {
+  NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *rest = [NSMutableArray array];
+  NSString *err = ParseOptions(args, @{ @"-p": @"profile", @"--profile": @"profile", @"--timeout": @"timeout", @"--cancel": @"cancel" },
+                               [NSSet setWithObject:@"--cancel"], nil, NO, o, rest);
+  if (err) { Fail(@"%@", err); return Usage(); }
+  BOOL cancel = [o[@"cancel"] isEqual:@YES];
+  if (rest.count < 1 || (cancel && rest.count > 1)) return Usage();
+  NSMutableDictionary *req = [@{ @"action": @"pick", @"instance": rest[0] } mutableCopy];
+  if (o[@"profile"]) req[@"profile"] = o[@"profile"];
+  if (o[@"timeout"]) req[@"timeout"] = @([o[@"timeout"] doubleValue]);
+  if (cancel) req[@"cancel"] = @YES;
+  NSMutableArray *paths = [NSMutableArray array];
+  for (NSString *p in [rest subarrayWithRange:NSMakeRange(1, rest.count - 1)]) [paths addObject:AbsolutePath(p)];
+  if (paths.count) req[@"paths"] = paths;
+  NSDictionary *reply = Request(req, NO);
+  if (!reply) return 1;
+  if (paths.count || cancel) {
+    for (NSString *p in reply[@"chosen"]) Print(p);
+    if (cancel) Print(@"cancelled");
+    return 0;
+  }
+  NSDictionary *picker = reply[@"picker"];
+  if (![picker isKindOfClass:NSDictionary.class]) { Print([NSString stringWithFormat:@"%@ has no file picker open", rest[0]]); return 1; }
+  Print([NSString stringWithFormat:@"%@ has a file picker open: it %@", rest[0], picker[@"description"]]);
+  return 0;
+}
+
 // `inspect`: SimRun's copy of the app's layer tree (inspect.md).
 static int Inspect(NSArray<NSString *> *args) {
   NSMutableArray *a = [args mutableCopy];
@@ -339,7 +396,7 @@ static int Inspect(NSArray<NSString *> *args) {
                 : @{ @"id": @(nid.integerValue), @"key": [assign substringToIndex:eq.location] };
     [a removeObjectsInRange:NSMakeRange(setAt, 3)];
   }
-  NSString *err = ParseOptions(a, @{ @"-p": @"profile", @"--profile": @"profile", @"--png": @"png" }, NO, o, rest);
+  NSString *err = ParseOptions(a, @{ @"-p": @"profile", @"--profile": @"profile", @"--png": @"png" }, nil, nil, NO, o, rest);
   if (err) { Fail(@"%@", err); return Usage(); }
   if (rest.count != 1 || (check && (watch || o[@"png"])) || (explode && !o[@"png"]) || (set && (watch || check || o[@"png"]))) return Usage();
   NSMutableDictionary *req = [@{ @"action": @"inspect", @"instance": rest[0] } mutableCopy];
@@ -415,7 +472,7 @@ static int Runtimes(NSArray<NSString *> *args) {
 
 static int Devices(NSArray<NSString *> *args) {
   NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *rest = [NSMutableArray array];
-  NSString *err = ParseOptions(args, @{ @"-r": @"runtime", @"--runtime": @"runtime" }, NO, o, rest);
+  NSString *err = ParseOptions(args, @{ @"-r": @"runtime", @"--runtime": @"runtime" }, nil, nil, NO, o, rest);
   if (err) { Fail(@"%@", err); return Usage(); }
   if (rest.count) return Usage();
   NSMutableDictionary *req = [@{ @"action": @"devices" } mutableCopy];
@@ -482,7 +539,7 @@ static int Skill(NSArray<NSString *> *args) {
   BOOL project = [rest containsObject:@"--project"];
   [rest removeObject:@"--project"];
   NSMutableDictionary *o = [NSMutableDictionary dictionary]; NSMutableArray *positional = [NSMutableArray array];
-  NSString *err = ParseOptions(rest, @{ @"--dir": @"dir" }, NO, o, positional);
+  NSString *err = ParseOptions(rest, @{ @"--dir": @"dir" }, nil, nil, NO, o, positional);
   if (err) { Fail(@"%@", err); return Usage(); }
   if (positional.count || (project && o[@"dir"])) return Usage();
   // Claude Code's own directory: $CLAUDE_CONFIG_DIR, else ~/.claude with ~ from $HOME, as Claude Code reads it
@@ -532,6 +589,7 @@ int main(int argc, char **argv) {
     if ([cmd isEqualToString:@"quit"] || [cmd isEqualToString:@"screenshot"]) return Instance(cmd, args);
     if ([cmd isEqualToString:@"eval"]) return Eval(args);
     if ([cmd isEqualToString:@"inspect"]) return Inspect(args);
+    if ([cmd isEqualToString:@"pick"]) return Pick(args);
     if ([cmd isEqualToString:@"profiles"]) return Profiles(args);
     if ([cmd isEqualToString:@"runtimes"]) return Runtimes(args);
     if ([cmd isEqualToString:@"devices"]) return Devices(args);

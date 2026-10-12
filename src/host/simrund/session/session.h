@@ -16,6 +16,10 @@ typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 @property (copy) void (^onReady)(SRSession *session);
 @property (copy) NSString *appPath;           // the .app this session runs (nil for bare binaries)
 @property (readonly) NSWindow *window;
+// Headless (`simrun run --headless`): the window is never shown and SimRun is never brought forward; the app still
+// renders, and screenshots, scripts and inspection work as usual. Set before -spawnArgv:…. -bringToFront shows the
+// window after all (the launcher asked for the app), and the session stops being headless.
+@property (nonatomic, getter=isHeadless) BOOL headless;
 
 // Creates the window and the session port (what the app finds in mach_ports_lookup()[0]: frames + its input port).
 // `screenSize` (points) and `cornerRadius` are the simulated device's screen; the window follows the size of the frames
@@ -25,7 +29,7 @@ typedef void (^SRSessionExitHandler)(SRSession *session, int waitStatus);
 - (BOOL)spawnArgv:(NSArray<NSString *> *)argv env:(NSArray<NSString *> *)env cwd:(NSString *)cwd
         bootstrap:(mach_port_t)bootstrap fds:(const int[3])fds error:(NSString **)error;
 - (void)terminate;   // end the app (window closed / client went away / Quit App)
-- (void)bringToFront;
+- (void)bringToFront;   // shows the window (once ready), and SimRun with it
 // Collect the app's stdout/stderr from `fd` (read end of a pipe; the session owns it) into the log window and
 // ~/Library/Logs/SimRun/<title>.log. Used for apps launched from the launcher (no terminal).
 - (void)captureOutputFrom:(int)fd;

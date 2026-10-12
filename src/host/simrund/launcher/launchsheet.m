@@ -182,6 +182,7 @@ static NSView *Page(NSView *content) {
   NSMutableArray *rows = [NSMutableArray arrayWithArray:@[
     @[ Label(@"Language & Region"), _locale ],
     @[ NSGridCell.emptyContentView, Note(@"Keep the device's settings to test a language or region other than the Mac's.") ],
+    @[ Label(@"Sound"), [self switchBox:@[ @"AUDIO_MUTE", @"Mute", @NO ]] ],
   ]];
   NSArray *services = ServiceSwitches();
   for (NSUInteger i = 0; i < services.count; i++)
@@ -189,7 +190,7 @@ static NSView *Page(NSView *content) {
   [rows addObject:@[ NSGridCell.emptyContentView, Note(@"Turn a service off to see how the app behaves without what SimRun provides.") ]];
   NSGridView *g = Form(rows, 2);
   [g rowAtIndex:1].topPadding = -4;
-  [g rowAtIndex:2].topPadding = 12;
+  [g rowAtIndex:2].topPadding = [g rowAtIndex:3].topPadding = 12;
   [g rowAtIndex:rows.count - 1].topPadding = -2;
   return Page(g);
 }
