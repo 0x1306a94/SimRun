@@ -27,6 +27,7 @@ static const SRModule kModules[SRModuleCount] = {
   [SRModuleScript]     = { APP, "SCRIPT_DISABLE", SRScriptStart },
   [SRModuleTCC]        = { APP | EXTENSION, NULL, SRTCCStart },
   [SRModuleAudio]      = { APP | EXTENSION, NULL, SRAudioStart },
+  [SRModuleMotion]     = { APP, "MOTION_DISABLE", SRMotionStart },
 };
 
 BOOL SRModuleOn(SRModuleID module) {

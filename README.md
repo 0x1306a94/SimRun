@@ -172,6 +172,9 @@ with no apps running.
   time it starts recording, and `--mic system` what the Mac is playing; or pick either in Launch Options ▸
   Microphone ([microphone.md](docs/microphone.md)). Recording from the Mac's microphone, or what it plays, takes
   SimRun's permission on the Mac (macOS asks the first time); without it apps are denied the microphone.
+- **Tilt your MacBook** to move the app: on Apple silicon MacBooks, CoreMotion's accelerometer, gyro and device
+  motion come from the Mac's own motion sensors, and the phone is the Mac's screen, so opening and closing the lid
+  tilts it too ([motion.md](docs/motion.md)). Macs without the sensors report them unavailable.
 - **Script a running app** (experimental) with `simrun eval`: JavaScript that runs inside the app with a
   Playwright-like API. It sees the screen through accessibility, and taps and types like a user. Handy for automating
   UI checks, and for coding agents driving your app:
@@ -203,7 +206,8 @@ There are many more settings for troubleshooting and debugging. See [Configurati
 - **No on-screen keyboard.** Type with your Mac's keyboard. Keys are read by position as a US layout, so some
   characters may come out differently on other keyboard layouts.
 - **The first time you tap into a text field, the app may freeze for 2–3 seconds.** It's fine after that.
-- **Portrait only.** There's no way to turn an app sideways yet, and apps aren't told about device orientation.
+- **Portrait only.** There's no way to turn an app sideways yet, and apps aren't told about device orientation
+  (tilting a MacBook reaches CoreMotion, not UIKit's orientation or shake).
 - **Background apps keep running.** Apps never get suspended the way they would on a phone.
 - **Drag and drop only works within one app**, not between apps or between an app and the Mac.
 - **The keychain isn't secure.** Everything is stored unencrypted, and nothing ever asks for Face ID or a passcode.

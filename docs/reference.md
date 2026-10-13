@@ -40,11 +40,12 @@ them in Launch With….
 | `AUDIO_INPUT=mac \| system \| <file>` | What the app records ([microphone.md](microphone.md)): the Mac's default input device (default); what the Mac plays, every process but the app (a CoreAudio process tap); or the audio file, from its start each time the app starts recording, then silence (`simrun run --mic`, Launch Options ▸ Microphone). The app's microphone permission takes SimRun's permission on the Mac for the source (none for a file) ([microphone.md](microphone.md#permission)) |
 | `AUDIO_INPUT_LOOP=1` | With `AUDIO_INPUT=<file>`: play the file over and over (`simrun run --mic-loop`) |
 | `SIMRUN_HEADLESS=1` | `simrun run` runs every app headless, as with `--headless` (read by `simrun`, not SimRun) |
+| `SIMRUND_MOTION=none` | SimRun is a Mac without motion sensors: apps' accelerometer, gyro and device motion are unavailable ([motion.md](motion.md)) |
 | `SIMRUND_PERMISSIONS=microphone:denied,audio-capture:authorized` | SimRun pretends macOS has given it these permissions (`denied`, `authorized`, `restricted` or `undetermined`), never asking macOS: to test what apps do without the microphone ([microphone.md](microphone.md#permission)) |
 | `SIMRUND_IDLE=secs` | SimRun, started headless by `simrun`, quits after this long without apps (default 600, 0 = never) |
 | `SIMRUND_SOCKET=path` | Use a different server socket (default `~/Library/Developer/SimRun/simrund.sock`) |
 | `SCENES_W`, `SCENES_H`, `SCENES_SCALE` | Scene size in points / scale (default: the device type's screen); SimRun sizes the display (`SIMULATOR_MAINSCREEN_*`) and window to match |
-| `HID_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1`, `PBOARD_VERBOSE=1`, `DRAG_VERBOSE=1`, `DOCPICKER_VERBOSE=1`, `KEYCHAIN_VERBOSE=1`, `WEBKIT_VERBOSE=1`, `MPS_VERBOSE=1`, `SCRIPT_VERBOSE=1`, `TCC_VERBOSE=1`, `AUDIO_VERBOSE=1`, `LOCALE_VERBOSE=1`, `CONTAINER_VERBOSE=1`, `XPCSERVICES_VERBOSE=1` | Component tracing: app.dylib's modules and xpcservices.dylib (`SIMFB_VERBOSE` also reports the frame-copy latency) |
+| `HID_VERBOSE=1`, `SIMFB_VERBOSE=1`, `SCENES_VERBOSE=1`, `PBOARD_VERBOSE=1`, `DRAG_VERBOSE=1`, `DOCPICKER_VERBOSE=1`, `KEYCHAIN_VERBOSE=1`, `WEBKIT_VERBOSE=1`, `MPS_VERBOSE=1`, `SCRIPT_VERBOSE=1`, `TCC_VERBOSE=1`, `AUDIO_VERBOSE=1`, `MOTION_VERBOSE=1`, `LOCALE_VERBOSE=1`, `CONTAINER_VERBOSE=1`, `XPCSERVICES_VERBOSE=1` | Component tracing: app.dylib's modules and xpcservices.dylib (`SIMFB_VERBOSE` also reports the frame-copy latency) |
 | `PBOARD_DISABLE=1` | No pasteboard service in the app (UIPasteboard fails, as in an app without SimRun's) |
 | `DRAG_DISABLE=1` | No drag server in the app (drags lift and then go nowhere) |
 | `DOCPICKER_DISABLE=1` | Document pickers aren't served by Mac panels (they present an empty sheet) |
@@ -52,6 +53,8 @@ them in Launch With….
 | `WEBKIT_DISABLE=1` | WebKit's helper processes aren't launched (web views stay blank) |
 | `MPS_DISABLE=1` | MPSGraph's simulator bugs aren't worked around (on iOS 26 and later runtimes, graphs abort as in Simulator.app) |
 | `SCRIPT_DISABLE=1` | `simrun eval` can't run scripts in the app |
+| `MOTION_DISABLE=1` | CMMotionManager doesn't get the Mac's accelerometer and gyroscope (nothing is available, as in Simulator.app) |
+| `MOTION_POSE=screen \| upright \| flat` | Where the phone is on the MacBook ([motion.md](motion.md)): its screen, leaning as the lid does (default); the screen held at 90° whatever the lid; or lying on the desk as the base does |
 | `LOCALE_DISABLE=1` | Don't copy the Mac's language & region settings into the device's global preferences (keep what is there, e.g. to test another locale) |
 | `SIMFB_CHECK=1` | Frame diagnostics: stale pixels outside partial presents (app side), and buffers overwritten while on screen (server log) |
 | `SIMRUN_DEBUG_STALL=ms`, `SIMRUN_CHROME_DEMO=secs` | Testing: block SimRun's main thread for *ms* every 100 ms; toggle the window chrome on a timer (no mouse needed) |
@@ -70,7 +73,8 @@ select all) go to the app while one of its windows is key.
   ([hid.md](hid.md)).
 - First text-field focus stalls ~2–3 s.
 - Rotation: scenes can be rotated ([scenes.md](scenes.md)), but the viewer has no way to rotate and doesn't map
-  input into rotated space; `deviceOrientation` and the accelerometer aren't wired.
+  input into rotated space; `deviceOrientation` isn't wired. CoreMotion's accelerometer, gyro and device motion are
+  the MacBook's ([motion.md](motion.md)); no magnetometer, and nothing in UIKit (orientation, shake) follows them.
 - notifyd is not provided.
 - Sound plays through the Mac's default output ([architecture.md](architecture.md)); there is no volume of the app's
   own (only muting it, `AUDIO_MUTE`). Recording works ([microphone.md](microphone.md)), but needs a Mac input device

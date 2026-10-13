@@ -266,6 +266,15 @@ nohup simrun run --headless --mute --mic /tmp/fixtures/hello.m4a path/to/MyApp.a
   takes SimRun's permission on the Mac: without it the app is denied and records silence, and if macOS hasn't been
   asked, the app's request makes macOS show the user a prompt. Prefer a file.
 
+## Motion
+
+On an Apple silicon MacBook, `CMMotionManager`'s accelerometer, gyro and device motion are the Mac's real sensors
+(the phone is the Mac's screen, facing the user and leaning back as the lid does: with the lid at 90°, gravity is
+(0, -1, 0); `MOTION_POSE=upright` in the app's environment holds it at 90° whatever the lid, `flat` lays it on the
+desk); elsewhere they are unavailable. Samples come only from the Mac: an agent
+can't tilt the app, so don't build checks that need motion. To see what an app does without the sensors, start SimRun
+with `SIMRUND_MOTION=none` (`simrun stop` first).
+
 ## Limits
 
 - **Portrait only,** and no on-screen keyboard.

@@ -1,7 +1,7 @@
 // SimRun.app / simrund — the SimRun host process (macOS, AppKit).
 //
 // One process owns the launcher, every app window, one set of host-side "sim2host" services (IOSurface, Metal, the
-// Mac pasteboard, file panels) and a `simns --serve` per iOS runtime in use (the launchd_sim stand-in, which also runs that runtime's
+// Mac pasteboard, file panels, motion sensors) and a `simns --serve` per iOS runtime in use (the launchd_sim stand-in, which also runs that runtime's
 // shared sim daemons): SimRun's own runtime's from the start, another runtime's once an app launched on it needs it.
 // Each iOS app is still its own process: it gets a private simns namespace layered over the global one of its
 // runtime's simns and a window (SRSession).
@@ -30,6 +30,7 @@
 #include "services/pasteboard.h"
 #include "services/filepanel.h"
 #include "services/permissions.h"
+#include "services/sensors.h"
 #include "services/keychainwindow.h"
 #include "inspector/layerwindow.h"
 #include "inspector/layermirror.h"
@@ -41,6 +42,7 @@
 #include "pboard.h"
 #include "docpicker.h"
 #include "privacy.h"
+#include "motion.h"
 
 typedef NS_ENUM(NSInteger, SRMode) { SRModeGUI, SRModeServe };
 
@@ -98,6 +100,7 @@ static BOOL SameProfile(NSString *a, NSString *b) { return a == b || [a isEqualT
   SRPasteboardHost *_pasteboard; mach_port_t _pasteboardPort;
   SRDocumentPickerHost *_docPicker; mach_port_t _docPickerPort;
   SRPrivacyHost *_privacy; mach_port_t _privacyPort;
+  SRMotionHost *_motion; mach_port_t _motionPort;
   BOOL _gpuStarted; mach_port_t _iosurfacePort, _metalPort;
   mach_port_t _audioPort; dispatch_source_t _audioDeath;
   BOOL _launched;
@@ -526,6 +529,8 @@ static BOOL ProcessGone(pid_t pid) {
     if (_docPickerPort) [self registerName:SRDP_SERVICE port:_docPickerPort in:ns]; else LOG(@"host document picker service failed to start");
     if (!_privacy) { _privacy = [SRPrivacyHost new]; _privacyPort = [_privacy start]; }
     if (_privacyPort) [self registerName:SRPV_SERVICE port:_privacyPort in:ns]; else LOG(@"host privacy service failed to start");
+    if (!_motion) { _motion = [SRMotionHost new]; _motionPort = [_motion start]; }
+    if (_motionPort) [self registerName:SRMO_SERVICE port:_motionPort in:ns]; else LOG(@"host motion service failed to start");
     if (!_audioPort) [self lookUpHostAudio];
     if (_audioPort) [self registerName:"com.apple.audio.audiohald" port:_audioPort in:ns];
     mach_msg_header_t ready = { .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0), .msgh_size = sizeof ready,

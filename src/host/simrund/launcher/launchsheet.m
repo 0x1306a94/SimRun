@@ -11,6 +11,7 @@ static NSArray<NSArray *> *ServiceSwitches(void) {
             @[ @"DOCPICKER_DISABLE", @"Document pickers with Mac file panels", @YES ],
             @[ @"KEYCHAIN_DISABLE", @"SimRun keychain", @YES ], @[ @"WEBKIT_DISABLE", @"Web view helper processes", @YES ],
             @[ @"MPS_DISABLE", @"MPSGraph on the GPU", @YES ],
+            @[ @"MOTION_DISABLE", @"Motion sensors (the Mac's accelerometer and gyroscope)", @YES ],
             @[ @"SCRIPT_DISABLE", @"Scripts (simrun eval)", @YES ] ];
 }
 static NSArray<NSArray *> *TracingSwitches(void) {
@@ -19,7 +20,7 @@ static NSArray<NSArray *> *TracingSwitches(void) {
             @[ @"DRAG_VERBOSE", @"Drag and drop", @NO ], @[ @"DOCPICKER_VERBOSE", @"Document pickers", @NO ],
             @[ @"KEYCHAIN_VERBOSE", @"Keychain", @NO ],
             @[ @"WEBKIT_VERBOSE", @"Web views", @NO ], @[ @"MPS_VERBOSE", @"MPSGraph", @NO ],
-            @[ @"SCRIPT_VERBOSE", @"Scripts", @NO ], @[ @"AUDIO_VERBOSE", @"Audio", @NO ],
+            @[ @"SCRIPT_VERBOSE", @"Scripts", @NO ], @[ @"AUDIO_VERBOSE", @"Audio", @NO ], @[ @"MOTION_VERBOSE", @"Motion", @NO ],
             @[ @"TCC_VERBOSE", @"Privacy permissions", @NO ], @[ @"LOCALE_VERBOSE", @"Language & region", @NO ],
             @[ @"CONTAINER_VERBOSE", @"Sandbox container", @NO ], @[ @"XPCSERVICES_VERBOSE", @"Shader compiler service", @NO ] ];
 }

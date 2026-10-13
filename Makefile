@@ -25,7 +25,7 @@ SIMLIBS := $(LIB)/xpcservices.dylib $(LIB)/app.dylib $(LIB)/SimFramebuffer
 PARTS := $(BIN)/simrund $(BIN)/simrun $(BIN)/simns $(SIMLIBS)
 TOOLS := $(BIN)/hostinput
 TEST_APPS  := $(APPS)/Hello.app $(APPS)/SUI.app $(APPS)/HIDTest.app $(APPS)/Glass.app $(APPS)/DragTest.app $(APPS)/WebTest.app $(APPS)/BGDownload.app $(APPS)/PickerTest.app $(APPS)/Showcase.app $(APPS)/AudioPlayer.app
-TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest $(TBIN)/mpstest $(TBIN)/audiotest
+TEST_PROGS := $(TBIN)/nettest $(TBIN)/nwtest $(TBIN)/pbtest $(TBIN)/kctest $(TBIN)/loctest $(TBIN)/mpstest $(TBIN)/audiotest $(TBIN)/motiontest
 
 .PHONY: all core tools test-apps test-programs tests install clean $(APP)
 all: core tools test-programs
@@ -44,7 +44,7 @@ $(BIN) $(LIB) $(APPS) $(TBIN):
 SIMRUND_SRC := $(wildcard src/host/simrund/*.m src/host/simrund/*/*.m) src/host/gpuhost/gpuhost.m
 $(BIN)/simrund: $(SIMRUND_SRC) $(wildcard src/host/simrund/*/*.h) $(HDRS) | $(BIN)
 	$(MACCC) -Isrc/host/simrund $(SIMRUND_SRC) -framework Cocoa -framework QuartzCore -framework IOSurface -framework Metal \
-	  -framework UniformTypeIdentifiers -framework ImageIO -framework AVFoundation -o $@
+	  -framework UniformTypeIdentifiers -framework ImageIO -framework AVFoundation -framework IOKit -o $@
 
 # App icon: the Icon Composer document compiled into Assets.car (Liquid Glass icon) and AppIcon.icns (fallback).
 # Xcode 27 reads "features" and a string specular (outside/inside/...). Xcode 26's actool crashes on
@@ -140,7 +140,7 @@ $(LIB)/SimFramebuffer: src/sim/simfb/simfb.m $(HDRS) | $(LIB)
 # are embedded as C arrays (xxd -i: core.js -> core_js[]). TCC.framework is linked through a stub (tcc/tcc.tbd; not in
 # the SDK); the other private frameworks' symbols (FrontBoardServices, GraphicsServices, BackBoardServices...) are
 # looked up at load.
-APP_MODULES := locale container render scenes hid pboard drag docpicker keychain webkit mps script tcc audio
+APP_MODULES := locale container render scenes hid pboard drag docpicker keychain webkit mps script tcc audio motion
 APP_SRC := src/sim/app/app.m $(foreach m,$(APP_MODULES),$(wildcard src/sim/$(m)/*.m))
 SCRIPT_JS := $(wildcard src/sim/script/js/*.js)
 $(BUILD)/gen/script_js.h: $(SCRIPT_JS)
@@ -232,6 +232,8 @@ $(TBIN)/mpstest: tests/mps/mpstest.m | $(TBIN)
 	@$(SIGN) $@ 2>/dev/null
 $(TBIN)/audiotest: tests/audio/audiotest.m | $(TBIN)
 	$(SIMCC) $< -framework Foundation -framework AVFoundation -framework AudioToolbox -framework CoreMedia -o $@
+$(TBIN)/motiontest: tests/motion/motiontest.m | $(TBIN)
+	$(SIMCC) $< -framework Foundation -framework CoreMotion -o $@
 	@$(SIGN) $@ 2>/dev/null
 
 # Install the built bundle into /Applications. ditto keeps the ad-hoc signature.

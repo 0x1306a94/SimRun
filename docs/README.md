@@ -19,6 +19,8 @@ Write-ups of each part:
 - [docpicker.md](docpicker.md) — document pickers: UIDocumentPickerViewController with the Mac's open and save panels
 - [microphone.md](microphone.md) — recording: the Mac's microphone, what the Mac plays or an audio file as the app's
   microphone, and its permission
+- [motion.md](motion.md) — CoreMotion from a MacBook's accelerometer, gyroscope and lid angle: the SPU's HID
+  sensors, turning them on, CoreMotion's samples, device motion fused in the app, the screen as the phone
 - [keychain.md](keychain.md) — the fake keychain: SecItem semantics, the plaintext store, access groups, the Keychain
   window
 - [webkit.md](webkit.md) — WKWebView: BrowserEngineKit process launches, the extension entry point, the Launch
