@@ -400,7 +400,10 @@ static NSArray<NSString *> *ScannedDeviceTypePaths(NSString *version) {
 }
 
 + (NSString *)simnsPath {
-  return InAppBundle() ? [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Contents/Helpers/simns"]
+  // Keep the Simulator-platform helper with the Simulator payload. Contents/Helpers
+  // is treated as nested macOS code by Gatekeeper, but Apple does not issue a macOS
+  // notarization ticket for this iOS Simulator executable.
+  return InAppBundle() ? [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Contents/Resources/lib/simns"]
                        : [ExecutableDir() stringByAppendingPathComponent:@"simns"];
 }
 + (NSString *)libraryDirectory {

@@ -1,16 +1,25 @@
-# Build SimRun.app when a tag is pushed and attach it, zipped, to that tag's release (created if it doesn't exist yet).
+# Tags publish releases; same-repository PRs and manual runs validate without publishing.
 name: Release
 
 on:
   push:
     tags: ['*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'tools/*release.sh'
+      - 'resources/release-*.entitlements'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build:
+    # Fork PRs cannot access signing credentials or run on the release runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: xcode-27
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -31,14 +40,46 @@ jobs:
       - name: Build
         run: make core
 
-      # ditto keeps the bundle's symlinks, extended attributes and code signatures intact.
-      - name: Package
-        run: ditto -c -k --keepParent build/SimRun.app "SimRun-$GITHUB_REF_NAME.zip"
+      - name: Choose archive name
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            echo "RELEASE_ARCHIVE=SimRun-$GITHUB_REF_NAME.zip" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_ARCHIVE=SimRun-ci-${GITHUB_SHA:0:12}.zip" >> "$GITHUB_ENV"
+          fi
+
+      - name: Sign, notarize, and package
+        env:
+          SIGNING_IDENTITY: 'Developer ID Application: Yuxin Chen (V8K4KDZ2JN)'
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: bash tools/notarize-release.sh build/SimRun.app "$RELEASE_ARCHIVE"
+
+      - name: Save signed and notarized app
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-app-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.RELEASE_ARCHIVE }}
+          if-no-files-found: error
+          # PR and manual runs sign unreleased code; don't keep those builds around.
+          retention-days: ${{ github.ref_type == 'tag' && 90 || 7 }}
+
+      - name: Save notarization diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notarization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/notarization/
+          if-no-files-found: ignore
 
       - name: Attach to release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
-          gh release upload "$GITHUB_REF_NAME" "SimRun-$GITHUB_REF_NAME.zip" --clobber
+          gh release upload "$GITHUB_REF_NAME" "$RELEASE_ARCHIVE" --clobber
