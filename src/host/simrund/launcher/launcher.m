@@ -8,6 +8,8 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static NSString *const kSelectionKey = @"SRLauncherSelectedApp";   // the selected app's path, kept across launches
+static NSString *const kExpandedKey = @"SRLauncherExpandedApps";    // the iPhone apps whose Watch apps show
+static NSString *const kPhoneSection = @"iPhone", *const kWatchSection = @"Apple Watch";
 static NSToolbarItemIdentifier const kAddItem = @"add", kRunItem = @"run", kStopItem = @"stop", kOptionsItem = @"options",
                                      kLogItem = @"log", kMoreItem = @"more";
 
@@ -16,8 +18,10 @@ static NSImage *Symbol(NSString *name, NSString *description) {
 }
 
 // ---------------------------------------------------------------- sidebar row: icon, name, bundle ID, running dot
+// An iPhone app's Watch app (its child in the outline) has a watch badge after its name.
 @interface SRAppCell : NSTableCellView
 @property NSTextField *subtitle; @property NSView *runningDot; @property NSProgressIndicator *spinner; @property NSView *status;
+@property NSImageView *watchBadge;
 - (void)setLaunching:(BOOL)launching running:(BOOL)running;
 @end
 @implementation SRAppCell
@@ -35,7 +39,15 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   spin.translatesAutoresizingMaskIntoConstraints = NO; spin.toolTip = @"Launching…";
   // icon | name + bundle ID (stacked) | status (running dot or launch spinner). The status column is hidden (and takes
   // no space) while the app isn't running, so the titles use the full width.
-  NSStackView *titles = [NSStackView stackViewWithViews:@[ title, sub ]];
+  NSImageView *badge = [NSImageView imageViewWithImage:[Symbol(@"applewatch", @"Has a Watch app")
+      imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:11 weight:NSFontWeightRegular]]];
+  badge.contentTintColor = NSColor.secondaryLabelColor;
+  [badge setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [badge setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+  NSStackView *name = [NSStackView stackViewWithViews:@[ title, badge ]];
+  name.orientation = NSUserInterfaceLayoutOrientationHorizontal; name.alignment = NSLayoutAttributeCenterY; name.spacing = 4;
+  name.detachesHiddenViews = YES;
+  NSStackView *titles = [NSStackView stackViewWithViews:@[ name, sub ]];
   titles.orientation = NSUserInterfaceLayoutOrientationVertical; titles.alignment = NSLayoutAttributeLeading; titles.spacing = 1;
   for (NSTextField *t in @[ title, sub ]) [t setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   NSView *status = [NSView new]; status.translatesAutoresizingMaskIntoConstraints = NO;
@@ -49,6 +61,7 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   [titles setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   [self addSubview:row];
   self.imageView = iv; self.textField = title; self.subtitle = sub; self.runningDot = dot; self.spinner = spin; self.status = status;
+  self.watchBadge = badge;
   [NSLayoutConstraint activateConstraints:@[
     [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:2], [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6],
     [row.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
@@ -60,6 +73,11 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   ]];
   return self;
 }
+// white on the selection's highlight, as the Profiles table's dot (an image view, which follows it by itself)
+- (void)setBackgroundStyle:(NSBackgroundStyle)style {
+  [super setBackgroundStyle:style];
+  self.runningDot.layer.backgroundColor = (style == NSBackgroundStyleEmphasized ? NSColor.whiteColor : NSColor.systemGreenColor).CGColor;
+}
 - (void)setLaunching:(BOOL)launching running:(BOOL)running {
   self.status.hidden = !launching && !running;
   self.runningDot.hidden = launching || !running;
@@ -68,12 +86,32 @@ static NSImage *Symbol(NSString *name, NSString *description) {
 @end
 
 // ---------------------------------------------------------------- launcher
-@interface SRLauncher () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSToolbarDelegate, NSToolbarItemValidation>
+// The sidebar: an outline view whose disclosure triangle (an iPhone app's, showing its Watch apps) is centered in the
+// row. The native frame is the row's height, and the triangle is drawn at its top: a 44-point row has it by the name.
+@interface SRSidebarView : NSOutlineView
+@end
+@implementation SRSidebarView
+- (NSRect)frameOfOutlineCellAtRow:(NSInteger)row {
+  NSRect f = [super frameOfOutlineCellAtRow:row];
+  if (NSIsEmptyRect(f)) return f;
+  CGFloat h = MIN(NSHeight(f), NSWidth(f));   // the triangle is square
+  return NSMakeRect(NSMinX(f), NSMidY(f) - h / 2, NSWidth(f), h);
+}
+@end
+
+@interface SRLauncher () <NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate, NSToolbarDelegate, NSToolbarItemValidation>
 @end
 
 @implementation SRLauncher {
   __weak id<SRLauncherDelegate> _delegate;
-  NSWindow *_window; NSTableView *_table; SRAppDetailController *_detail;
+  NSWindow *_window; NSOutlineView *_table; SRAppDetailController *_detail;
+  // the sidebar: sections (their titles, group items), their apps, and an iPhone app's Watch apps as its children
+  NSArray<NSString *> *_sections;
+  NSDictionary<NSString *, NSArray<SRAppInfo *> *> *_sectionApps;
+  NSSet<NSString *> *_watchAppRows;      // the paths of iPhone apps' Watch apps (not library apps of their own)
+  NSMutableSet<NSString *> *_expanded;   // the iPhone apps whose Watch apps show (their paths; kExpandedKey)
+  BOOL _restoring;                       // expanding items after a reload: not the user's doing
+  SRAppInfo *_selectAfterCollapse;       // collapsing the iPhone app of the selected Watch app: select the iPhone app
   NSToolbarItem *_moreItem;
   NSMenu *_profileMenu;   // the Profiles outline's context menu
 }
@@ -95,10 +133,11 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   _window.title = @"SimRun"; _window.releasedWhenClosed = NO;
   _window.toolbarStyle = NSWindowToolbarStyleUnified;
 
-  _table = [NSTableView new];
+  _table = [SRSidebarView new];
   NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"app"]; col.resizingMask = NSTableColumnAutoresizingMask;
   col.minWidth = 100; col.width = 100;   // grows to the table's width (sizeLastColumnToFit / autoresizing), never beyond
   [_table addTableColumn:col];
+  _table.outlineTableColumn = col; _table.autoresizesOutlineColumn = NO;
   _table.headerView = nil; _table.style = NSTableViewStyleSourceList;
   _table.rowSizeStyle = NSTableViewRowSizeStyleCustom; _table.rowHeight = 44;
   _table.columnAutoresizingStyle = NSTableViewFirstColumnOnlyAutoresizingStyle;   // the column always spans the table
@@ -155,13 +194,52 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   [NSApp activateIgnoringOtherApps:YES];
 }
 
+// The library in sections: iPhone apps, each with its Watch apps as its children (its Watch/ folder; run on their own
+// from there), then watch apps that aren't an iPhone app's (Xcode builds an iPhone app's Watch app into its own
+// -watchsimulator folder too, which Add Xcode Simulator Builds finds; it shows under the iPhone app). A section is there
+// when it has apps.
+- (void)buildSidebar {
+  NSArray<SRAppInfo *> *apps = SRLibrary.shared.apps;
+  NSMutableSet *bundled = [NSMutableSet set], *watchAppRows = [NSMutableSet set];
+  for (SRAppInfo *a in apps) for (SRAppInfo *w in a.watchApps) {
+    if (w.bundleIdentifier.length) [bundled addObject:w.bundleIdentifier];
+    [watchAppRows addObject:w.path];
+  }
+  NSMutableArray *phone = [NSMutableArray array], *watch = [NSMutableArray array];
+  for (SRAppInfo *a in apps)
+    if (![a.platform isEqualToString:SRPlatformWatchOS]) [phone addObject:a];
+    else if (![bundled containsObject:a.bundleIdentifier]) [watch addObject:a];
+  NSMutableArray *sections = [NSMutableArray array];
+  if (phone.count) [sections addObject:kPhoneSection];
+  if (watch.count) [sections addObject:kWatchSection];
+  _sections = sections; _sectionApps = @{ kPhoneSection: phone, kWatchSection: watch }; _watchAppRows = watchAppRows;
+}
+// The row of the app at `path` (shown), or NSNotFound
+- (NSUInteger)rowOfAppAtPath:(NSString *)path {
+  for (NSInteger r = 0; r < _table.numberOfRows; r++) if ([[self appAtRow:r].path isEqualToString:path]) return (NSUInteger)r;
+  return NSNotFound;
+}
+- (SRAppInfo *)appAtRow:(NSInteger)row {
+  id item = row >= 0 && row < _table.numberOfRows ? [_table itemAtRow:row] : nil;
+  return [item isKindOfClass:SRAppInfo.class] ? item : nil;
+}
+
 - (void)reload {
   if (!_window) return;
+  if (!_expanded) _expanded = [NSMutableSet setWithArray:[NSUserDefaults.standardUserDefaults stringArrayForKey:kExpandedKey] ?: @[]];
   NSString *path = [self selectedApp].path ?: [NSUserDefaults.standardUserDefaults stringForKey:kSelectionKey];
+  [self buildSidebar];
+  _restoring = YES;
   [_table reloadData];
-  NSArray<SRAppInfo *> *apps = SRLibrary.shared.apps;
-  NSUInteger i = [apps indexOfObjectPassingTest:^BOOL(SRAppInfo *a, NSUInteger idx, BOOL *stop) { return [a.path isEqualToString:path]; }];
-  if (i == NSNotFound && apps.count) i = 0;
+  for (NSString *section in _sections) {
+    [_table expandItem:section];
+    for (SRAppInfo *a in _sectionApps[section]) if ([_expanded containsObject:a.path]) [_table expandItem:a];
+  }
+  _restoring = NO;
+  NSUInteger i = [self rowOfAppAtPath:path];
+  if (i == NSNotFound)   // a Watch app whose iPhone app is collapsed: the iPhone app
+    for (SRAppInfo *a in _sectionApps[kPhoneSection]) if ([[a.watchApps valueForKey:@"path"] containsObject:path]) i = [self rowOfAppAtPath:a.path];
+  for (NSInteger r = 0; i == NSNotFound && r < _table.numberOfRows; r++) if ([self appAtRow:r]) i = (NSUInteger)r;
   if (i != NSNotFound) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
   [self selectionChanged];
   [_detail reloadInfo];   // launch options are saved with a library change notification
@@ -174,12 +252,9 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   [_detail reloadState];
   [_window.toolbar validateVisibleItems];
 }
-- (SRAppInfo *)selectedApp {
-  NSInteger r = _table.selectedRow;
-  return r >= 0 && r < (NSInteger)SRLibrary.shared.apps.count ? SRLibrary.shared.apps[r] : nil;
-}
+- (SRAppInfo *)selectedApp { return [self appAtRow:_table.selectedRow]; }
 - (void)selectApp:(SRAppInfo *)app {
-  NSUInteger i = [SRLibrary.shared.apps indexOfObjectPassingTest:^BOOL(SRAppInfo *a, NSUInteger idx, BOOL *stop) { return [a.path isEqualToString:app.path]; }];
+  NSUInteger i = [self rowOfAppAtPath:app.path];
   if (i != NSNotFound && _window) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
 }
 - (void)selectionChanged {
@@ -190,7 +265,7 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   _moreItem.enabled = a != nil;
   [_window.toolbar validateVisibleItems];
 }
-- (void)tableViewSelectionDidChange:(NSNotification *)n { [self selectionChanged]; }
+- (void)outlineViewSelectionDidChange:(NSNotification *)n { [self selectionChanged]; }
 
 // ---------------------------------------------------------------- actions
 // What an action is for: the menu item's app and profile (the context menus, More), else the selected app in the profile
@@ -207,7 +282,7 @@ static NSImage *Symbol(NSString *name, NSString *description) {
 - (SRAppInfo *)appFor:(id)sender { return [self appFor:sender profile:NULL]; }
 
 - (void)launchSelected:(id)sender {   // double-click, Launch / Show: launch, or show the running app
-  if (sender == _table && _table.clickedRow < 0) return;
+  if (sender == _table && ![self appAtRow:_table.clickedRow]) return;   // not an app's row
   NSString *p = nil; SRAppInfo *a = [self appFor:sender profile:&p];
   if (a) [_delegate launchApp:a profile:p];
 }
@@ -323,8 +398,7 @@ static NSImage *Symbol(NSString *name, NSString *description) {
   [menu removeAllItems];
   SRAppInfo *a = nil; NSString *profile = nil;
   if (menu == _table.menu) {
-    if (_table.clickedRow >= 0 && _table.clickedRow < (NSInteger)SRLibrary.shared.apps.count) a = SRLibrary.shared.apps[_table.clickedRow];
-    if (a) [self addAppItemsFor:a to:menu];
+    if ((a = [self appAtRow:_table.clickedRow])) [self addAppItemsFor:a to:menu];
   } else if (menu == _profileMenu) {
     if ((a = [self selectedApp]) && [_detail profileForMenu:&profile]) [self addProfileItemsFor:a profile:profile to:menu running:YES];
   } else if ((a = [self selectedApp])) {   // More
@@ -344,6 +418,7 @@ static NSMenuItem *AddItem(NSMenu *menu, NSString *title, SEL action, id target,
 - (void)addAppItemsFor:(SRAppInfo *)a to:(NSMenu *)menu {
   AddItem(menu, @"Show Keychain Items", @selector(keychainSelected:), self, a, nil);
   AddItem(menu, @"Show in Finder", @selector(showInFinder:), self, a, nil);
+  if ([_watchAppRows containsObject:a.path]) return;   // an iPhone app's Watch app: removed with it
   [menu addItem:NSMenuItem.separatorItem];
   AddItem(menu, @"Remove from SimRun", @selector(removeSelected:), self, a, nil);
 }
@@ -439,15 +514,64 @@ static NSMenuItem *AddItem(NSMenu *menu, NSString *title, SEL action, id target,
 }
 
 // ---------------------------------------------------------------- sidebar
-- (NSInteger)numberOfRowsInTableView:(NSTableView *)t { return SRLibrary.shared.apps.count; }
-- (NSView *)tableView:(NSTableView *)t viewForTableColumn:(NSTableColumn *)c row:(NSInteger)row {
-  SRAppCell *cell = [t makeViewWithIdentifier:@"cell" owner:self];
+- (NSArray *)childrenOfItem:(id)item {
+  if (!item) return _sections;
+  if ([item isKindOfClass:NSString.class]) return _sectionApps[item] ?: @[];
+  return [item watchApps];
+}
+- (NSInteger)outlineView:(NSOutlineView *)o numberOfChildrenOfItem:(id)item { return [self childrenOfItem:item].count; }
+- (id)outlineView:(NSOutlineView *)o child:(NSInteger)i ofItem:(id)item { return [self childrenOfItem:item][i]; }
+- (BOOL)outlineView:(NSOutlineView *)o isItemExpandable:(id)item { return [self childrenOfItem:item].count > 0; }
+- (BOOL)outlineView:(NSOutlineView *)o isGroupItem:(id)item { return [item isKindOfClass:NSString.class]; }
+// the sections stay expanded: no Show/Hide on their titles
+- (BOOL)outlineView:(NSOutlineView *)o shouldShowOutlineCellForItem:(id)item { return ![item isKindOfClass:NSString.class]; }
+- (BOOL)outlineView:(NSOutlineView *)o shouldCollapseItem:(id)item { return ![item isKindOfClass:NSString.class]; }
+- (BOOL)outlineView:(NSOutlineView *)o shouldSelectItem:(id)item { return [item isKindOfClass:SRAppInfo.class]; }
+- (CGFloat)outlineView:(NSOutlineView *)o heightOfRowByItem:(id)item { return [item isKindOfClass:SRAppInfo.class] ? 44 : 28; }
+// which iPhone apps show their Watch apps, kept across launches; collapsing the selected Watch app's selects its iPhone app
+- (void)outlineViewItemDidExpand:(NSNotification *)n {
+  SRAppInfo *a = n.userInfo[@"NSObject"];
+  if (_restoring || ![a isKindOfClass:SRAppInfo.class]) return;
+  [_expanded addObject:a.path];
+  [NSUserDefaults.standardUserDefaults setObject:_expanded.allObjects forKey:kExpandedKey];
+}
+- (void)outlineViewItemWillCollapse:(NSNotification *)n {
+  SRAppInfo *a = n.userInfo[@"NSObject"];
+  _selectAfterCollapse = [a isKindOfClass:SRAppInfo.class] && [a.watchApps containsObject:[self selectedApp]] ? a : nil;
+}
+- (void)outlineViewItemDidCollapse:(NSNotification *)n {
+  SRAppInfo *a = n.userInfo[@"NSObject"];
+  if (_restoring || ![a isKindOfClass:SRAppInfo.class]) return;
+  [_expanded removeObject:a.path];
+  [NSUserDefaults.standardUserDefaults setObject:_expanded.allObjects forKey:kExpandedKey];
+  if (_selectAfterCollapse == a) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)[_table rowForItem:a]] byExtendingSelection:NO];
+  _selectAfterCollapse = nil;
+}
+- (NSView *)outlineView:(NSOutlineView *)o viewForTableColumn:(NSTableColumn *)c item:(id)item {
+  if ([item isKindOfClass:NSString.class]) {   // a section's title
+    NSTableCellView *header = [o makeViewWithIdentifier:@"header" owner:self];
+    if (!header) {
+      header = [NSTableCellView new]; header.identifier = @"header";
+      NSTextField *title = [NSTextField labelWithString:@""]; title.translatesAutoresizingMaskIntoConstraints = NO;
+      [header addSubview:title]; header.textField = title;
+      [NSLayoutConstraint activateConstraints:@[
+        [title.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:2],
+        [title.trailingAnchor constraintEqualToAnchor:header.trailingAnchor],
+        [title.centerYAnchor constraintEqualToAnchor:header.centerYAnchor] ]];
+    }
+    header.textField.stringValue = item;
+    return header;
+  }
+  SRAppInfo *a = item;
+  SRAppCell *cell = [o makeViewWithIdentifier:@"cell" owner:self];
   if (!cell) { cell = [[SRAppCell alloc] initWithFrame:NSZeroRect]; cell.identifier = @"cell"; }
-  SRAppInfo *a = SRLibrary.shared.apps[row];
   cell.imageView.image = a.icon;
   cell.textField.stringValue = a.name;
   cell.subtitle.stringValue = a.bundleIdentifier.length ? a.bundleIdentifier : a.path.lastPathComponent;
   cell.toolTip = a.path.stringByAbbreviatingWithTildeInPath;
+  BOOL watchApp = [_watchAppRows containsObject:a.path];
+  cell.watchBadge.hidden = !watchApp;
+  cell.watchBadge.toolTip = watchApp ? @"Watch app" : nil;
   // the dot: running in some profile; the spinner: launching in one (no window yet)
   NSDictionary *instances = [_delegate instancesOfApp:a];
   BOOL launching = [_delegate stateForApp:a profile:nil] == SRAppStateLaunching;
@@ -455,13 +579,13 @@ static NSMenuItem *AddItem(NSMenu *menu, NSString *title, SEL action, id target,
   [cell setLaunching:launching running:instances.count > 0];
   return cell;
 }
-- (NSDragOperation)tableView:(NSTableView *)t validateDrop:(id<NSDraggingInfo>)info proposedRow:(NSInteger)row proposedDropOperation:(NSTableViewDropOperation)op {
-  [t setDropRow:-1 dropOperation:NSTableViewDropOn];   // whole-table highlight
+- (NSDragOperation)outlineView:(NSOutlineView *)o validateDrop:(id<NSDraggingInfo>)info proposedItem:(id)item proposedChildIndex:(NSInteger)i {
+  [o setDropItem:nil dropChildIndex:NSOutlineViewDropOnItemIndex];   // whole-list highlight
   NSArray<NSURL *> *urls = [info.draggingPasteboard readObjectsForClasses:@[ NSURL.class ] options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
   for (NSURL *u in urls) if ([u.pathExtension isEqualToString:@"app"]) return NSDragOperationCopy;
   return NSDragOperationNone;
 }
-- (BOOL)tableView:(NSTableView *)t acceptDrop:(id<NSDraggingInfo>)info row:(NSInteger)row dropOperation:(NSTableViewDropOperation)op {
+- (BOOL)outlineView:(NSOutlineView *)o acceptDrop:(id<NSDraggingInfo>)info item:(id)item childIndex:(NSInteger)i {
   NSArray<NSURL *> *urls = [info.draggingPasteboard readObjectsForClasses:@[ NSURL.class ] options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
   NSMutableArray *paths = [NSMutableArray array]; for (NSURL *u in urls) if ([u.pathExtension isEqualToString:@"app"]) [paths addObject:u.path];
   [self openPaths:paths];

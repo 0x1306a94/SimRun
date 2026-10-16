@@ -72,7 +72,7 @@ make
 This builds `build/SimRun.app`. You can rebuild while SimRun is open; quit and reopen SimRun to pick up the new
 version. Until you do, apps in the old SimRun can't open the Mac's file panels (document pickers).
 
-To also build the sample apps into `build/apps/`, including Showcase, a tour of what SimRun can do:
+To also build the sample apps into `build/apps/`, including Showcase, a tour of what SimRun can do, and its Watch app:
 
 ```bash
 make test-apps
@@ -139,8 +139,12 @@ with no apps running.
   the first day of the week.
 - **Apple Watch apps run too.** Add a watchOS Simulator build (`Debug-watchsimulator`) like any app. It runs on the
   newest watchOS runtime, in a window the size of the watch's screen. Scrolling with the mouse or trackpad turns the
-  Digital Crown. Text fields, the status bar clock and a paired iPhone aren't supported yet
-  ([details](docs/watchos.md)).
+  Digital Crown. Text fields and the status bar clock aren't supported yet ([details](docs/watchos.md)).
+- **iPhone apps can bring their Watch app.** An iPhone app with a Watch app in it can be expanded in the launcher's
+  sidebar (its disclosure arrow, or →), which lists iPhone apps and standalone Apple Watch apps separately. Turn on **Run … too** in its **Launch Options** (or
+  pass `--with-watch-app` to `simrun run`) and its Watch app runs on SimRun's Apple Watch with it, paired with its
+  iPhone: WatchConnectivity messages, application context and user info go between the two
+  ([details](docs/pairing.md)). To run only the Watch app, expand the iPhone app and select its Watch app.
 - **Run as a different iPhone or iPad**: hold ⌥ in the app's menu, choose **Launch With…** and pick a **Device**. You
   can choose any device type the app's runtime supports. The app gets that model's screen size, safe areas and
   features such as the Dynamic Island. From the terminal, set `SIMRUN_DEVICE`:
