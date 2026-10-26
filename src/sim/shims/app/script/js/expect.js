@@ -8,7 +8,9 @@ const { poll, defaults, Locator } = internal;
 
 const normalize = s => String(s).replace(/\s+/g, ' ').trim();
 const textMatches = (actual, expected, substring) => {
-  if (expected instanceof RegExp) return expected.test(normalize(actual));
+  if (expected instanceof RegExp) {
+    return expected.test(normalize(actual));
+  }
   return substring ? normalize(actual).includes(normalize(expected)) : normalize(actual) === normalize(expected);
 };
 const show = v => v instanceof RegExp ? String(v) : JSON.stringify(v);
@@ -42,7 +44,9 @@ const expectLocator = (locator, negated) => {
         last = check((await locator._find()).found);
         return { done: last.pass !== negated };
       }, timeout);
-      if (r.done) return;
+      if (r.done) {
+        return;
+      }
       throw new Error(`expect(${locator})${negated ? '.not' : ''}.${name}(${args.map(show).join(', ')}) failed after ${timeout} ms\n` +
                       `  expected: ${negated ? 'not ' : ''}${expected}\n  received: ${negated ? expected : last.received}`);
     };
@@ -50,7 +54,13 @@ const expectLocator = (locator, negated) => {
   return m;
 };
 
-const sameValue = (a, b) => { try { return JSON.stringify(a) === JSON.stringify(b); } catch (e) { return a === b; } };
+const sameValue = (a, b) => {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch (e) {
+    return a === b;
+  }
+};
 const valueMatchers = {
   toBe: (v, x) => [Object.is(v, x), show(x)],
   toEqual: (v, x) => [sameValue(v, x), show(x)],
@@ -63,11 +73,14 @@ const valueMatchers = {
 };
 const expectValue = (value, negated) => {
   const m = {};
-  for (const [name, check] of Object.entries(valueMatchers))
+  for (const [name, check] of Object.entries(valueMatchers)) {
     m[name] = (...args) => {
       const [pass, expected] = check(value, ...args);
-      if (pass === negated) throw new Error(`expect(…)${negated ? '.not' : ''}.${name}() failed\n  expected: ${negated ? 'not ' : ''}${expected}\n  received: ${internal.formatValue(value)}`);
+      if (pass === negated) {
+        throw new Error(`expect(…)${negated ? '.not' : ''}.${name}() failed\n  expected: ${negated ? 'not ' : ''}${expected}\n  received: ${internal.formatValue(value)}`);
+      }
     };
+  }
   return m;
 };
 
